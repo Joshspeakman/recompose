@@ -7,6 +7,7 @@
  */
 
 #include "rhi_backend.h"
+#include "recomp_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +32,9 @@ static const RhiBackend *const g_backends[] = {
 #if defined(RHI_HAVE_VULKAN)
     &rhi_vulkan_backend,
 #endif
+#if defined(RHI_HAVE_METAL)
+    &rhi_metal_backend,     /* RECOMP_D3D8_BACKEND=metal while it is brought up */
+#endif
     NULL
 };
 
@@ -50,8 +54,10 @@ int rhi_select_backend(const char *name)
 {
     int i;
 
+    /* RECOMP_D3D8_BACKEND, or `renderer = <name>` in the title's settings
+     * file, so an app started from the Finder can choose too. */
     if (!name || !*name)
-        name = getenv("RECOMP_D3D8_BACKEND");
+        name = recomp_config_lookup("RECOMP_D3D8_BACKEND", "renderer");
     if (!name || !*name)
         return 0;
     for (i = 0; g_backends[i]; i++) {

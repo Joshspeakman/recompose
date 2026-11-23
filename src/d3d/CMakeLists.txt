@@ -151,6 +151,41 @@ else()
     set(XBOXRECOMP_DXC_INCLUDE "" CACHE INTERNAL "")
     set(XBOXRECOMP_DXC_LIBRARY "" CACHE INTERNAL "")
 endif()
+# The native Metal backend (rhi_metal.m), beside Vulkan on macOS and picked
+# with RECOMP_D3D8_BACKEND=metal while it is brought up. It compiles shaders
+# with the Vulkan backend's DXC call (so it needs XBOXRECOMP_VULKAN's pieces)
+# and turns the SPIR-V into MSL with SPIRV-Cross, linked statically from the
+# same SDK that provides DXC: nothing more to ship.
+if(APPLE AND XBOXRECOMP_VULKAN)
+    get_filename_component(XBR_SDK_INCLUDE ${XBR_DXC_INCLUDE}/.. ABSOLUTE)
+    get_filename_component(XBR_SDK_LIB ${XBR_DXC_INCLUDE}/../../lib ABSOLUTE)
+    set(XBR_SPVC_LIBS "")
+    foreach(lib spirv-cross-c spirv-cross-msl spirv-cross-hlsl spirv-cross-cpp spirv-cross-glsl
+                spirv-cross-reflect spirv-cross-util spirv-cross-core)
+        if(EXISTS ${XBR_SDK_LIB}/lib${lib}.a)
+            list(APPEND XBR_SPVC_LIBS ${XBR_SDK_LIB}/lib${lib}.a)
+        endif()
+    endforeach()
+    if(EXISTS ${XBR_SDK_INCLUDE}/spirv_cross/spirv_cross_c.h AND XBR_SPVC_LIBS)
+        set(XBR_METAL_DEFAULT ON)
+    else()
+        set(XBR_METAL_DEFAULT OFF)
+    endif()
+    option(XBOXRECOMP_METAL "Build the native Metal renderer backend" ${XBR_METAL_DEFAULT})
+    if(XBOXRECOMP_METAL)
+        target_sources(xbox_d3d8 PRIVATE rhi_metal.m)
+        # Objective-C through the C compiler, as launcher_cocoa.m is, so a
+        # title need not enable another language; references by hand.
+        set_source_files_properties(rhi_metal.m PROPERTIES
+            LANGUAGE C COMPILE_OPTIONS "-xobjective-c;-fno-objc-arc")
+        target_include_directories(xbox_d3d8 PRIVATE ${XBR_SDK_INCLUDE})
+        target_compile_definitions(xbox_d3d8 PRIVATE RHI_HAVE_METAL)
+        target_link_libraries(xbox_d3d8 PUBLIC ${XBR_SPVC_LIBS} c++
+                              "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+        message(STATUS "xbox_d3d8: Metal backend on (SPIRV-Cross from ${XBR_SDK_LIB})")
+    endif()
+endif()
+
 if(NOT XBOXRECOMP_VULKAN AND NOT WIN32)
     message(WARNING "xbox_d3d8: no Vulkan backend (vendored Vulkan headers, volk, VMA or DXC's "
                     "headers missing), so this build has no renderer")
