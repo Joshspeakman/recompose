@@ -209,6 +209,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_subdirectory(tests/nv2a_vsh)
     add_subdirectory(tests/d3d8_capture)        # portable: the capture container
     add_subdirectory(tests/host_timer)          # portable: the sub-millisecond timer
+    add_subdirectory(tests/recomp_math)         # portable: the x87 transcendentals, the same bits everywhere
     add_subdirectory(tests/syslink_hub)         # portable: the System Link switch, on 127.0.0.1
     add_subdirectory(tests/net_nat)             # portable: the router behind syslink = nat, on 127.0.0.1
     add_subdirectory(tests/console_id)          # portable: the console identity loader, on a made-up EEPROM

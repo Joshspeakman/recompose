@@ -557,8 +557,20 @@ def run(out, corpus, include=None, prelude=None):
         prepared.append((c, text, int(any(s in text for s in _UNSUPPORTED))))
     (out / "lifted.c").write_text(source(prepared, prelude), newline="\n")
     include = include or Path(__file__).resolve().parents[2] / "templates" / "runtime"
+    # The transcendentals lifted code calls (recomp_sin, ...) live in the
+    # runtime's src/math, not in recomp_types.h: build them in, the way the
+    # toolkit does (C11, /fp:precise). /fp:strict would refuse their tables:
+    # it folds no floating-point constant in a static initializer.
+    musl = Path(__file__).resolve().parents[2] / "src" / "math" / "musl"
+    sources = sorted(musl.glob("*.c"))
+    built = runner._cl(vcvars, str(out), "/c /std:c11 /O2 /fp:precise /arch:SSE2 /W0 "
+                       + " ".join(f'"{p}"' for p in sources))
+    if built.returncode:
+        raise RuntimeError(built.stdout + built.stderr)
+    math_objects = " ".join(p.stem + ".obj" for p in sources)
     built = runner._cl(vcvars, str(out),
-                       f'/O2 /fp:strict /arch:SSE2 /I"{include}" lifted.c native.obj /Fecompare.exe')
+                       f'/O2 /fp:strict /arch:SSE2 /I"{include}" lifted.c native.obj '
+                       f'{math_objects} /Fecompare.exe')
     (out / "compile.txt").write_text(built.stdout + built.stderr)
     if built.returncode:
         raise RuntimeError(built.stdout + built.stderr)

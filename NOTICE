@@ -73,6 +73,31 @@ LGPL-2.1-or-later — extracted from xemu
   satisfies that.
 
 
+MIT — from musl libc
+--------------------
+
+  https://musl.libc.org/ (release 1.2.5)
+
+  Files, from its src/math/ directory, in src/math/musl/:
+
+    sin.c cos.c tan.c __sin.c __cos.c __tan.c __rem_pio2.c
+    __rem_pio2_large.c atan.c atan2.c log2.c log2_data.c log2_data.h
+    exp2.c exp_data.c exp_data.h __math_divzero.c __math_invalid.c
+    __math_oflow.c __math_uflow.c __math_xflow.c
+                          The x87 transcendentals lifted code calls, so every
+                          host computes the same bits (src/math/recomp_math.h).
+                          Unchanged, apart from exp_data.h and log2_data.h
+                          including "libm.h" where they included <features.h>;
+                          src/math/musl/libm.h is ours, in place of musl's
+                          internal header, and renames every symbol recomp_*.
+
+  Copyright © 2005-2020 Rich Felker, et al., and the other authors named in
+  src/math/musl/COPYRIGHT, which carries musl's MIT licence and the notices of
+  the code musl took them from (FreeBSD's msun, from Sun Microsystems'
+  fdlibm; Arm Limited's optimized-routines for exp2 and log2). Those notices
+  also stay at the top of each file.
+
+
 Derived algorithms — credited, independently implemented
 --------------------------------------------------------
 

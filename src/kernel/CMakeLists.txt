@@ -43,6 +43,31 @@ set(KERNEL_SOURCES
 
 add_library(xbox_kernel STATIC ${KERNEL_SOURCES})
 
+# The x87 transcendentals lifted code calls (src/math/recomp_math.h): musl's
+# generic C, so every host computes the same bits. They live in this library
+# because every title, the prebuilt engine package and Android's libmain.so
+# all carry it whole. Contraction off and no fast-math, or arm64 would fuse
+# multiply-adds that x86-64 rounds twice; their own warnings stay theirs.
+set(XBR_MATH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../math/musl)
+set(XBR_MATH_SOURCES
+    ${XBR_MATH_DIR}/sin.c ${XBR_MATH_DIR}/cos.c ${XBR_MATH_DIR}/tan.c
+    ${XBR_MATH_DIR}/__sin.c ${XBR_MATH_DIR}/__cos.c ${XBR_MATH_DIR}/__tan.c
+    ${XBR_MATH_DIR}/__rem_pio2.c ${XBR_MATH_DIR}/__rem_pio2_large.c
+    ${XBR_MATH_DIR}/atan.c ${XBR_MATH_DIR}/atan2.c
+    ${XBR_MATH_DIR}/log2.c ${XBR_MATH_DIR}/log2_data.c
+    ${XBR_MATH_DIR}/exp2.c ${XBR_MATH_DIR}/exp_data.c
+    ${XBR_MATH_DIR}/__math_divzero.c ${XBR_MATH_DIR}/__math_invalid.c
+    ${XBR_MATH_DIR}/__math_oflow.c ${XBR_MATH_DIR}/__math_uflow.c
+    ${XBR_MATH_DIR}/__math_xflow.c
+)
+target_sources(xbox_kernel PRIVATE ${XBR_MATH_SOURCES})
+if(MSVC)
+    set_source_files_properties(${XBR_MATH_SOURCES} PROPERTIES COMPILE_OPTIONS "/fp:precise;/W0")
+else()
+    set_source_files_properties(${XBR_MATH_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-ffp-contract=off;-fno-fast-math;-w")
+endif()
+
 # See src/platform/CMakeLists.txt: resolve src/ relative to this file, not via
 # CMAKE_SOURCE_DIR, which is the consuming project's root under add_subdirectory().
 get_filename_component(XBOXRECOMP_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)

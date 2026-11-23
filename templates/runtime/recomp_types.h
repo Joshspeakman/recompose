@@ -62,6 +62,24 @@
  * still built with warnings off (xboxrecomp_generated_source_options in the
  * top-level CMakeLists), but with implicit declaration kept as an error. */
 #include <math.h>
+
+/* The x87 transcendentals the lifter emits (fsin, fcos, fsincos, fptan,
+ * fpatan, fyl2x, fyl2xp1, f2xm1): src/math, musl's implementations, which
+ * give the same bits on every host where the host's libm does not -- two
+ * copies on different systems playing each other must compute the same game.
+ * Defined in xbox_kernel (src/math/recomp_math.h). */
+#ifdef __cplusplus
+extern "C" {
+#endif
+double recomp_sin(double x);
+double recomp_cos(double x);
+double recomp_tan(double x);
+double recomp_atan2(double y, double x);
+double recomp_log2(double x);
+double recomp_exp2(double x);
+#ifdef __cplusplus
+}
+#endif
 #if defined(_M_IX86) || defined(_M_X64) || defined(__i386__) || defined(__x86_64__)
 #include <xmmintrin.h>
 #endif
