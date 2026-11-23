@@ -124,18 +124,27 @@ static void fake_apply(RecompInputGamepad *g, int i)
  *
  * SEQ_MAX was 128, and a longer script was cut short in silence: a six-minute
  * MK Shaolin Monks play test stopped pressing at three minutes and looked like
- * the game had stopped answering the pad. A script cut short now says so. */
+ * the game had stopped answering the pad. A script cut short now says so.
+ *
+ * RECOMP_INPUT_SEQ_P2, _P3 and _P4 script controllers 2 to 4 the same way,
+ * on the same clock (it starts at the title's first pad read on any port), so
+ * a two-player mode can be reached and played without a second person. A
+ * scripted port is reported connected for the whole run. */
 #define SEQ_MAX 1024
-static struct seq_step { unsigned long at, hold; int keys[4]; int nkeys; } s_seq[SEQ_MAX];
-static int s_seq_count = -1;
+#define SEQ_MAX 1024
+#define SEQ_PORTS 4
+struct seq_step { unsigned long at, hold; int keys[4]; int nkeys; };
+static struct seq_step s_seq[SEQ_PORTS][SEQ_MAX];
+static int s_seq_count[SEQ_PORTS] = { -1, -1, -1, -1 };
 static unsigned long long s_seq_t0;
 
-static void seq_parse(const char *env)
+static void seq_parse(unsigned port, const char *env)
 {
     const char *p = env;
+    int *count = &s_seq_count[port];
 
-    while (*p && s_seq_count < SEQ_MAX) {
-        struct seq_step *s = &s_seq[s_seq_count];
+    while (*p && *count < SEQ_MAX) {
+        struct seq_step *s = &s_seq[port][*count];
         char *end;
         const char *step_end = strchr(p, ',');
         size_t len = step_end ? (size_t)(step_end - p) : strlen(p);
@@ -172,74 +181,96 @@ static void seq_parse(const char *env)
             if (q < p + len && *q == '+')
                 q++;
         }
-        s_seq_count++;
+        (*count)++;
         if (!step_end) {
             p += len;
             break;
         }
         p = step_end + 1;
     }
-    if (*p && s_seq_count >= SEQ_MAX)
+    if (*p && *count >= SEQ_MAX)
         fprintf(stderr, "  [PAD] RECOMP_INPUT_SEQ: more than %d steps; the rest are ignored"
                 " (from '%.24s')\n", SEQ_MAX, p);
 }
 
-/* Whether an input script is driving this run (RECOMP_INPUT_SEQ), parsing
- * it the first time. */
-static int seq_active(void)
+/* Whether an input script drives this port (RECOMP_INPUT_SEQ for port 0,
+ * RECOMP_INPUT_SEQ_P<n> for controller n), parsing it the first time. */
+static int seq_active(unsigned port)
 {
-    if (s_seq_count < 0) {
-        const char *env = getenv("RECOMP_INPUT_SEQ");
-        s_seq_count = 0;
+    if (port >= SEQ_PORTS)
+        return 0;
+    if (s_seq_count[port] < 0) {
+        char name[32];
+        const char *env;
+
+        if (port == 0)
+            snprintf(name, sizeof name, "RECOMP_INPUT_SEQ");
+        else
+            snprintf(name, sizeof name, "RECOMP_INPUT_SEQ_P%u", port + 1u);
+        env = getenv(name);
+        s_seq_count[port] = 0;
         if (env && *env) {
-            seq_parse(env);
-            fprintf(stderr, "  [PAD] input script: %d steps from %s\n", s_seq_count, env);
+            seq_parse(port, env);
+            fprintf(stderr, "  [PAD] input script for controller %u: %d steps from %s\n",
+                    port + 1u, s_seq_count[port], env);
             fflush(stderr);
         }
     }
-    return s_seq_count > 0;
+    return s_seq_count[port] > 0;
+}
+
+unsigned recomp_input_host_scripted_mask(void)
+{
+    unsigned mask = 0, port;
+
+    for (port = 1; port < SEQ_PORTS; port++)
+        if (seq_active(port))
+            mask |= 1u << port;
+    return mask;
 }
 
 /* A script is for a run that goes the same way every time, and a pad left
  * connected on the desk does not: a resting stick's drift walked
  * TimeSplitters 2's name-entry cursor off END, so the script's A typed
  * letters instead of finishing and the run never left the menus. While a
- * script runs it is the only input on port 0, unless
+ * script runs it is the only input on its port, unless
  * RECOMP_INPUT_SEQ_PAD=1 asks for the pad as well. */
-static int seq_owns_pad(void)
+static int seq_owns_pad(unsigned port)
 {
     static int with_pad = -1;
 
-    if (!seq_active())
+    if (!seq_active(port))
         return 0;
     if (with_pad < 0) {
         const char *v = getenv("RECOMP_INPUT_SEQ_PAD");
 
         with_pad = v && *v && strcmp(v, "0") != 0;
         if (!with_pad)
-            fprintf(stderr, "  [PAD] the input script replaces the pad on port 0 "
+            fprintf(stderr, "  [PAD] an input script replaces the pad on its port "
                     "(RECOMP_INPUT_SEQ_PAD=1 to have both)\n");
     }
     return !with_pad;
 }
 
-static void seq_input(RecompInputGamepad *g)
+static void seq_input(unsigned port, RecompInputGamepad *g)
 {
     unsigned long long t;
     int i, k;
 
-    if (!seq_active())
+    if (!seq_active(port))
         return;
     if (!s_seq_t0)
         s_seq_t0 = GetTickCount64();
     t = GetTickCount64() - s_seq_t0;
-    for (i = 0; i < s_seq_count; i++) {
-        if (t < s_seq[i].at || t >= (unsigned long long)s_seq[i].at + s_seq[i].hold)
+    for (i = 0; i < s_seq_count[port]; i++) {
+        const struct seq_step *s = &s_seq[port][i];
+        if (t < s->at || t >= (unsigned long long)s->at + s->hold)
             continue;
-        for (k = 0; k < s_seq[i].nkeys; k++)
-            fake_apply(g, s_seq[i].keys[k]);
+        for (k = 0; k < s->nkeys; k++)
+            fake_apply(g, s->keys[k]);
     }
 }
+
 
 static void fake_input(RecompInputGamepad *g)
 {
@@ -378,7 +409,7 @@ bool recomp_input_host_sample_port(unsigned port, RecompInputGamepad *gamepad)
     if (gamepad == NULL)
         return false;
     memset(gamepad, 0, sizeof *gamepad);
-    if (!(port == 0 && seq_owns_pad()) && recomp_bindings_sample(port, &pad)) {
+    if (!seq_owns_pad(port) && recomp_bindings_sample(port, &pad)) {
         gamepad->buttons = (uint16_t)pad.wButtons;
         for (i = 0; i < RECOMP_INPUT_ANALOG_BUTTON_COUNT; i++)
             gamepad->analog_buttons[i] = pad.bAnalogButtons[i];
@@ -390,8 +421,8 @@ bool recomp_input_host_sample_port(unsigned port, RecompInputGamepad *gamepad)
     if (port == 0) {
         record_input(gamepad);      /* the person, before any script adds to it */
         fake_input(gamepad);
-        seq_input(gamepad);
     }
+    seq_input(port, gamepad);
     return true;
 }
 

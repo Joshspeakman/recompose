@@ -23,6 +23,10 @@ enum {
  * file, where they are what is written on the console. */
 bool recomp_input_host_sample_port(unsigned port, RecompInputGamepad *gamepad);
 
+/* Ports 1-3 that an input script drives (RECOMP_INPUT_SEQ_P2..P4), as a
+ * mask: they are reported connected whether or not a device is bound. */
+unsigned recomp_input_host_scripted_mask(void);
+
 /* Port 0, for callers that only ever had one pad. */
 bool recomp_input_host_sample(RecompInputGamepad *gamepad);
 
