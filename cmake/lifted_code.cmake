@@ -58,7 +58,14 @@ function(xboxrecomp_generated_source_options)
             list(APPEND _opts /w /we4013)
         endif()
     else()
-        set(_opts -fwrapv)
+        # -ffp-contract=off: the guest's x87/SSE arithmetic rounds after every
+        # multiply and every add. clang fuses `a * b + c` into one FMA where
+        # the host has one (every arm64, an x86 built for a CPU with FMA), so
+        # an Apple Silicon build computed floats an x86 build did not, and two
+        # copies comparing game state over System Link disagreed (a Mac joining
+        # a Windows host was dropped at match start; Mac-Mac and Windows-Windows
+        # were fine). goldeneye-netplay found the same on its port.
+        set(_opts -fwrapv -ffp-contract=off)
         if(NOT XBOXRECOMP_LIFTED_OPT STREQUAL "")
             list(APPEND _opts "$<$<NOT:$<CONFIG:Debug>>:-O${XBOXRECOMP_LIFTED_OPT}>")
         endif()
