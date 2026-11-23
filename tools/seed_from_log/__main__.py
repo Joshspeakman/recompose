@@ -234,7 +234,9 @@ def main(argv=None):
         return 0
 
     args.seeds.parent.mkdir(parents=True, exist_ok=True)
-    args.seeds.write_text(json.dumps(existing, indent=1))
+    # LF on every host: text mode on Windows would write CRLF, and the whole
+    # committed file would show as changed for one added seed.
+    args.seeds.write_text(json.dumps(existing, indent=1), encoding="utf-8", newline="\n")
     print("seeds: %d (+%d) -> %s" % (len(existing), added, args.seeds))
     if added:
         print("now re-run tools.disasm --seed-functions and lift again")
