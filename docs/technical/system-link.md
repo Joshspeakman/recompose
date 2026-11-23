@@ -105,8 +105,10 @@ through the signal handler and the arm64 decoder (`recomp_fault_emulate`),
 with guest memory reached through the arena's backdoor so the handler can
 never fault twice. Checked on Apple Silicon with Rainbow Six 3: two copies on
 one Mac, one hosting and one joining 127.0.0.1, exchange XNet's frames both
-ways (1 ms round trip), and `tests/syslink_hub` passes. No match has been
-played across them yet, and no Mac has played a Windows PC yet.
+ways (1 ms round trip), and `tests/syslink_hub` passes. Since 23 November
+2026 TimeSplitters 2 has played matches across systems too: a Mac joining a
+Windows PC over a LAN, and Linux (x86-64) joining Windows (split2-recomp
+`docs/multiplayer.md`, "Between systems").
 
 **NAT mode (15 Oct 2026).** `syslink = nat` cables the card to the
 internet instead of to other consoles. Rainbow Six 3 on macOS takes its
@@ -146,6 +148,19 @@ instead of Join, then Deathmatch, map, options, character and the game name
 (six more A presses, about 6 s apart, the last landing in the lobby), and a
 final A to start once the joiner is in; the joiner presses Join Game after
 the host's lobby is up, then A for the server, A for the character.
+
+**Send a test copy's stderr straight to a file, never through a pipe.** The
+runtime's stderr is unbuffered and the kernel logs every file read, so a
+title loading a level writes thousands of lines. On Windows, PowerShell's
+`Start-Process -RedirectStandardError` hands the game a pipe that PowerShell
+drains in the background; the writes then block in `NtWriteFile` whenever
+it falls behind. TimeSplitters 2 took 14-16 s from the match's start to
+playing instead of 2-4 s, and its System Link load handshake gives a peer
+about 18 s: a slow Windows copy against a fast Mac or Linux one dropped at
+every match start (the joiner sees "Lost Server"), while two equally slow or
+equally fast copies held. Redirect with the shell (`cmd /c "game.exe
+2>run.log"`, `2>run.log` in bash). A player is never affected: with no
+console the game reopens stderr onto `<exe>.log` itself (host_main_win32.c).
 
 ### The Ethernet address
 
