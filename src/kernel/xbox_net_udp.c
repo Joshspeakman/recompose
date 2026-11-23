@@ -99,6 +99,16 @@ typedef int net_socket;
 #define QUEUE_LEN       256
 #define MAX_PEERS       (XBOX_NET_MAX_CONSOLES - 1)
 #define HELLO_EVERY_MS  1000u
+/* Until the host first answers, hello again sooner: a title starts its
+ * search the moment its network card comes up, and a first hello lost on
+ * the way (seen from Windows into WSL, and any first packet on the internet
+ * can be) used to cost a whole second, by which time the search was over. */
+#define HELLO_FIRST_MS  200u
+/* Frames the title sends before the host has said yes are held, this many
+ * and this long at most, and sent once it has (xbox_net_link_send): a search
+ * dropped there made Join Game find nothing. */
+#define EARLY_FRAMES    16
+#define EARLY_MAX_MS    3000u
 #define RETRY_REFUSED_MS 5000u  /* after a refusal that will not change by itself */
 #define PING_EVERY_MS   2000u
 #define SILENT_MS       15000u  /* no word for this long: gone */
@@ -134,6 +144,12 @@ struct XboxNetLink {
 
     /* HOST: who is in. */
     Peer               peers[MAX_PEERS];
+
+    /* JOIN: frames sent before the host said yes, oldest first (EARLY_*). */
+    struct { uint32_t len; unsigned long long at; uint8_t data[XBOX_NET_FRAME_MAX]; }
+                       early[EARLY_FRAMES];
+    unsigned           early_count;
+    int                ever_joined;
 
     /* JOIN: where it stands with the host. */
     int                joined;
@@ -499,15 +515,32 @@ static void join_receive(XboxNetLink *l, const uint8_t *buf, int n,
         return;
     l->last_from_host = now;
     switch (buf[3]) {
-    case MSG_WELCOME:
+    case MSG_WELCOME: {
+        unsigned i, held = 0;
+
         l->consoles = n > HDR ? buf[HDR] : 0;
         if (!l->joined)
             say(l, "joined the session at %s: %d in it",
                 addr_text(&l->remote, who, sizeof who), l->consoles);
+        /* Under the lock xbox_net_link_send takes, so a frame the title
+         * sends now cannot overtake the held ones. */
+        lock(l);
         l->joined = 1;
+        l->ever_joined = 1;
+        for (i = 0; i < l->early_count; i++)
+            if (now - l->early[i].at <= EARLY_MAX_MS) {
+                send_msg(l, &l->remote, MSG_FRAME, l->early[i].data, l->early[i].len);
+                l->sent++;
+                held++;
+            }
+        l->early_count = 0;
+        unlock(l);
+        if (held)
+            say(l, "sent %u frame(s) the title sent before the host answered", held);
         l->refused = 0;
         l->last_ping = now;
         break;
+    }
     case MSG_REFUSE: {
         int why = n > HDR ? buf[HDR] : 0;
 
@@ -553,7 +586,8 @@ static void housekeeping(XboxNetLink *l)
     if (l->cfg.mode == XBOX_NET_JOIN) {
         if (!l->joined) {
             unsigned every = (l->refused && l->refused != REFUSE_NOT_JOINED)
-                             ? RETRY_REFUSED_MS : HELLO_EVERY_MS;
+                             ? RETRY_REFUSED_MS
+                             : l->ever_joined ? HELLO_EVERY_MS : HELLO_FIRST_MS;
             if (now - l->last_hello >= every)
                 send_hello(l);
             return;
@@ -812,11 +846,35 @@ void xbox_net_link_send(XboxNetLink *l, const uint8_t *frame, uint32_t len)
             l->sent++;
         break;
     case XBOX_NET_JOIN:
-        /* Before the host has said yes, there is nobody to send to. */
+        /* Before the host has said yes there is nobody to send to, so the
+         * first frames (a title's search) wait for the welcome, which sends
+         * them (join_receive). Only before the first welcome: a console the
+         * host has since lost is not let in by its old frames. */
+        lock(l);
         if (l->joined) {
             send_msg(l, &l->remote, MSG_FRAME, frame, len);
             l->sent++;
+        } else if (!l->ever_joined) {
+            unsigned long long now = now_ms();
+            unsigned i;
+
+            /* Drop what has gone stale, then the oldest if still full. */
+            for (i = 0; i < l->early_count && now - l->early[i].at > EARLY_MAX_MS; i++)
+                ;
+            if (i) {
+                memmove(&l->early[0], &l->early[i], (l->early_count - i) * sizeof l->early[0]);
+                l->early_count -= i;
+            }
+            if (l->early_count == EARLY_FRAMES) {
+                memmove(&l->early[0], &l->early[1], (EARLY_FRAMES - 1) * sizeof l->early[0]);
+                l->early_count--;
+            }
+            l->early[l->early_count].len = len;
+            l->early[l->early_count].at = now;
+            memcpy(l->early[l->early_count].data, frame, len);
+            l->early_count++;
         }
+        unlock(l);
         break;
     case XBOX_NET_HOST:
         lock(l);

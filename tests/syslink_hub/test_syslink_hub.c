@@ -270,11 +270,46 @@ static void test_pair(void)
     xbox_net_link_close(b);
 }
 
+/* A title searches the moment its card comes up, before the host has
+ * answered the link's first hello. Those frames used to be dropped, and
+ * Join Game found nothing whenever the welcome was slow (a lost first
+ * hello: seen from Windows into WSL). They are held and sent on welcome. */
+static void test_early_frames(void)
+{
+    XboxNetLink *h, *j;
+    char addr[64];
+    uint8_t f[64];
+    uint32_t n;
+
+    printf("frames sent before the welcome:\n");
+    h = open_link(XBOX_NET_HOST, NULL, 0, "Siberia", MAC_H);
+    CHECK(h != NULL, "the host listens");
+    if (!h)
+        return;
+    snprintf(addr, sizeof addr, "127.0.0.1:%d", xbox_net_link_port(h));
+    j = open_link(XBOX_NET_JOIN, addr, 0, "Siberia", MAC_1);
+    CHECK(j != NULL, "a console opens its link");
+    if (j) {
+        n = frame(f, BCAST, MAC_1, 0xE1);
+        xbox_net_link_send(j, f, n);        /* at once: not welcomed yet */
+        n = frame(f, BCAST, MAC_1, 0xE2);
+        xbox_net_link_send(j, f, n);
+        CHECK(next_tag(h, 3000) == 0xE1, "the first reaches the host once it is welcomed");
+        CHECK(next_tag(h, 1000) == 0xE2, "... and the second, in order");
+        n = frame(f, BCAST, MAC_1, 0xE3);
+        xbox_net_link_send(j, f, n);
+        CHECK(next_tag(h, 1000) == 0xE3, "frames after the welcome go straight through");
+        xbox_net_link_close(j);
+    }
+    xbox_net_link_close(h);
+}
+
 int main(void)
 {
     test_route();
     test_session();
     test_pair();
+    test_early_frames();
     printf(g_fail ? "%d check(s) failed\n" : "all checks passed\n", g_fail);
     return g_fail ? 1 : 0;
 }
