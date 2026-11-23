@@ -155,12 +155,15 @@ title loading a level writes thousands of lines. On Windows, PowerShell's
 `Start-Process -RedirectStandardError` hands the game a pipe that PowerShell
 drains in the background; the writes then block in `NtWriteFile` whenever
 it falls behind. TimeSplitters 2 took 14-16 s from the match's start to
-playing instead of 2-4 s, and its System Link load handshake gives a peer
-about 18 s: a slow Windows copy against a fast Mac or Linux one dropped at
-every match start (the joiner sees "Lost Server"), while two equally slow or
-equally fast copies held. Redirect with the shell (`cmd /c "game.exe
-2>run.log"`, `2>run.log` in bash). A player is never affected: with no
-console the game reopens stderr onto `<exe>.log` itself (host_main_win32.c).
+playing instead of 2-4 s, and its System Link load handshake does not wait
+that out: copies whose loads finished about 12-14 s apart dropped at every
+match start (the joiner sees "Lost Server"; a joiner ready 16.6 s after the
+host's start was ignored), while copies about 1.5 s apart held. Redirect
+with the shell (`cmd /c "game.exe 2>run.log"`, `2>run.log` in bash). A
+player's game logs to `<exe>.log` itself (host_main_win32.c), a plain file,
+so this pipe is not theirs -- but the limit is: a machine that really loads
+a level many seconds slower than the others (a slow disk, a slow CPU) would
+be dropped the same way. Not seen yet; the exact tolerance is not measured.
 
 ### The Ethernet address
 

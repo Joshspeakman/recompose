@@ -4769,8 +4769,8 @@ class Lifter:
         # These map onto src/math (recomp_math.h), not the host's libm: musl's
         # implementations, which give the same bits on every host. glibc, Apple's
         # libm and Windows' UCRT each round some results differently in the last
-        # place, which TimeSplitters 2 over System Link noticed as soon as two
-        # systems met (the host dropped a joiner on another OS at match start).
+        # place, and two copies on different systems playing each other need
+        # the same arithmetic (a precaution; see recomp_math.h).
         # The 80-bit intermediates of real x87 are not reproduced -- fp_stack is
         # double -- which is the same approximation every other op here makes.
         #
