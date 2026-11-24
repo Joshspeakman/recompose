@@ -5,8 +5,11 @@
  */
 #ifndef XBOXRECOMP_LAUNCHER_IMAGE_H
 #define XBOXRECOMP_LAUNCHER_IMAGE_H
+#include <stddef.h>
 #include <stdint.h>
 
 uint32_t *launcher_image_load(const char *path, int *w, int *h);
+/* The same from bytes in memory: a picture compiled into the launcher. */
+uint32_t *launcher_image_decode(const unsigned char *bytes, size_t size, int *w, int *h);
 
 #endif /* XBOXRECOMP_LAUNCHER_IMAGE_H */

@@ -26,7 +26,7 @@
 # title's CMakeLists need not ask which host it is on.
 
 function(recomp_add_launcher TARGET GAME_EXE)
-    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "DEFAULTS;BRAND;ICON;THEME" "" ${ARGN})
+    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "DEFAULTS;BRAND;ICON;THEME;LOGO" "" ${ARGN})
     set(_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
 
     if(WIN32)
@@ -166,6 +166,19 @@ function(recomp_add_launcher TARGET GAME_EXE)
     if(_launcher_THEME)
         get_filename_component(_theme "${_launcher_THEME}" ABSOLUTE)
         target_compile_definitions(${TARGET} PRIVATE LAUNCHER_THEME_HEADER="${_theme}")
+    endif()
+    # LOGO <png>: the title's own mark, compiled in, shown where the game's
+    # name would be written when no other logo is found (launcher_art.c).
+    if(_launcher_LOGO)
+        get_filename_component(_logo "${_launcher_LOGO}" ABSOLUTE)
+        set(_logo_h "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_logo.h")
+        file(READ "${_logo}" _hex HEX)
+        string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _bytes "${_hex}")
+        file(WRITE "${_logo_h}"
+             "/* ${_launcher_LOGO}, written by recomp_add_launcher. */\n"
+             "static const unsigned char launcher_logo_png[] = {${_bytes}};\n")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_logo}")
+        target_compile_definitions(${TARGET} PRIVATE LAUNCHER_LOGO_HEADER="${_logo_h}")
     endif()
     # COOP: the title's build supports online co-op (it hooks its frame for
     # src/kernel/recomp_lockstep.h), so the System Link tab offers hosting

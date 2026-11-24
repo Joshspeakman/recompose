@@ -2,16 +2,20 @@
  * launcher_art.c -- a title's artwork behind the launcher: a backdrop, and a
  * logo where its name would be written.
  *
- * The pictures are the game's own -- key art and a clear logo -- so none are
- * kept in the toolkit, a title's repository or its release. A title names
- * where they can be fetched from in its theme header (recomp_add_launcher
- * THEME: THEME_ART_BACKDROP_URL, THEME_ART_LOGO_URL); the launcher looks for
- * them in an art folder beside itself first (art/backdrop.jpg, art/logo.png:
- * a player's own, or an offline install's), then in the player's art cache,
- * and fetches what is missing into that cache once, in the background, with
- * the system's curl (Windows 10 and later, macOS and Linux have it). Nothing
- * waits on it: until a picture is there, or if it never comes, the launcher
- * draws its own background and writes the game's name.
+ * Where they come from, in order:
+ *   - an art folder beside the launcher (art/backdrop.jpg, art/logo.png): the
+ *     player's own, or what a title's tools made from the player's own copy
+ *     of the game (Timeslip's mac/make_art.sh);
+ *   - the player's art cache (below), the same;
+ *   - for the logo, the title's own, compiled in (recomp_add_launcher LOGO:
+ *     the project's mark, not the game's);
+ *   - only if the player asks (RECOMP_LAUNCHER_FETCH_ART=1), a download into
+ *     the cache from where the title's theme header says
+ *     (THEME_ART_BACKDROP_URL, THEME_ART_LOGO_URL), in the background, with
+ *     the system's curl. A game's key art is its publisher's, so nothing
+ *     downloads it unasked.
+ * Nothing waits on any of it: without a backdrop the launcher draws its own
+ * background, and without a logo it writes the game's name.
  *
  * Cache: %LOCALAPPDATA%\xboxrecomp\art\<title id> on Windows,
  * ~/Library/Application Support/xboxrecomp/art/<id> on macOS,
@@ -39,6 +43,9 @@ extern char **environ;
 #include "launcher_image.h"
 #include "launcher_theme.h"
 #include "platform/host_main.h"
+#ifdef LAUNCHER_LOGO_HEADER
+#include LAUNCHER_LOGO_HEADER   /* launcher_logo_png[], from recomp_add_launcher LOGO */
+#endif
 
 #define ART_PATH 1024
 
@@ -190,7 +197,8 @@ void launcher_art_init(uint32_t title_id)
 {
     char dir[ART_PATH], here[ART_PATH];
     const char *off = getenv("RECOMP_LAUNCHER_NO_ART");
-    int i;
+    const char *want = getenv("RECOMP_LAUNCHER_FETCH_ART");
+    int i, may_fetch = want && *want && strcmp(want, "0") != 0;
 
 #ifdef THEME_ART_BACKDROP_URL
     g_art[0].url = THEME_ART_BACKDROP_URL;
@@ -235,9 +243,17 @@ void launcher_art_init(uint32_t title_id)
 #endif
         if (file_exists(a->file))
             load(a);
-        else
+        else if (may_fetch)
             fetch(a);
+        else
+            a->done = 1;
     }
+#ifdef LAUNCHER_LOGO_HEADER
+    /* The title's own mark where there is no other logo. */
+    if (!g_art[1].px && !g_art[1].fetching)
+        g_art[1].px = launcher_image_decode(launcher_logo_png, sizeof launcher_logo_png,
+                                            &g_art[1].w, &g_art[1].h);
+#endif
 }
 
 int launcher_art_tick(void)

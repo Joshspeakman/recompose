@@ -27,6 +27,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+uint32_t *launcher_image_decode(const unsigned char *bytes, size_t size, int *w, int *h)
+{
+    unsigned char *rgba;
+    uint32_t *out;
+    int x, y, n, i;
+
+    if (!bytes || !size || size > 32u * 1024 * 1024)
+        return NULL;
+    rgba = stbi_load_from_memory(bytes, (int)size, &x, &y, &n, 4);
+    if (!rgba)
+        return NULL;
+    out = malloc((size_t)x * y * sizeof *out);
+    if (out) {
+        for (i = 0; i < x * y; i++)
+            out[i] = ((uint32_t)rgba[i * 4 + 3] << 24) | ((uint32_t)rgba[i * 4] << 16) |
+                     ((uint32_t)rgba[i * 4 + 1] << 8) | (uint32_t)rgba[i * 4 + 2];
+        *w = x;
+        *h = y;
+    }
+    stbi_image_free(rgba);
+    return out;
+}
+
 uint32_t *launcher_image_load(const char *path, int *w, int *h)
 {
     FILE *f = path ? fopen(path, "rb") : NULL;
