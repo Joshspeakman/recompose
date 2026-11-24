@@ -3615,32 +3615,38 @@ static XboxTimer g_timers[XBOX_MAX_TIMERS];
 static CRITICAL_SECTION g_timer_lock;
 static volatile LONG g_timer_started;   /* 0 none, 1 starting, 2 running */
 
+/* The timer thread's worker stack and TIB, taken by the thread that starts
+ * it, before it starts. Taken on the timer thread itself, they raced the
+ * title's own first allocations: the TIB and its thread object come from the
+ * guest heap, so whichever thread got there first decided every heap address
+ * after it. An Apple Silicon Mac joining an online co-op session (which waits
+ * for the host before the title runs) took them after TimeSplitters 2's first
+ * 1 MB allocation instead of before, and its game differed from the host's
+ * from the first frame. */
+static int      g_timer_slot = -1;
+static uint32_t g_timer_tib;
+
 static DWORD WINAPI kernel_timer_thread(LPVOID unused)
 {
-    int slot = xbox_worker_stack_alloc();
-
     (void)unused;
-    if (slot < 0) {
+    if (g_timer_slot < 0) {
         fprintf(stderr, "  [KERNEL] timer thread has no worker stack; "
                         "timer DPCs will not run\n");
         fflush(stderr);
         return 0;
     }
-    g_esp = XBOX_WORKER_STACK_TOP(slot);
-    {
-        /* Its own TIB, for the same reason bridge_thread_main gives one to
-         * every worker: a DPC routine with an SEH prologue reads fs:[0],
-         * and a thread whose g_fs_base is zero faults inside the runtime
-         * before the routine runs. */
-        uint32_t tib = xbox_AllocThreadTib();
-        if (!tib) {
-            fprintf(stderr, "  [KERNEL] timer thread has no TIB; "
-                            "timer DPCs will not run\n");
-            fflush(stderr);
-            return 0;
-        }
-        g_fs_base = tib;
+    g_esp = XBOX_WORKER_STACK_TOP(g_timer_slot);
+    /* Its own TIB, for the same reason bridge_thread_main gives one to every
+     * worker: a DPC routine with an SEH prologue reads fs:[0], and a thread
+     * whose g_fs_base is zero faults inside the runtime before the routine
+     * runs. */
+    if (!g_timer_tib) {
+        fprintf(stderr, "  [KERNEL] timer thread has no TIB; "
+                        "timer DPCs will not run\n");
+        fflush(stderr);
+        return 0;
     }
+    g_fs_base = g_timer_tib;
     xbox_NameCurrentThread(L"xbox timer/vblank");
 
     /* Sleeping to the vblank deadline needs a timer that fires when asked.
@@ -3745,6 +3751,9 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
      * second caller waits for the lock to exist rather than creating its own. */
     if (InterlockedCompareExchange(&g_timer_started, 1, 0) == 0) {
         InitializeCriticalSection(&g_timer_lock);
+        g_timer_slot = xbox_worker_stack_alloc();
+        if (g_timer_slot >= 0)
+            g_timer_tib = xbox_AllocThreadTib();
         CloseHandle(CreateThread(NULL, 0, kernel_timer_thread, NULL, 0, NULL));
         InterlockedExchange(&g_timer_started, 2);
     } else {
