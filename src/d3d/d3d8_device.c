@@ -2123,8 +2123,15 @@ static int soften_pass(const void *verts, UINT stride, UINT count, void **out)
 }
 
 /*
- * reduce_flashes (RECOMP_REDUCE_FLASHES, on unless 0): an additive glow
- * sprite that reaches behind the camera's near plane is left out. A glow
+ * reduce_flashes (RECOMP_REDUCE_FLASHES=1; OFF by default, for testing
+ * only): an additive glow sprite that reaches behind the camera's near
+ * plane is left out. Not ready: each vertex's depth is worked out from the
+ * registers frame interpolation names, and many of a title's effect
+ * programs transform through others, so smoke, light shafts and sights
+ * near the camera were left out too (TS2's corridor sweep, 24 Nov 2026:
+ * thousands of draws a minute, half of them read as behind the eye while
+ * the game showed them in front). Telling such a glow apart needs the
+ * depth the program itself puts out. A glow
  * spawned at the camera -- TimeSplitters 2's plasma bolt, on the frame it
  * leaves the gun -- is clipped to what is in front of the eye, and that is
  * the whole view: the screen washed white for a frame, again and again
@@ -2142,7 +2149,7 @@ static int reduce_flashes(void)
 
     if (on < 0) {
         const char *v = recomp_config_lookup("RECOMP_REDUCE_FLASHES", "reduce_flashes");
-        on = !(v && (strcmp(v, "0") == 0 || strcmp(v, "off") == 0));
+        on = v && (strcmp(v, "1") == 0 || strcmp(v, "on") == 0);
     }
     return on;
 }

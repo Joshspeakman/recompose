@@ -40,7 +40,7 @@
  * have the same kind. Each 4-register affine matrix is split into rotation,
  * scale and translation; the rotation is blended as a quaternion and the
  * other two linearly, so a turning object keeps its size. A matrix that
- * turned more than 45 degrees or moved by half its distance in one frame
+ * turned more than 20 degrees or moved by half its distance in one frame
  * is a cut, and drawn as N has it. Only draws whose program goes through
  * the projection are blended: screen-space draws are N's exactly, so the
  * HUD does not shimmer.
@@ -82,7 +82,11 @@
 
 #define MIN_MATCHED          0.60                /* of the 3D primitives */
 #define MAX_CUT              0.50
-#define MAX_TURN_COS         0.81915204          /* cos(70 deg / 2): a frame's turn */
+/* A frame's turn: cos(20 deg / 2). TS2's corridor sweep (Nov 2026): in-between
+ * frames are whole at 15 degrees a frame and lose pieces of the level at 30
+ * and 60, where what the older camera saw and the newer one did not reaches
+ * well past the screen's edge; such a flick is shown as the title's frames. */
+#define MAX_TURN_COS         0.98480775
 #define MAX_MOVE             0.5                 /* of the distance */
 
 typedef struct {

@@ -85,8 +85,10 @@ the draw's program reads is blended (`d3d8_vsh_bound_reads`): a register the
 program never reads holds whatever was last put there. Only draws whose
 program goes through the projection are blended, so screen-space draws (HUD,
 menus) are N's to the pixel and do not shimmer. A motion that turns more than
-70 degrees, or moves by more than half the distance, in one frame is a cut,
-and drawn as N has it.
+20 degrees, or moves by more than half the distance, in one frame is a cut,
+and drawn as N has it; a camera turning that fast cuts most of the frame, so
+the frame is held. (20, not more: TimeSplitters 2's in-between frames were
+whole turning 15 degrees a frame and lost pieces of the level at 30 and 60.)
 
 **What only one of the two frames drew** (November 2026, TimeSplitters 2,
 whose in-between frames showed the sky through doorways on fast mouse turns).
