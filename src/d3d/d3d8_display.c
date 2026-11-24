@@ -130,6 +130,37 @@ static unsigned g_frames;
  * its movies are frames with no 3D at all. */
 static int      g_title_says_narrow;
 
+/* The part of the frame shown, as fractions (xbox_D3D8SetPresentCrop). */
+static float g_crop[4];
+static int   g_crop_on;
+
+void xbox_D3D8SetPresentCrop(float x, float y, float w, float h)
+{
+    int on = w > 0.0f && h > 0.0f && x >= 0.0f && y >= 0.0f && x + w <= 1.0f && y + h <= 1.0f &&
+             !(x == 0.0f && y == 0.0f && w == 1.0f && h == 1.0f);
+
+    if (on != g_crop_on || (on && (x != g_crop[0] || y != g_crop[1] ||
+                                   w != g_crop[2] || h != g_crop[3])))
+        fprintf(stderr, on ? "[HLE-D3D8] showing part of the frame: x %.2f y %.2f, %.2f by %.2f\n"
+                           : "[HLE-D3D8] showing the whole frame again\n",
+                (double)x, (double)y, (double)w, (double)h);
+    g_crop_on = on;
+    if (on) {
+        g_crop[0] = x; g_crop[1] = y; g_crop[2] = w; g_crop[3] = h;
+    }
+}
+
+int d3d8_display_crop(float out[4])
+{
+    if (!g_crop_on) {
+        out[0] = out[1] = 0.0f;
+        out[2] = out[3] = 1.0f;
+        return 0;
+    }
+    memcpy(out, g_crop, sizeof g_crop);
+    return 1;
+}
+
 void xbox_D3D8SetWideFrames(BOOL wide)
 {
     g_title_said = 1;
@@ -257,10 +288,11 @@ D3D8DisplayFit d3d8_display_fit(UINT shape_w, UINT shape_h, UINT bb_w, UINT bb_h
 typedef struct {
     float origin_x, origin_y, ratio_x, ratio_y;
     float texel_x, texel_y, inv_taps, gamma;   /* gamma: 1 to look up the ramp */
+    float src_x, src_y, pad0, pad1;            /* where the part shown starts, in texels */
 } ResolveConstants;
 
 static const char kSource[] =
-    "cbuffer Resolve : register(b7) { float4 p; float4 q; };\n"
+    "cbuffer Resolve : register(b7) { float4 p; float4 q; float4 r; };\n"
     "struct VSOut { float4 pos : SV_Position; };\n"
     "VSOut vs_main(uint id : SV_VertexID) {\n"
     "    float2 c = float2((id << 1) & 2, id & 2);\n"   /* one oversized triangle */
@@ -278,7 +310,7 @@ static const char kSource[] =
      * at scale 1 the presented frame was each 2x2 block of the scene
      * averaged, a half-pixel blur, and at 2x the box filter read the wrong
      * four texels. */
-    "    float2 base = (i.pos.xy - 0.5 - p.xy) * p.zw;\n"
+    "    float2 base = (i.pos.xy - 0.5 - p.xy) * p.zw + r.xy;\n"
     "    float2 step = p.zw / TAPS;\n"
     "    float4 sum = 0;\n"
     "    [unroll] for (int y = 0; y < TAPS; y++)\n"
@@ -475,15 +507,23 @@ HRESULT d3d8_display_resolve(RhiView *scene, UINT scene_w, UINT scene_h,
     UINT taps;
     void *mapped;
 
+    float crop[4];
+    float part_w, part_h;
+
     if (!scene || !out || !fit.w || !fit.h || !scene_h)
         return E_INVALIDARG;
+    /* Only part of the frame, when the title asked (xbox_D3D8SetPresentCrop):
+     * its texels spread over the fit as the whole frame's would. */
+    d3d8_display_crop(crop);
+    part_w = (float)scene_w * crop[2];
+    part_h = (float)scene_h * crop[3];
 
     /* Square taps, from the vertical ratio: the horizontal one is the
      * same whenever the fit preserved the scene's shape, which it does,
      * and averaging a non-square block would soften one axis more than
      * the other. Rounded rather than truncated so a ratio just under a
      * whole number keeps the taps that ratio deserves. */
-    taps = (scene_h + fit.h / 2) / fit.h;
+    taps = ((UINT)part_h + fit.h / 2) / fit.h;
     if (taps < 1) taps = 1;
     if (taps > 8) taps = 8;
     if (!create(taps)) return E_FAIL;
@@ -494,8 +534,11 @@ HRESULT d3d8_display_resolve(RhiView *scene, UINT scene_w, UINT scene_h,
         ResolveConstants c;
         c.origin_x = (float)fit.x;
         c.origin_y = (float)fit.y;
-        c.ratio_x = (float)scene_w / (float)fit.w;
-        c.ratio_y = (float)scene_h / (float)fit.h;
+        c.ratio_x = part_w / (float)fit.w;
+        c.ratio_y = part_h / (float)fit.h;
+        c.src_x = (float)scene_w * crop[0];
+        c.src_y = (float)scene_h * crop[1];
+        c.pad0 = c.pad1 = 0.0f;
         c.texel_x = 1.0f / (float)scene_w;
         c.texel_y = 1.0f / (float)scene_h;
         c.inv_taps = 1.0f / (float)(taps * taps);

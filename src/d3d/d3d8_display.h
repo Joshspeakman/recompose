@@ -78,6 +78,10 @@ D3D8DisplayFit d3d8_display_fit(UINT shape_w, UINT shape_h, UINT bb_w, UINT bb_h
 void d3d8_display_output_shape(UINT scene_w, UINT scene_h,
                                UINT *shape_w, UINT *shape_h);
 
+/* The part of the frame shown (xbox_D3D8SetPresentCrop), as fractions
+ * x, y, w, h; 0 and the whole frame when there is none. */
+int  d3d8_display_crop(float out[4]);
+
 /* Draw `scene` into `fit` inside `out`, box filtered, painting everything
  * outside `fit` black so a window of a different shape gets bars rather
  * than a stretched picture. Binds `out` itself and puts back the render

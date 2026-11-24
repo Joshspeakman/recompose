@@ -1246,6 +1246,15 @@ void xbox_D3D8SetWideFrames(BOOL wide);
  * with xbox_D3D8SetWideFrames. Call once; without widescreen, nothing. */
 void xbox_D3D8SetWideFramesAuto(BOOL on);
 
+/* Show only part of the frame, scaled up to the window with bars as its
+ * shape needs: x, y, w, h as fractions of the frame (0..1); w or h of 0
+ * shows the whole frame again. For online co-op in a split-screen game:
+ * each machine runs the whole game and shows its own player's view of it
+ * (src/kernel/recomp_lockstep.h). Only the present changes; nothing the
+ * game can see does. The title sets it from what a frame drew, for the
+ * presents after. */
+void xbox_D3D8SetPresentCrop(float x, float y, float w, float h);
+
 /* The window now fills its screen (borderless fullscreen), or no longer
  * does. While it does, and the vrr setting allows (RECOMP_VRR, on by
  * default), frames are presented for a variable-refresh display

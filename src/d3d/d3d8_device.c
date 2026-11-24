@@ -343,11 +343,70 @@ const uint8_t *xbox_D3D8Presented(UINT *width, UINT *height)
     return g_presented;
 }
 
+/* RECOMP_PRESENT_DUMP=<prefix>: what reached the window, as BMP, every
+ * RECOMP_PRESENT_DUMP_EVERY_MS (default 5000), at most _MAX (default 24).
+ * The frame dumps (RECOMP_HLE_D3D8_DUMP) show the title's own frame; this
+ * shows the bars, a part of the frame shown alone (xbox_D3D8SetPresentCrop)
+ * and the overlay, as the player sees them. */
+static void dump_presented(void)
+{
+    static int ready = -1, count, max = 24;
+    static char prefix[512];
+    static unsigned long long every = 5000, next;
+    unsigned long long now;
+    uint32_t w = 0, h = 0, y;
+    uint8_t *px;
+    char path[600];
+    FILE *f;
+
+    if (ready < 0) {
+        const char *p = getenv("RECOMP_PRESENT_DUMP");
+        const char *e = getenv("RECOMP_PRESENT_DUMP_EVERY_MS");
+        const char *m = getenv("RECOMP_PRESENT_DUMP_MAX");
+        ready = p && *p;
+        if (ready)
+            snprintf(prefix, sizeof prefix, "%s", p);
+        if (e && *e) every = strtoull(e, NULL, 10);
+        if (m && *m) max = atoi(m);
+    }
+    if (!ready || count >= max)
+        return;
+    now = GetTickCount64();
+    if (next && now < next)
+        return;
+    next = now + every;
+    if (rhi_swapchain_readback(NULL, 0, &w, &h) != 0 || !w || !h)
+        return;
+    if (!(px = (uint8_t *)malloc((size_t)w * h * 4u)))
+        return;
+    if (rhi_swapchain_readback(px, w * 4u, &w, &h) == 0) {
+        snprintf(path, sizeof path, "%s%03d.bmp", prefix, count++);
+        if ((f = fopen(path, "wb")) != NULL) {
+            uint8_t hdr[54];
+            memset(hdr, 0, sizeof hdr);
+            hdr[0] = 'B'; hdr[1] = 'M';
+            *(uint32_t *)(hdr + 2) = 54u + w * h * 4u;
+            *(uint32_t *)(hdr + 10) = 54;
+            *(uint32_t *)(hdr + 14) = 40;
+            *(int32_t *)(hdr + 18) = (int32_t)w;
+            *(int32_t *)(hdr + 22) = (int32_t)h;
+            *(uint16_t *)(hdr + 26) = 1;
+            *(uint16_t *)(hdr + 28) = 32;
+            fwrite(hdr, 1, sizeof hdr, f);
+            for (y = h; y-- > 0; )              /* bottom-up */
+                fwrite(px + (size_t)y * w * 4u, 4, w, f);
+            fclose(f);
+        }
+    }
+    free(px);
+}
+
 static void keep_presented(void)
 {
     uint32_t w = 0, h = 0;
     uint8_t *buf;
 
+    dump_presented();
     if (!g_keep_presented || rhi_swapchain_readback(NULL, 0, &w, &h) != 0 || !w || !h)
         return;
     buf = (uint8_t *)realloc(g_presented, (size_t)w * h * 4u);
@@ -554,7 +613,14 @@ static void present_scene(void)
     {
         UINT shape_w, shape_h;
 
+        float crop[4];
+
         d3d8_display_output_shape(s->width, s->height, &shape_w, &shape_h);
+        /* Only part shown (xbox_D3D8SetPresentCrop): that part's shape. */
+        if (d3d8_display_crop(crop)) {
+            shape_w = (UINT)((float)shape_w * crop[2] * 1000.0f + 0.5f);
+            shape_h = (UINT)((float)shape_h * crop[3] * 1000.0f + 0.5f);
+        }
         fit = d3d8_display_fit(shape_w, shape_h, s->swap_width, s->swap_height);
     }
     d3d8_display_resolve(s->rhi_scene_srv, s->width, s->height, rhi_swapchain_view(), fit);
