@@ -69,6 +69,7 @@
 #include "touch_controls.h"        /* the on-screen controls */
 #include "d3d8_touch.h"
 #include "hle_settings.h"
+#include "recomp_lockstep.h"
 
 static void held_redraw(void);   /* with the overlay's switches, below */
 #include "hle.h"
@@ -6756,6 +6757,27 @@ HLE_EXPORT(D3DDevice_GetVisibilityTestResult)
     HLE_CALL_ORIGINAL(D3DDevice_GetVisibilityTestResult);
     if (g_eax != 0x88760828u)                 /* not D3DERR_TESTINCOMPLETE */
         return;
+    if (recomp_lockstep_active()) {
+        /* Under lockstep (src/kernel/recomp_lockstep.h) every machine must
+         * be told the same, and a count from this machine's GPU depends on
+         * its renderer, resolution and timing: TimeSplitters 2 keeps what it
+         * is told in its globals, and a Linux and a Windows copy parted
+         * there. Complete at once, with the conservative count below. */
+        static int said_lockstep;
+        const char *e = getenv("RECOMP_HLE_D3D8_VISIBLE_PIXELS");
+        uint32_t n = (e && *e) ? (uint32_t)strtoul(e, NULL, 0) : 0u;
+
+        if (result_va)
+            HLE_MEM32(result_va) = n;
+        if (stamp_va) {
+            HLE_MEM32(stamp_va) = recomp_lockstep_tick();
+            HLE_MEM32(stamp_va + 4) = 0;
+        }
+        if (!said_lockstep++)
+            fprintf(stderr, "[HLE-D3D8] visibility tests: answered %u pixel(s) at once "
+                    "under lockstep, the same on every machine\n", n);
+        HLE_RETURN(0);                        /* S_OK */
+    }
     if (visibility_on()) {
         uint32_t counted;
 
