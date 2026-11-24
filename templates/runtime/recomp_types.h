@@ -454,14 +454,39 @@ static inline double recomp_fp_round24(double x) {
  * 0xFFC00000, after a 0/0. So on ARM a NaN result whose operands were
  * numbers is made the console's. Only there: the result alone cannot say,
  * since the same game also carries a positive NaN of its own through its
- * arithmetic, which x86 keeps positive (flipping every 0x7FF8... result
- * turned those negative on the Mac). On x86 these are the bare operators. */
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
+ * arithmetic (flipping every 0x7FF8... result turned those negative on the
+ * Mac).
+ *
+ * And when both operands are NaN, every host: the CPU keeps the NaN of the
+ * machine instruction's first operand, and which operand that is, is the
+ * compiler's choice per site (it swaps a commutative add or multiply to suit
+ * its registers), so the same guest instruction kept the game's +NaN in one
+ * build and a 0/0's -NaN in another (the Mac session found TS2 doing exactly
+ * that before frame 4200 of its co-op recording). The x87 itself decides by
+ * the operands, measured on this kind of hardware (fadd, fsub, fmul, fdiv,
+ * popping and not, both orders): the NaN with the larger significand, and
+ * of two with the same, the positive one. That rule, here, on every host. */
+static inline double recomp_x87_two_nans(double a, double b) {
+    uint64_t x, y, mx, my;
+    memcpy(&x, &a, sizeof x);
+    memcpy(&y, &b, sizeof y);
+    mx = x & 0x000FFFFFFFFFFFFFull;
+    my = y & 0x000FFFFFFFFFFFFFull;
+    if (mx != my)
+        return mx > my ? a : b;
+    return (x >> 63) ? b : a;
+}
 static inline double recomp_x87_nan(double a, double b, double r) {
-    if (r != r && a == a && b == b) {
+    if (r == r)
+        return r;
+    if (a != a && b != b)
+        return recomp_x87_two_nans(a, b);
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
+    if (a == a && b == b) {
         uint64_t bits = 0xFFF8000000000000ull;
         memcpy(&r, &bits, sizeof r);
     }
+#endif
     return r;
 }
 #if defined(__GNUC__) || defined(__clang__)
@@ -470,9 +495,9 @@ static inline double recomp_x87_nan(double a, double b, double r) {
 #else
 #define RECOMP_X87(a, op, b) recomp_x87_nan((a), (b), (a) op (b))
 #endif
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
 #define RECOMP_X87_SQRT(x) recomp_x87_nan((x), 0.0, sqrt(x))
 #else
-#define RECOMP_X87(a, op, b) ((a) op (b))
 #define RECOMP_X87_SQRT(x) sqrt(x)
 #endif
 #define RECOMP_FCMP_CC(c) ((uint16_t)((c)==2 ? 0x4500u : (c)<0 ? 0x0100u : (c)>0 ? 0u : 0x4000u))
