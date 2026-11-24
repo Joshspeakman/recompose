@@ -238,9 +238,21 @@ void d3d8_display_output_shape(UINT scene_w, UINT scene_h,
 void xbox_D3D8DefaultWindowSize(UINT guest_w, UINT guest_h, UINT *width, UINT *height)
 {
     int w, h;
+    const char *size = getenv("RECOMP_WINDOW_SIZE");
 
     recomp_window_size((int)guest_w, (int)guest_h, d3d8_display_policy()->widescreen,
                        &w, &h);
+    /* RECOMP_WINDOW_SIZE=<w>x<h>: the window's client area, for a run whose
+     * picture is to be looked at at a real screen's size (the presented
+     * frame dumps read the window). Still fitted to the screen. */
+    if (size && *size) {
+        int sw = 0, sh = 0;
+
+        if (sscanf(size, "%dx%d", &sw, &sh) == 2 && sw >= 64 && sh >= 64) {
+            w = sw;
+            h = sh;
+        }
+    }
     if (width)  *width = (UINT)w;
     if (height) *height = (UINT)h;
 }

@@ -842,6 +842,7 @@ static HWND shadow_window(UINT width, UINT height)
      * with the menu over it whenever the menu asks (the flip gate). */
     xbox_Nv2aFlipGateSetHeldRedraw(held_redraw);
     recomp_menu_install();
+    xbox_D3D8SetTickSource(recomp_lockstep_tick);
     return req.hwnd;
 }
 
@@ -1031,6 +1032,7 @@ static HWND shadow_window(UINT width, UINT height)
     /* A setting changed while the title is held: the held frame again. */
     xbox_Nv2aFlipGateSetHeldRedraw(held_redraw);
     recomp_menu_install();          /* Esc: the in-game menu, drawn over each present */
+    xbox_D3D8SetTickSource(recomp_lockstep_tick);
     target = host_window_present_target(g_shadow_host);
     if (!target) {
         fprintf(stderr, "[HLE-D3D8] shadow: the window has nothing this renderer can "

@@ -1267,6 +1267,10 @@ void xbox_D3D8SetDrawFilter(int (*keep)(void));
  * width and height its size. Called on the presenting thread. NULL: nothing. */
 void xbox_D3D8SetUiHook(void (*draw)(void *out_view, unsigned width, unsigned height));
 
+/* The frame number the presented-frame dumps are keyed to
+ * (RECOMP_PRESENT_DUMP_TICKS): the lockstep tick. */
+void xbox_D3D8SetTickSource(uint32_t (*tick)(void));
+
 /* The window now fills its screen (borderless fullscreen), or no longer
  * does. While it does, and the vrr setting allows (RECOMP_VRR, on by
  * default), frames are presented for a variable-refresh display

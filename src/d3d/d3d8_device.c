@@ -343,18 +343,34 @@ const uint8_t *xbox_D3D8Presented(UINT *width, UINT *height)
     return g_presented;
 }
 
+/* The frame number dumps are keyed to (xbox_D3D8SetTickSource): the
+ * lockstep tick, so a recording replayed at two resolutions, or on two
+ * renderers, dumps the very same frames to compare. */
+static uint32_t (*g_tick_source)(void);
+
+void xbox_D3D8SetTickSource(uint32_t (*tick)(void))
+{
+    g_tick_source = tick;
+}
+
 /* RECOMP_PRESENT_DUMP=<prefix>: what reached the window, as BMP, every
  * RECOMP_PRESENT_DUMP_EVERY_MS (default 5000), at most _MAX (default 24).
  * The frame dumps (RECOMP_HLE_D3D8_DUMP) show the title's own frame; this
  * shows the bars, a part of the frame shown alone (xbox_D3D8SetPresentCrop)
- * and the overlay, as the player sees them. */
+ * and the overlay, as the player sees them.
+ *
+ * RECOMP_PRESENT_DUMP_TICKS=<t>,<t>,...: instead, the first frame presented
+ * at each of those ticks (xbox_D3D8SetTickSource), named <prefix>t<tick>.bmp
+ * -- the same frames whatever the resolution or the renderer, for a replayed
+ * recording. */
 static void dump_presented(void)
 {
-    static int ready = -1, count, max = 24;
+    static int ready = -1, count, max = 24, nticks, next_tick;
+    static uint32_t ticks[64];
     static char prefix[512];
     static unsigned long long every = 5000, next;
     unsigned long long now;
-    uint32_t w = 0, h = 0, y;
+    uint32_t w = 0, h = 0, y, tick = 0;
     uint8_t *px;
     char path[600];
     FILE *f;
@@ -363,24 +379,44 @@ static void dump_presented(void)
         const char *p = getenv("RECOMP_PRESENT_DUMP");
         const char *e = getenv("RECOMP_PRESENT_DUMP_EVERY_MS");
         const char *m = getenv("RECOMP_PRESENT_DUMP_MAX");
+        const char *t = getenv("RECOMP_PRESENT_DUMP_TICKS");
         ready = p && *p;
         if (ready)
             snprintf(prefix, sizeof prefix, "%s", p);
         if (e && *e) every = strtoull(e, NULL, 10);
         if (m && *m) max = atoi(m);
+        while (t && *t && nticks < 64) {
+            ticks[nticks++] = (uint32_t)strtoul(t, (char **)&t, 10);
+            while (*t == ',' || *t == ' ')
+                t++;
+        }
     }
     if (!ready || count >= max)
         return;
-    now = GetTickCount64();
-    if (next && now < next)
-        return;
-    next = now + every;
+    if (nticks) {
+        if (!g_tick_source || next_tick >= nticks)
+            return;
+        tick = g_tick_source();
+        if (tick < ticks[next_tick])
+            return;
+        while (next_tick < nticks && ticks[next_tick] <= tick)
+            next_tick++;
+    } else {
+        now = GetTickCount64();
+        if (next && now < next)
+            return;
+        next = now + every;
+    }
     if (rhi_swapchain_readback(NULL, 0, &w, &h) != 0 || !w || !h)
         return;
     if (!(px = (uint8_t *)malloc((size_t)w * h * 4u)))
         return;
     if (rhi_swapchain_readback(px, w * 4u, &w, &h) == 0) {
-        snprintf(path, sizeof path, "%s%03d.bmp", prefix, count++);
+        if (tick)
+            snprintf(path, sizeof path, "%st%05u.bmp", prefix, tick);
+        else
+            snprintf(path, sizeof path, "%s%03d.bmp", prefix, count);
+        count++;
         if ((f = fopen(path, "wb")) != NULL) {
             uint8_t hdr[54];
             memset(hdr, 0, sizeof hdr);
