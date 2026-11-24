@@ -26,7 +26,7 @@
 # title's CMakeLists need not ask which host it is on.
 
 function(recomp_add_launcher TARGET GAME_EXE)
-    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "DEFAULTS;BRAND;ICON" "" ${ARGN})
+    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "DEFAULTS;BRAND;ICON;THEME" "" ${ARGN})
     set(_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
 
     if(WIN32)
@@ -36,6 +36,8 @@ function(recomp_add_launcher TARGET GAME_EXE)
             ${_dir}/launcher_theme.c
             ${_dir}/launcher_theme_gdi.c
             ${_dir}/launcher_bindings.c
+            ${_dir}/launcher_art.c
+            ${_dir}/launcher_image.c
         )
         if(COMMAND xboxrecomp_icon_rc)
             # ICON <file.ico>: the title's own; else XBOXRECOMP_TITLE_ICON, else
@@ -54,6 +56,8 @@ function(recomp_add_launcher TARGET GAME_EXE)
             ${_dir}/launcher_theme.c
             ${_dir}/launcher_theme_coretext.c
             ${_dir}/launcher_bindings.c
+            ${_dir}/launcher_art.c
+            ${_dir}/launcher_image.c
         )
         # Objective-C, compiled by the C compiler (clang on any Mac) so a
         # title need not enable another language for one small file.
@@ -73,6 +77,8 @@ function(recomp_add_launcher TARGET GAME_EXE)
             ${_dir}/launcher_theme.c
             ${_dir}/launcher_theme_freetype.c
             ${_dir}/launcher_bindings.c
+            ${_dir}/launcher_art.c
+            ${_dir}/launcher_image.c
         )
         target_link_libraries(${TARGET} PRIVATE Freetype::Freetype Fontconfig::Fontconfig m)
     else()
@@ -86,7 +92,8 @@ function(recomp_add_launcher TARGET GAME_EXE)
         string(REGEX REPLACE "\\.exe$" "" GAME_EXE "${GAME_EXE}")
     endif()
 
-    target_include_directories(${TARGET} PRIVATE ${_dir})
+    # third_party/stb: stb_image, for a title's artwork (launcher_image.c).
+    target_include_directories(${TARGET} PRIVATE ${_dir} ${_dir}/../../third_party/stb)
     target_compile_definitions(${TARGET} PRIVATE
         LAUNCHER_GAME_EXE="${GAME_EXE}"
     )
@@ -153,6 +160,12 @@ function(recomp_add_launcher TARGET GAME_EXE)
     # than the toolkit's. Without it, "Recompose - <the game's name>".
     if(_launcher_BRAND)
         target_compile_definitions(${TARGET} PRIVATE LAUNCHER_BRAND="${_launcher_BRAND}")
+    endif()
+    # THEME <header>: the title's colours and where its artwork is fetched
+    # from (launcher_theme.h, launcher_art.c). Without it, the toolkit's look.
+    if(_launcher_THEME)
+        get_filename_component(_theme "${_launcher_THEME}" ABSOLUTE)
+        target_compile_definitions(${TARGET} PRIVATE LAUNCHER_THEME_HEADER="${_theme}")
     endif()
     # COOP: the title's build supports online co-op (it hooks its frame for
     # src/kernel/recomp_lockstep.h), so the System Link tab offers hosting

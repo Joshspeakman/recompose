@@ -91,6 +91,197 @@ static int background_cache(void)
     return 1;
 }
 
+/* ------------------------------------------------------------ pictures */
+
+static const uint32_t *g_bd;          /* the backdrop as given */
+static int             g_bd_w, g_bd_h;
+static uint32_t       *g_bd_fit;      /* it, cropped and darkened, at the buffer's size */
+static int             g_bd_fit_w, g_bd_fit_h;
+static const uint32_t *g_bd_fit_of;
+
+void theme_backdrop(const uint32_t *argb, int w, int h)
+{
+    g_bd = argb && w > 0 && h > 0 ? argb : NULL;
+    g_bd_w = w;
+    g_bd_h = h;
+}
+
+/* One pass of a box blur, radius r, along rows (dx 1) or columns: three
+ * passes are close to a Gaussian. In place, through a row's copy. */
+static void box_pass(float *c, int w, int h, int r, int along_rows)
+{
+    int len = along_rows ? w : h, lines = along_rows ? h : w, line, i, ch;
+    float *tmp = malloc((size_t)len * 3 * sizeof *tmp);
+
+    if (!tmp || r < 1) {
+        free(tmp);
+        return;
+    }
+    for (line = 0; line < lines; line++) {
+        for (i = 0; i < len; i++) {
+            size_t at = along_rows ? (size_t)line * w + i : (size_t)i * w + line;
+
+            for (ch = 0; ch < 3; ch++)
+                tmp[i * 3 + ch] = c[at * 3 + ch];
+        }
+        for (ch = 0; ch < 3; ch++) {
+            double sum = 0;
+            int lo, hi;
+
+            for (i = -r; i <= r; i++)
+                sum += tmp[(i < 0 ? 0 : i >= len ? len - 1 : i) * 3 + ch];
+            for (i = 0; i < len; i++) {
+                size_t at = along_rows ? (size_t)line * w + i : (size_t)i * w + line;
+
+                c[at * 3 + ch] = (float)(sum / (2 * r + 1));
+                lo = i - r < 0 ? 0 : i - r;
+                hi = i + r + 1 >= len ? len - 1 : i + r + 1;
+                sum += tmp[hi * 3 + ch] - tmp[lo * 3 + ch];
+            }
+        }
+    }
+    free(tmp);
+}
+
+/* The backdrop scaled to cover the buffer (cropped to its shape, a little
+ * above centre: key art keeps its faces high), averaged over each target
+ * pixel's footprint, softened, then darkened -- lightly behind the logo at
+ * the top, heavily behind the rows and buttons -- and drawn toward the
+ * title's own background colour as it darkens, so text and panels over it
+ * read. Worked out once per size and picture. */
+static int backdrop_draw(void)
+{
+    size_t n = (size_t)theme_w * theme_h;
+    double k, ox, oy;
+    float *c;
+    int x, y, pass, radius;
+
+    if (!g_bd)
+        return 0;
+    if (!(g_bd_fit && g_bd_fit_w == theme_w && g_bd_fit_h == theme_h && g_bd_fit_of == g_bd)) {
+        free(g_bd_fit);
+        g_bd_fit = malloc(n * sizeof *g_bd_fit);
+        c = malloc(n * 3 * sizeof *c);
+        if (!g_bd_fit || !c) {
+            free(g_bd_fit);
+            free(c);
+            g_bd_fit = NULL;
+            return 0;
+        }
+        k = (double)g_bd_w / theme_w > (double)g_bd_h / theme_h
+            ? (double)g_bd_h / theme_h : (double)g_bd_w / theme_w;   /* source px per pixel */
+        ox = (g_bd_w - theme_w * k) * 0.5;
+        oy = (g_bd_h - theme_h * k) * 0.35;
+        for (y = 0; y < theme_h; y++) {
+            int sy0 = (int)(oy + y * k), sy1 = (int)(oy + (y + 1) * k);
+
+            if (sy1 <= sy0) sy1 = sy0 + 1;
+            if (sy1 > g_bd_h) sy1 = g_bd_h;
+            for (x = 0; x < theme_w; x++) {
+                int sx0 = (int)(ox + x * k), sx1 = (int)(ox + (x + 1) * k), sx, sy;
+                double r = 0, g = 0, b = 0, cnt = 0;
+
+                if (sx1 <= sx0) sx1 = sx0 + 1;
+                if (sx1 > g_bd_w) sx1 = g_bd_w;
+                for (sy = sy0; sy < sy1; sy++)
+                    for (sx = sx0; sx < sx1; sx++) {
+                        uint32_t p = g_bd[(size_t)sy * g_bd_w + sx];
+
+                        r += (p >> 16) & 0xFF;
+                        g += (p >> 8) & 0xFF;
+                        b += p & 0xFF;
+                        cnt++;
+                    }
+                if (cnt < 1) cnt = 1;
+                c[((size_t)y * theme_w + x) * 3 + 0] = (float)(r / cnt);
+                c[((size_t)y * theme_w + x) * 3 + 1] = (float)(g / cnt);
+                c[((size_t)y * theme_w + x) * 3 + 2] = (float)(b / cnt);
+            }
+        }
+        /* Soft, so it is a mood behind the settings and not a second thing
+         * to read: about four window units. */
+        radius = (int)(4 * theme_scale + 0.5);
+        for (pass = 0; pass < 3; pass++) {
+            box_pass(c, theme_w, theme_h, radius, 1);
+            box_pass(c, theme_w, theme_h, radius, 0);
+        }
+        for (y = 0; y < theme_h; y++) {
+            double fy = (double)y / theme_h;
+            /* 0.50 behind the logo, 0.24 by the tabs, 0.12 at the bottom. */
+            double shade = fy < 0.10 ? 0.50
+                         : fy < 0.20 ? 0.50 - 0.26 * (fy - 0.10) / 0.10
+                         : 0.24 - 0.12 * (fy - 0.20) / 0.80;
+
+            for (x = 0; x < theme_w; x++) {
+                double nx = (x - theme_w * 0.5) / (theme_w * 0.5);
+                double v = shade * (1.0 - 0.30 * nx * nx);
+                const float *q = &c[((size_t)y * theme_w + x) * 3];
+                double r = q[0] * v + ((THEME_BG_RGB >> 16) & 0xFF) * (1 - v);
+                double g = q[1] * v + ((THEME_BG_RGB >> 8) & 0xFF) * (1 - v);
+                double b = q[2] * v + (THEME_BG_RGB & 0xFF) * (1 - v);
+
+                g_bd_fit[(size_t)y * theme_w + x] =
+                    ((uint32_t)(r > 255 ? 255 : r) << 16) | ((uint32_t)(g > 255 ? 255 : g) << 8) |
+                    (uint32_t)(b > 255 ? 255 : b);
+            }
+        }
+        free(c);
+        g_bd_fit_w = theme_w;
+        g_bd_fit_h = theme_h;
+        g_bd_fit_of = g_bd;
+    }
+    memcpy(theme_px, g_bd_fit, n * sizeof *theme_px);
+    return 1;
+}
+
+/* A picture fitted into r, sampled with a box filter, its alpha honoured. */
+void theme_picture(ThemeRect r, const uint32_t *argb, int w, int h, ThemeAlign align)
+{
+    const double s = theme_scale;
+    double fit, dw, dh, x0, y0, k;
+    int x, y, px0, py0, px1, py1;
+
+    if (!theme_px || !argb || w <= 0 || h <= 0 || r.w <= 0 || r.h <= 0)
+        return;
+    fit = (double)r.w / w < (double)r.h / h ? (double)r.w / w : (double)r.h / h;
+    dw = w * fit * s;
+    dh = h * fit * s;
+    x0 = align == THEME_LEFT ? r.x * s : align == THEME_RIGHT ? (r.x + r.w) * s - dw
+                                                              : (r.x + r.w * 0.5) * s - dw * 0.5;
+    y0 = (r.y + r.h * 0.5) * s - dh * 0.5;
+    k = w / dw;                                    /* source px per pixel */
+    px0 = (int)x0; py0 = (int)y0; px1 = (int)(x0 + dw); py1 = (int)(y0 + dh);
+    for (y = py0; y < py1; y++) {
+        int sy0 = (int)((y - y0) * k), sy1 = (int)((y + 1 - y0) * k);
+
+        if (sy0 < 0) sy0 = 0;
+        if (sy1 <= sy0) sy1 = sy0 + 1;
+        if (sy1 > h) sy1 = h;
+        for (x = px0; x < px1; x++) {
+            int sx0 = (int)((x - x0) * k), sx1 = (int)((x + 1 - x0) * k), sx, sy;
+            double r_ = 0, g = 0, b = 0, a = 0, cnt = 0;
+
+            if (sx0 < 0) sx0 = 0;
+            if (sx1 <= sx0) sx1 = sx0 + 1;
+            if (sx1 > w) sx1 = w;
+            for (sy = sy0; sy < sy1; sy++)
+                for (sx = sx0; sx < sx1; sx++) {
+                    uint32_t p = argb[(size_t)sy * w + sx];
+                    double pa = ((p >> 24) & 0xFF) / 255.0;
+
+                    r_ += ((p >> 16) & 0xFF) * pa;
+                    g += ((p >> 8) & 0xFF) * pa;
+                    b += (p & 0xFF) * pa;
+                    a += pa;
+                    cnt++;
+                }
+            if (a <= 0 || cnt < 1)
+                continue;
+            blend(x, y, (int)(r_ / a), (int)(g / a), (int)(b / a), a / cnt);
+        }
+    }
+}
+
 void theme_background(double pulse)
 {
     /* Two glows behind the content, the larger one breathing. The
@@ -102,6 +293,8 @@ void theme_background(double pulse)
 
     if (!theme_px || !background_cache())
         return;
+    if (backdrop_draw())
+        return;
 
     n = (size_t)theme_w * theme_h;
     for (i = 0; i < n; i++) {
@@ -110,9 +303,9 @@ void theme_background(double pulse)
         double b = clamp01(1.0 - d / small);
         double v = a * a * 0.22 + b * b * 0.28;
         double k = g_bg_vignette[i];
-        int r = (int)(0x18 + v * 0x30);
-        int g = (int)(0x1E + v * 0xB0);
-        int bl = (int)(0x12 + v * 0x22);
+        int r = (int)((((THEME_BG_RGB) >> 16) & 0xFF) + v * (((THEME_GLOW_RGB) >> 16) & 0xFF));
+        int g = (int)((((THEME_BG_RGB) >> 8) & 0xFF) + v * (((THEME_GLOW_RGB) >> 8) & 0xFF));
+        int bl = (int)(((THEME_BG_RGB) & 0xFF) + v * ((THEME_GLOW_RGB) & 0xFF));
 
         /* A vignette, so the edges fall away and the eye goes to the
          * middle: black over it, as blend() would put it. */
@@ -183,21 +376,21 @@ void theme_panel(ThemeRect r, double lit)
                 double edge = clamp01(-d * s);        /* antialias the rim */
                 double fill = 0.55 + 0.20 * lit;
 
-                blend(x, y, (int)(0x0A + 0x18 * lit),
-                            (int)(0x12 + 0x3C * lit),
-                            (int)(0x08 + 0x0E * lit), fill * edge);
+                blend(x, y, (int)((((THEME_SLAB_RGB) >> 16) & 0xFF) + (((THEME_SLAB_LIT_RGB) >> 16) & 0xFF) * lit),
+                            (int)((((THEME_SLAB_RGB) >> 8) & 0xFF) + (((THEME_SLAB_LIT_RGB) >> 8) & 0xFF) * lit),
+                            (int)(((THEME_SLAB_RGB) & 0xFF) + ((THEME_SLAB_LIT_RGB) & 0xFF) * lit), fill * edge);
             } else {
                 /* Outside: the glow, which only exists when lit. */
                 double g = exp(-d / falloff) * strength;
 
-                blend(x, y, 0x9B, 0xCE, 0x1E, g);
+                blend(x, y, (((THEME_ACCENT_RGB) >> 16) & 0xFF), (((THEME_ACCENT_RGB) >> 8) & 0xFF), ((THEME_ACCENT_RGB) & 0xFF), g);
             }
             /* The rim itself, brightest right on the boundary. */
             if (d > -2.0 && d < 1.0) {
                 double rim = 1.0 - fabs(d + 0.5) / 1.5;
 
                 if (rim > 0)
-                    blend(x, y, 0x9B, 0xCE, 0x1E, rim * (0.25 + 0.6 * lit));
+                    blend(x, y, (((THEME_ACCENT_RGB) >> 16) & 0xFF), (((THEME_ACCENT_RGB) >> 8) & 0xFF), ((THEME_ACCENT_RGB) & 0xFF), rim * (0.25 + 0.6 * lit));
             }
         }
     }
@@ -238,12 +431,14 @@ void theme_bar(ThemeRect r, double fraction, double phase)
                 /* Brighter along the top, as the panels' rims are. */
                 double t = (py - r.y) / (double)r.h;
 
-                blend(x, y, (int)(0x9B - 0x30 * t), (int)(0xCE - 0x30 * t),
-                            (int)(0x1E - 0x0A * t), edge);
-                blend(x, y, 0xE4, 0xF5, 0xB0, 0.45 * glow * edge);
+                blend(x, y, (int)((((THEME_ACCENT_RGB) >> 16) & 0xFF) - (((THEME_BAR_DARKEN_RGB) >> 16) & 0xFF) * t),
+                            (int)((((THEME_ACCENT_RGB) >> 8) & 0xFF) - (((THEME_BAR_DARKEN_RGB) >> 8) & 0xFF) * t),
+                            (int)(((THEME_ACCENT_RGB) & 0xFF) - ((THEME_BAR_DARKEN_RGB) & 0xFF) * t), edge);
+                blend(x, y, (((THEME_HILITE_RGB) >> 16) & 0xFF), (((THEME_HILITE_RGB) >> 8) & 0xFF), ((THEME_HILITE_RGB) & 0xFF),
+                      0.45 * glow * edge);
             } else {
-                blend(x, y, 0x10, 0x1A, 0x0C, 0.85 * edge);
-                blend(x, y, 0x9B, 0xCE, 0x1E, 0.12 * glow * edge);
+                blend(x, y, (((THEME_TRACK_RGB) >> 16) & 0xFF), (((THEME_TRACK_RGB) >> 8) & 0xFF), ((THEME_TRACK_RGB) & 0xFF), 0.85 * edge);
+                blend(x, y, (((THEME_ACCENT_RGB) >> 16) & 0xFF), (((THEME_ACCENT_RGB) >> 8) & 0xFF), ((THEME_ACCENT_RGB) & 0xFF), 0.12 * glow * edge);
             }
         }
     }
@@ -265,7 +460,7 @@ static void underline_row(int x0, int x1, int y, int row, double alpha)
         if (run < 10) edge = run / 10.0;        /* fade the ends */
         if (left < 10) edge = left / 10.0;
         for (py = py0; py < py1; py++)
-            blend(px, py, 0x9B, 0xCE, 0x1E, alpha * edge);
+            blend(px, py, (((THEME_ACCENT_RGB) >> 16) & 0xFF), (((THEME_ACCENT_RGB) >> 8) & 0xFF), ((THEME_ACCENT_RGB) & 0xFF), alpha * edge);
     }
 }
 
@@ -304,9 +499,9 @@ void theme_arrows(ThemeRect r, int can_left, int can_right, double lit)
 
         for (j = -run / 2; j <= run / 2; j++) {
             if (can_left)
-                blend(left + i, cy + j, 0x9B, 0xCE, 0x1E, a);
+                blend(left + i, cy + j, (((THEME_ACCENT_RGB) >> 16) & 0xFF), (((THEME_ACCENT_RGB) >> 8) & 0xFF), ((THEME_ACCENT_RGB) & 0xFF), a);
             if (can_right)
-                blend(right - i, cy + j, 0x9B, 0xCE, 0x1E, a);
+                blend(right - i, cy + j, (((THEME_ACCENT_RGB) >> 16) & 0xFF), (((THEME_ACCENT_RGB) >> 8) & 0xFF), ((THEME_ACCENT_RGB) & 0xFF), a);
         }
     }
 }

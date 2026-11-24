@@ -17,10 +17,10 @@
 #ifndef XBOXRECOMP_LAUNCHER_THEME_H
 #define XBOXRECOMP_LAUNCHER_THEME_H
 
+#include <stdint.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
-#include <stdint.h>
 /* GDI's colour, 0x00BBGGRR, so the colours below read the same everywhere. */
 typedef uint32_t COLORREF;
 #define RGB(r, g, b) ((COLORREF)(((r) & 0xFF) | (((g) & 0xFF) << 8) | \
@@ -28,12 +28,55 @@ typedef uint32_t COLORREF;
 #endif
 
 typedef struct ThemeRect { int x, y, w, h; } ThemeRect;
+typedef enum { THEME_LEFT, THEME_CENTRE, THEME_RIGHT } ThemeAlign;
 
-/* The Xbox green, and the darker shades that go with it. */
-#define THEME_GREEN      RGB(0x9B, 0xCE, 0x1E)
-#define THEME_GREEN_DIM  RGB(0x4E, 0x6C, 0x14)
-#define THEME_TEXT       RGB(0xE8, 0xF2, 0xD8)
-#define THEME_TEXT_DIM   RGB(0x8A, 0x97, 0x7C)
+/* A title's own look (recomp_add_launcher THEME <header>): its header defines
+ * any of the colours below, as 0xRRGGBB, and where its artwork can be fetched
+ * (launcher_art.c). What it leaves out is the toolkit's own, the dashboard's
+ * green, so a title without one looks as it always did. */
+#ifdef LAUNCHER_THEME_HEADER
+#include LAUNCHER_THEME_HEADER
+#endif
+#ifndef THEME_ACCENT_RGB
+#define THEME_ACCENT_RGB      0x9BCE1E   /* glows, rims, the bar, the underline */
+#endif
+#ifndef THEME_ACCENT_DIM_RGB
+#define THEME_ACCENT_DIM_RGB  0x4E6C14
+#endif
+#ifndef THEME_HILITE_RGB
+#define THEME_HILITE_RGB      0xE4F5B0   /* the bar's moving highlight */
+#endif
+#ifndef THEME_BAR_DARKEN_RGB
+#define THEME_BAR_DARKEN_RGB  0x30300A   /* the bar's fill darkens by this downwards */
+#endif
+#ifndef THEME_TRACK_RGB
+#define THEME_TRACK_RGB       0x101A0C   /* the bar's empty track */
+#endif
+#ifndef THEME_SLAB_RGB
+#define THEME_SLAB_RGB        0x0A1208   /* a panel at rest */
+#endif
+#ifndef THEME_SLAB_LIT_RGB
+#define THEME_SLAB_LIT_RGB    0x183C0E   /* added to it as it lights */
+#endif
+#ifndef THEME_BG_RGB
+#define THEME_BG_RGB          0x181E12   /* the background, outside the glow */
+#endif
+#ifndef THEME_GLOW_RGB
+#define THEME_GLOW_RGB        0x30B022   /* added to it at the glow's heart */
+#endif
+#ifndef THEME_TEXT_RGB
+#define THEME_TEXT_RGB        0xE8F2D8
+#endif
+#ifndef THEME_TEXT_DIM_RGB
+#define THEME_TEXT_DIM_RGB    0x8A977C
+#endif
+#define THEME_RGB_(v) RGB(((v) >> 16) & 0xFF, ((v) >> 8) & 0xFF, (v) & 0xFF)
+
+/* The accent (the Xbox green unless a title says otherwise), and the rest. */
+#define THEME_GREEN      THEME_RGB_(THEME_ACCENT_RGB)
+#define THEME_GREEN_DIM  THEME_RGB_(THEME_ACCENT_DIM_RGB)
+#define THEME_TEXT       THEME_RGB_(THEME_TEXT_RGB)
+#define THEME_TEXT_DIM   THEME_RGB_(THEME_TEXT_DIM_RGB)
 
 /* A back buffer the size of the window. Everything below draws into it
  * and theme_present puts it on screen in one go, so nothing flickers. */
@@ -59,13 +102,23 @@ void *theme_image(void);
  * did rather than sitting still. */
 void theme_background(double pulse);
 
+/* A picture behind everything instead of the glow: `argb` (0xAARRGGBB rows,
+ * w by h) fills the window, cropped to its shape, and is darkened downwards
+ * so the panels over it read. Kept by pointer, not copied: NULL goes back to
+ * the glow. */
+void theme_backdrop(const uint32_t *argb, int w, int h);
+
+/* A picture with its own transparency, as large as fits in `r` without
+ * changing its shape, aligned left, centred or right. A clear logo where the
+ * game's name would be written. */
+void theme_picture(ThemeRect r, const uint32_t *argb, int w, int h, ThemeAlign align);
+
 /* A panel. `lit` from 0 (resting) to 1 (selected) takes it from a dark
  * translucent slab to one edged and washed with green. */
 void theme_panel(ThemeRect r, double lit);
 
 /* Text, left/centre/right aligned within `r`. `size` is a point size;
  * `weight` is 400 for normal and 700 for bold. */
-typedef enum { THEME_LEFT, THEME_CENTRE, THEME_RIGHT } ThemeAlign;
 void theme_text(ThemeRect r, const char *text, int size, int weight,
                 COLORREF colour, ThemeAlign align);
 

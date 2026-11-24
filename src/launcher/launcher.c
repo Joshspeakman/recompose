@@ -38,6 +38,7 @@
 
 #include "launcher.h"
 #include "launcher_theme.h"
+#include "launcher_art.h"
 #include "launcher_bindings.h"
 #include "recomp_config.h"
 #include "recomp_pad.h"
@@ -1897,6 +1898,21 @@ static void draw_setup(void)
     } else if (g_rel_note[0]) {
         r.h = 40;
         theme_text_wrapped(r, g_rel_note, 12, THEME_TEXT_DIM);
+    } else {
+        /* The drop target: the whole window takes a drop, but this is where
+         * the eye goes to see that it does. */
+        ThemeRect t;
+
+        /* Breathing slowly with the background (g_pulse, ~2.8 s a cycle). */
+        theme_panel(r, 0.12 + 0.10 * (g_pulse < 0.5 ? g_pulse * 2.0 : (1.0 - g_pulse) * 2.0));
+        t = r;
+        t.y = r.y + r.h / 2 - 44; t.h = 34;
+        theme_text(t, "Drop the game here", 20, 700, THEME_TEXT, THEME_CENTRE);
+        t.y += 40; t.h = 22;
+        theme_text(t, "a disc image (.iso, .xiso), or the folder with default.xbe in it",
+                   12, 400, THEME_TEXT_DIM, THEME_CENTRE);
+        t.y += 26;
+        theme_text(t, g_title_name, 12, 700, THEME_GREEN, THEME_CENTRE);
     }
 
     r.x = 60; r.y = g_ch - 44; r.w = g_cw - 120; r.h = 24;
@@ -2094,11 +2110,31 @@ static void draw(void)
     ThemeRect r;
     int i;
 
+    {
+        /* The title's artwork behind it all, once it is there (launcher_art.c). */
+        int w = 0, h = 0;
+        const uint32_t *bd = launcher_art_backdrop(&w, &h);
+
+        theme_backdrop(bd, w, h);
+    }
     theme_background(g_pulse);
 
-    /* Title. The game's own name, from its certificate. */
+    /* Title: the game's clear logo when there is one, else its own name,
+     * from its certificate. */
     r.x = 60; r.y = 30; r.w = g_cw - 120; r.h = 46;
-    theme_text(r, g_title_name, 26, 700, THEME_TEXT, THEME_LEFT);
+    {
+        int w = 0, h = 0;
+        const uint32_t *logo = launcher_art_logo(&w, &h);
+
+        if (logo) {
+            ThemeRect lr = r;
+
+            lr.y = 14; lr.h = 74; lr.w = 340;
+            theme_picture(lr, logo, w, h, THEME_LEFT);
+        } else {
+            theme_text(r, g_title_name, 26, 700, THEME_TEXT, THEME_LEFT);
+        }
+    }
 
     /* A release without its game yet: the disc, or the build. */
     if (g_release && g_rel != REL_READY) {
@@ -2396,6 +2432,7 @@ void launcher_init(void)
 
     release_init();
     read_title();
+    launcher_art_init(g_title_id);
     settings_load();
     bindings_load();
     build_rows();
@@ -2600,6 +2637,7 @@ void launcher_tick(void)
 
     g_pulse += 0.006;
     if (g_pulse > 1.0) g_pulse -= 1.0;
+    launcher_art_tick();
     if (g_tab_t < 1.0) {
         g_tab_t += 0.12;
         if (g_tab_t > 1.0) g_tab_t = 1.0;
