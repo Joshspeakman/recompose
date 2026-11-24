@@ -2373,6 +2373,15 @@ void launcher_init(void)
     settings_load();
     bindings_load();
     build_rows();
+    /* RECOMP_LAUNCHER_TAB=<0..3>: open on that tab (video, input, System
+     * Link, about), so a screenshot (RECOMP_LAUNCHER_SHOT) can show it. */
+    {
+        const char *t = getenv("RECOMP_LAUNCHER_TAB");
+        if (t && *t && atoi(t) >= 0 && atoi(t) < TAB_COUNT) {
+            g_tab = (Tab)atoi(t);
+            g_tab_t = 1.0;
+        }
+    }
     rows_for_tab();
     /* RECOMP_LAUNCHER_BUILD=<image or folder>: build from it straight away,
      * for a front end that already knows where the disc is, and for a
