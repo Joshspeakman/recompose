@@ -52,7 +52,7 @@ or the title's settings file says `coop = host|join`.
 | Source of difference | Under lockstep |
 | --- | --- |
 | Frame length | One step per frame everywhere; a slow machine slows the game rather than skipping ahead |
-| Controllers | Latched once a frame for every connected port; which ports, from which frame (30), fixed |
+| Controllers | Latched once a frame for every connected port; which ports, from which frame (30), fixed. A title with native mouse look (`recomp_mouse_look_native`) gets each machine's mouse latched with its controller as an angle (1/64 degree), so both turn a player alike |
 | Clocks | `rdtsc`, `KeQueryPerformanceCounter`, `KeQueryInterruptTime`, `KeQuerySystemTime`, `KeTickCount` count frames from the session's epoch (1 us more per read within a frame, per thread); time zone UTC; file times the epoch. TS2 seeds its random numbers from the time of day |
 | Sound | DirectSound's play state on frame time (whether a sound has finished feeds TS2's voice pool); stream packets and notifications complete at the frame boundary, never from the host device's position |
 | Other guest threads | Run only at frame boundaries, one at a time, while the frame's thread waits; a Sleep is counted in frames. TS2's music streamer is one, and its level start waited on it |
@@ -68,6 +68,7 @@ with the tools below.
 ## Finding a difference
 
 A **trace** (`RECOMP_LOCKSTEP_TRACE=<file>`) holds each frame's controllers
+(18 bytes a pad, 22 when it carries the mouse's look)
 and a hash of the named state per 4 KB page. A **replay**
 (`RECOMP_LOCKSTEP_REPLAY=<trace>`) feeds a trace's controllers back and says
 at which frame the state first differs, and in which pages. Then:
