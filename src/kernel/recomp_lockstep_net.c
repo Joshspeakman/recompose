@@ -208,15 +208,108 @@ static void header(uint8_t *b, int type)
     b[0] = 'X'; b[1] = 'L'; b[2] = 'S'; b[3] = (uint8_t)LS_VERSION; b[4] = (uint8_t)type;
 }
 
+/* For trying the internet on one machine, applied to what this copy sends:
+ *   RECOMP_LOCKSTEP_SIM_DELAY_MS=50   hold every message back this long
+ *   RECOMP_LOCKSTEP_SIM_LOSS=5        drop this percentage of them
+ * Held messages wait in a queue the receive thread sends from. */
+#define SIM_QUEUE 512
+static struct {
+    int ready, delay_ms, loss;
+    uint32_t rng;
+    struct { uint64_t due; struct sockaddr_in to; int n; uint8_t b[1100]; } q[SIM_QUEUE];
+    int head, count;
+#ifdef _WIN32
+    CRITICAL_SECTION cs;
+#else
+    pthread_mutex_t cs;
+#endif
+} s_sim;
+
+static void sim_lock(void)
+{
+#ifdef _WIN32
+    EnterCriticalSection(&s_sim.cs);
+#else
+    pthread_mutex_lock(&s_sim.cs);
+#endif
+}
+
+static void sim_unlock(void)
+{
+#ifdef _WIN32
+    LeaveCriticalSection(&s_sim.cs);
+#else
+    pthread_mutex_unlock(&s_sim.cs);
+#endif
+}
+
+static void sim_init(void)
+{
+    const char *d = getenv("RECOMP_LOCKSTEP_SIM_DELAY_MS");
+    const char *l = getenv("RECOMP_LOCKSTEP_SIM_LOSS");
+    s_sim.delay_ms = d && *d ? atoi(d) : 0;
+    s_sim.loss = l && *l ? atoi(l) : 0;
+    s_sim.rng = 0x9E3779B9u ^ (uint32_t)now_ms();
+#ifdef _WIN32
+    InitializeCriticalSection(&s_sim.cs);
+#else
+    pthread_mutex_init(&s_sim.cs, NULL);
+#endif
+    s_sim.ready = 1;
+    if (s_sim.delay_ms || s_sim.loss)
+        say("simulating the internet: %d ms more each way, %d%% of messages lost",
+            s_sim.delay_ms, s_sim.loss);
+}
+
+static void send_sock(const struct sockaddr_in *to, const uint8_t *b, int n)
+{
+    if (!s_sim.ready)
+        sim_init();
+    if (s_sim.loss) {
+        s_sim.rng = s_sim.rng * 1103515245u + 12345u;
+        if ((int)((s_sim.rng >> 16) % 100u) < s_sim.loss)
+            return;
+    }
+    if (s_sim.delay_ms && n <= (int)sizeof s_sim.q[0].b) {
+        sim_lock();
+        if (s_sim.count < SIM_QUEUE) {
+            int k = (s_sim.head + s_sim.count++) % SIM_QUEUE;
+            s_sim.q[k].due = now_ms() + (uint64_t)s_sim.delay_ms;
+            s_sim.q[k].to = *to;
+            s_sim.q[k].n = n;
+            memcpy(s_sim.q[k].b, b, (size_t)n);
+        }
+        sim_unlock();
+        return;
+    }
+    sendto(g.sock, (const char *)b, n, 0, (const struct sockaddr *)to, sizeof *to);
+}
+
+/* The receive thread: what is due goes out. */
+static void sim_flush(void)
+{
+    uint64_t now = now_ms();
+    if (!s_sim.ready || !s_sim.delay_ms)
+        return;
+    sim_lock();
+    while (s_sim.count && s_sim.q[s_sim.head].due <= now) {
+        sendto(g.sock, (const char *)s_sim.q[s_sim.head].b, s_sim.q[s_sim.head].n, 0,
+               (const struct sockaddr *)&s_sim.q[s_sim.head].to, sizeof s_sim.q[0].to);
+        s_sim.head = (s_sim.head + 1) % SIM_QUEUE;
+        s_sim.count--;
+    }
+    sim_unlock();
+}
+
 static void send_raw(const uint8_t *b, int n)
 {
     if (g.have_peer)
-        sendto(g.sock, (const char *)b, n, 0, (const struct sockaddr *)&g.peer, sizeof g.peer);
+        send_sock(&g.peer, b, n);
 }
 
 static void send_to(const struct sockaddr_in *to, const uint8_t *b, int n)
 {
-    sendto(g.sock, (const char *)b, n, 0, (const struct sockaddr *)to, sizeof *to);
+    send_sock(to, b, n);
 }
 
 /* ── files: the host's saves ──────────────────────────────────────── */
@@ -795,10 +888,11 @@ static void *receive_thread(void *arg)
         struct timeval tv;
         int r;
 
+        sim_flush();
         FD_ZERO(&rd);
         FD_SET(g.sock, &rd);
         tv.tv_sec = 0;
-        tv.tv_usec = 50000;
+        tv.tv_usec = s_sim.delay_ms ? 2000 : 50000;
         r = select((int)g.sock + 1, &rd, NULL, NULL, &tv);
         if (r > 0) {
             struct sockaddr_in from;
