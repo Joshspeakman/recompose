@@ -4704,10 +4704,14 @@ class Lifter:
             cop = {"fadd": "+", "fsub": "-", "fmul": "*", "fdiv": "/"}[core]
             pops = m.endswith("p")
 
+            # RECOMP_X87(a, op, b) is `a op b` on an x86 host; on ARM it
+            # also gives the x87's default NaN when the operation made one
+            # from two numbers (recomp_types.h), which ARM signs the other
+            # way.
             def _combine(dst, src):
                 if cop in ("+", "*") or not reverse:
-                    return f"{dst} = RECOMP_FP_PC({dst} {cop} {src});"
-                return f"{dst} = RECOMP_FP_PC({src} {cop} {dst});"   # reversed sub/div
+                    return f"{dst} = RECOMP_FP_PC(RECOMP_X87({dst}, {cop}, {src}));"
+                return f"{dst} = RECOMP_FP_PC(RECOMP_X87({src}, {cop}, {dst}));"   # reversed sub/div
 
             # Memory operand: dst is st0, no pop (memory forms never pop).
             if ops and ops[0].type == "mem":
@@ -4754,7 +4758,7 @@ class Lifter:
         if m == "fabs":
             return [f"fp_top() = fabs(fp_top()); /* fabs */"]
         if m == "fsqrt":
-            return [f"fp_top() = RECOMP_FP_PC(sqrt(fp_top())); /* fsqrt */"]
+            return [f"fp_top() = RECOMP_FP_PC(RECOMP_X87_SQRT(fp_top())); /* fsqrt */"]
         # x87 transcendentals. None of these were implemented, so every one fell
         # through to the unknown-op path and left the FP stack untouched --
         # silently, because an unimplemented FPU op looks exactly like an

@@ -437,30 +437,44 @@ static inline double recomp_fp_round24(double x) {
     x = frexp(x, &e);                      /* |x| in [0.5, 1): float-exact range */
     return ldexp((double)(float)x, e);
 }
-/* A NaN the operation made itself -- 0/0, inf - inf, 0 * inf, the root of a
- * negative, nothing NaN going in -- is the "default NaN", and the two
- * architectures disagree on its sign: the x87 (the console's) and x86 make
- * the indefinite, 0xFFF8000000000000 (0xFFC00000 stored as a float), sign
- * set; ARM makes 0x7FF8000000000000, sign clear. No comparison can tell them
- * apart, but the bits are what gets stored, and two machines in a lockstep
- * session that keep different bytes no longer hash the same: TimeSplitters 2
- * on an Apple Silicon Mac stored 0x7FC00000 where Windows and Linux stored
- * 0xFFC00000, in its matrices, for a while after a 0/0. Every x87 result
- * goes through RECOMP_FP_PC, so ARM's default NaN becomes the console's
- * there. A NaN carried through from an operand keeps its own sign on both. */
-static inline double recomp_fp_x86_nan(double x) {
+#define RECOMP_FP_PC(x) ((g_fp_control_word & 0x300u) ? (double)(x) : recomp_fp_round24(x))
+
+/* x87 arithmetic, as the lifter emits it: RECOMP_X87(a, op, b) is a op b,
+ * RECOMP_X87_SQRT(x) is sqrt(x).
+ *
+ * A NaN an operation makes from numbers -- 0/0, inf - inf, 0 * inf, the
+ * root of a negative -- is the "default NaN", and the architectures sign it
+ * differently: the x87 (the console's) and x86 make the indefinite,
+ * 0xFFF8000000000000 (0xFFC00000 stored as a float), sign set; ARM makes
+ * 0x7FF8000000000000, sign clear. A NaN that goes in comes out as it went
+ * in on both. No comparison can tell the two apart, but the bits are what
+ * gets stored, and two machines in a lockstep session that keep different
+ * bytes no longer hash the same: TimeSplitters 2 on an Apple Silicon Mac
+ * stored 0x7FC00000 in its matrices where Windows and Linux stored
+ * 0xFFC00000, after a 0/0. So on ARM a NaN result whose operands were
+ * numbers is made the console's. Only there: the result alone cannot say,
+ * since the same game also carries a positive NaN of its own through its
+ * arithmetic, which x86 keeps positive (flipping every 0x7FF8... result
+ * turned those negative on the Mac). On x86 these are the bare operators. */
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
-    uint64_t b;
-    memcpy(&b, &x, sizeof b);
-    if (b == 0x7FF8000000000000ull) {
-        b = 0xFFF8000000000000ull;
-        memcpy(&x, &b, sizeof b);
+static inline double recomp_x87_nan(double a, double b, double r) {
+    if (r != r && a == a && b == b) {
+        uint64_t bits = 0xFFF8000000000000ull;
+        memcpy(&r, &bits, sizeof r);
     }
-#endif
-    return x;
+    return r;
 }
-#define RECOMP_FP_PC(x) ((g_fp_control_word & 0x300u) \
-    ? recomp_fp_x86_nan((double)(x)) : recomp_fp_round24(recomp_fp_x86_nan(x)))
+#if defined(__GNUC__) || defined(__clang__)
+#define RECOMP_X87(a, op, b) __extension__ ({ double _x87a = (a), _x87b = (b); \
+    recomp_x87_nan(_x87a, _x87b, _x87a op _x87b); })
+#else
+#define RECOMP_X87(a, op, b) recomp_x87_nan((a), (b), (a) op (b))
+#endif
+#define RECOMP_X87_SQRT(x) recomp_x87_nan((x), 0.0, sqrt(x))
+#else
+#define RECOMP_X87(a, op, b) ((a) op (b))
+#define RECOMP_X87_SQRT(x) sqrt(x)
+#endif
 #define RECOMP_FCMP_CC(c) ((uint16_t)((c)==2 ? 0x4500u : (c)<0 ? 0x0100u : (c)>0 ? 0u : 0x4000u))
 /* Values in the existing double-backed stack are all representable as normal
  * x87 extended values, including binary64 subnormals. Empty stack tags and
