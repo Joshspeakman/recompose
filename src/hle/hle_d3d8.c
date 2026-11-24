@@ -683,6 +683,22 @@ static DWORD WINAPI shadow_window_thread(LPVOID param)
     return 0;
 }
 
+/* Online co-op's status in the window's title (recomp_lockstep.h): the
+ * title's name, then what the session is doing. Called from the network's
+ * thread; the window has a thread of its own to take it. */
+static void window_status(const char *text)
+{
+    const char *name = xbox_XbeTitleName();
+    char full[320];
+    WCHAR wide[320];
+
+    snprintf(full, sizeof full, "%s%s%s", name ? name : "", text ? " - " : "",
+             text ? text : "");
+    if (g_shadow_hwnd &&
+        MultiByteToWideChar(CP_UTF8, 0, full, -1, wide, (int)(sizeof wide / sizeof wide[0])) > 0)
+        SetWindowTextW(g_shadow_hwnd, wide);
+}
+
 static HWND shadow_window(UINT width, UINT height)
 {
     shadow_window_request req;
@@ -781,6 +797,19 @@ static void shadow_host_mouse_button(void *user, int button, int down)
     case 5: recomp_mouse_button(RECOMP_MOUSE_X2, down);     break;
     default: break;
     }
+}
+
+/* Online co-op's status in the window's title, as the Win32 window above
+ * does; the shell hands it to the main thread. */
+static void window_status(const char *text)
+{
+    const char *name = xbox_XbeTitleName();
+    char full[320];
+
+    snprintf(full, sizeof full, "%s%s%s", name ? name : "", text ? " - " : "",
+             text ? text : "");
+    if (g_shadow_host)
+        host_window_set_title(g_shadow_host, full);
 }
 
 static HWND shadow_window(UINT width, UINT height)
@@ -1128,6 +1157,7 @@ static void shadow_create(uint32_t pp_va)
         xbox_GuestLockRestore(held);
     }
     g_shadow_hwnd = hwnd;
+    recomp_lockstep_set_status_sink(window_status);
     if (!hwnd)
         return;
 

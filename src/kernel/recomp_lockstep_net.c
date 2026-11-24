@@ -533,6 +533,29 @@ const char *lsnet_session_dir(void)
     return g.session_dir[0] ? g.session_dir : NULL;
 }
 
+/* ── the player's view of the session: the window's title ──────────── */
+
+static RecompLockstepStatusSink s_sink;
+static char s_status[160];
+static int s_status_set;
+
+void recomp_lockstep_set_status_sink(RecompLockstepStatusSink fn)
+{
+    s_sink = fn;
+    if (s_sink && s_status_set)
+        s_sink(s_status[0] ? s_status : NULL);     /* what it missed */
+}
+
+static void status(const char *text)
+{
+    if (s_status_set && strcmp(s_status, text ? text : "") == 0)
+        return;
+    snprintf(s_status, sizeof s_status, "%s", text ? text : "");
+    s_status_set = 1;
+    if (s_sink)
+        s_sink(s_status[0] ? s_status : NULL);
+}
+
 /* ── settings that change the game ────────────────────────────────── */
 
 void recomp_lockstep_add_setting(const char *name, const char *value)
@@ -634,8 +657,10 @@ static void check_theirs_locked(uint32_t tick, uint64_t hash)
         g.theirs.tick = tick;
         g.theirs.hash = hash;
         if (g.mine[i].hash != hash) {
-            if (!g.desyncs++)
+            if (!g.desyncs++) {
                 g.first_desync = tick;
+                status("online co-op: the two games differ (see the log)");
+            }
             if (g.desyncs <= 5)
                 fprintf(stderr, "[LOCKSTEP-NET] tick %u: the games DIFFER (here %016llX, "
                         "the other machine %016llX)%s\n", tick,
@@ -708,9 +733,11 @@ static void on_hello_locked(const uint8_t *b, int n, const struct sockaddr_in *f
         return;
     }
     if (!g.have_peer) {
-        char a[64];
+        char a[64], st[128];
         inet_ntop(AF_INET, &from->sin_addr, a, sizeof a);
         say("player 2 joined from %s:%u", a, (unsigned)ntohs(from->sin_port));
+        snprintf(st, sizeof st, "online co-op, player 1, with %s", a);
+        status(st);
     }
     g.peer = *from;
     g.have_peer = 1;
@@ -836,6 +863,7 @@ static void *receive_thread(void *arg)
                     if (!g.gone) {
                         g.gone = 1;
                         say("the other player left the session");
+                        status("online co-op: the other player left");
                     }
                     SetEvent(g.arrived);
                 }
@@ -1088,10 +1116,20 @@ int lsnet_init(int64_t *epoch)
          * syslink_upnp = 0. A joiner needs nothing opened. */
         if (recomp_config_bool("RECOMP_LOCKSTEP_UPNP", "syslink_upnp", 1))
             net_upnp_open_async(port);
+        {
+            char st[96];
+            snprintf(st, sizeof st, "online co-op: waiting for player 2 to join (UDP port %d)", port);
+            status(st);
+        }
         return 1;
     }
     join(peer, port);
     *epoch = g.epoch;
+    {
+        char st[128];
+        snprintf(st, sizeof st, "online co-op, player 2, with %s", peer);
+        status(st);
+    }
     return 1;
 }
 
@@ -1135,6 +1173,8 @@ void lsnet_frame(uint32_t tick, const RecompLockstepPad *local_now, int have_che
         unlock();
         if (!wait_start)
             wait_start = now;
+        if (now - wait_start >= 1000 && g.have_peer && !last_said)
+            status("online co-op: waiting for the other player");
         if (now - wait_start >= 2000 && now - last_said >= 5000) {
             last_said = now;
             fprintf(stderr, "[LOCKSTEP-NET] tick %u: waiting for the other player (%llu s)\n",
@@ -1145,6 +1185,7 @@ void lsnet_frame(uint32_t tick, const RecompLockstepPad *local_now, int have_che
         lock();
         if (g.have_peer && g.last_heard_ms && now_ms() - g.last_heard_ms > 30000 && !g.gone) {
             g.gone = 1;
+            status("online co-op: lost the other player");
             fprintf(stderr, "[LOCKSTEP-NET] tick %u: nothing from the other player for 30 s; "
                             "playing on without them\n", tick);
             fflush(stderr);
@@ -1154,6 +1195,13 @@ void lsnet_frame(uint32_t tick, const RecompLockstepPad *local_now, int have_che
             fprintf(stderr, "[LOCKSTEP-NET] nobody joined in 10 minutes; playing alone\n");
             fflush(stderr);
         }
+    }
+    if (wait_start && now_ms() - wait_start >= 1000 && !g.gone && g.have_peer) {
+        /* Back from a wait the title said: say who it is with again. */
+        char st[128], a[64];
+        inet_ntop(AF_INET, &g.peer.sin_addr, a, sizeof a);
+        snprintf(st, sizeof st, "online co-op, player %u, with %s", g.local_port + 1u, a);
+        status(st);
     }
     for (t = 0; t < RECOMP_LOCKSTEP_PORTS; t++)
         memset(&pads_out[t], 0, sizeof pads_out[t]);

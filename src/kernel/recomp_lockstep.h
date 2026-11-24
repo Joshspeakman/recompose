@@ -142,6 +142,13 @@ void recomp_lockstep_add_setting(const char *name, const char *value);
  * build computes a different game. Called before the title starts. */
 void recomp_lockstep_set_build_id(const char *id);
 
+/* What an online session is doing, for the player: the window's title
+ * carries it, since a game waiting on the network draws nothing ("waiting
+ * for player 2 to join", "the other player left"). The window code
+ * registers where it goes; NULL text is no status. */
+typedef void (*RecompLockstepStatusSink)(const char *text);
+void recomp_lockstep_set_status_sink(RecompLockstepStatusSink fn);
+
 /* The session's wall clock at tick 0, as a FILETIME: the recording's, the
  * host machine's, or this machine's when it is alone. */
 int64_t recomp_lockstep_epoch(void);
