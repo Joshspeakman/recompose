@@ -437,7 +437,30 @@ static inline double recomp_fp_round24(double x) {
     x = frexp(x, &e);                      /* |x| in [0.5, 1): float-exact range */
     return ldexp((double)(float)x, e);
 }
-#define RECOMP_FP_PC(x) ((g_fp_control_word & 0x300u) ? (double)(x) : recomp_fp_round24(x))
+/* A NaN the operation made itself -- 0/0, inf - inf, 0 * inf, the root of a
+ * negative, nothing NaN going in -- is the "default NaN", and the two
+ * architectures disagree on its sign: the x87 (the console's) and x86 make
+ * the indefinite, 0xFFF8000000000000 (0xFFC00000 stored as a float), sign
+ * set; ARM makes 0x7FF8000000000000, sign clear. No comparison can tell them
+ * apart, but the bits are what gets stored, and two machines in a lockstep
+ * session that keep different bytes no longer hash the same: TimeSplitters 2
+ * on an Apple Silicon Mac stored 0x7FC00000 where Windows and Linux stored
+ * 0xFFC00000, in its matrices, for a while after a 0/0. Every x87 result
+ * goes through RECOMP_FP_PC, so ARM's default NaN becomes the console's
+ * there. A NaN carried through from an operand keeps its own sign on both. */
+static inline double recomp_fp_x86_nan(double x) {
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
+    uint64_t b;
+    memcpy(&b, &x, sizeof b);
+    if (b == 0x7FF8000000000000ull) {
+        b = 0xFFF8000000000000ull;
+        memcpy(&x, &b, sizeof b);
+    }
+#endif
+    return x;
+}
+#define RECOMP_FP_PC(x) ((g_fp_control_word & 0x300u) \
+    ? recomp_fp_x86_nan((double)(x)) : recomp_fp_round24(recomp_fp_x86_nan(x)))
 #define RECOMP_FCMP_CC(c) ((uint16_t)((c)==2 ? 0x4500u : (c)<0 ? 0x0100u : (c)>0 ? 0u : 0x4000u))
 /* Values in the existing double-backed stack are all representable as normal
  * x87 extended values, including binary64 subnormals. Empty stack tags and
