@@ -1652,8 +1652,8 @@ static void draw_link(void)
                  g_link_mode == LINK_COOP_HOST
                  ? "%s  " LAUNCHER_FIREWALL " may ask to let the game through its"
                    " firewall the first time: allow it. You are controller 1 and your"
-                   " friend controller 2, in one game on both screens: pick its"
-                   " two-player mode together, as on one console."
+                   " friend controller 2 in one game, each seeing their own view:"
+                   " pick its two-player mode together, as on one console."
                  : "%s  " LAUNCHER_FIREWALL " may ask to let the game through its"
                    " firewall the first time: allow it. Then host or join a game in"
                    " the game's own System Link menu.",
