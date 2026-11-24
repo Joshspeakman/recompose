@@ -10,7 +10,7 @@
  * Each pad is the 18 bytes of XINPUT_GAMEPAD in hex (buttons, the 8 analog
  * bytes, the four stick axes, little-endian), one per connected port in port
  * order. h hashes every named region at the start of the tick, i.e. the state
- * the previous frames left; c is the same per 64 KB chunk (8 hex digits each,
+ * the previous frames left; c is the same per 4 KB chunk (8 hex digits each,
  * regions in the order they were named), which is what says *where* two runs
  * first differ. A replay reads p= back and checks h= as it goes.
  */
@@ -29,7 +29,7 @@
 
 extern ptrdiff_t g_xbox_mem_offset;
 
-static uint32_t s_chunk = 64u * 1024u;   /* RECOMP_LOCKSTEP_CHUNK */
+static uint32_t s_chunk = 4096u;   /* RECOMP_LOCKSTEP_CHUNK: a page, so a trace says where to the page */
 #define CHUNK s_chunk
 #define MAX_REGIONS 16
 #define MAX_DUMPS 16
@@ -42,6 +42,8 @@ typedef struct ReplayTick {
     RecompLockstepPad pads[RECOMP_LOCKSTEP_PORTS];
     uint64_t hash;
     int has_hash;
+    int present;                 /* a line for this tick; a compact recording
+                                  * leaves out ticks whose input did not change */
 } ReplayTick;
 
 static volatile int s_init;
@@ -195,6 +197,7 @@ static void replay_load(const char *path)
             cap_ticks = n;
         }
         rt = &s_replay[t - 1];
+        rt->present = 1;
         if (t > s_replay_count)
             s_replay_count = t;
         q = strstr(p, " m=");
@@ -247,6 +250,15 @@ static void replay_load(const char *path)
     }
     free(line);
     fclose(f);
+    /* A tick with no line holds the input of the tick before it. */
+    {
+        uint32_t t;
+        for (t = 2; t <= s_replay_count; t++)
+            if (!s_replay[t - 1].present) {
+                s_replay[t - 1].mask = s_replay[t - 2].mask;
+                memcpy(s_replay[t - 1].pads, s_replay[t - 2].pads, sizeof s_replay[t - 1].pads);
+            }
+    }
     fprintf(stderr, "[LOCKSTEP] replaying %u ticks of input from %s\n", s_replay_count, path);
 }
 

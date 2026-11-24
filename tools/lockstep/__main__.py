@@ -149,10 +149,58 @@ def main():
     d.add_argument("a")
     d.add_argument("b")
     d.add_argument("--max", type=int, default=60)
+    c = sub.add_parser("compact", help="a recording small enough to pass around: a line "
+                       "only where the input changes, and every --every ticks for the hash")
+    c.add_argument("a")
+    c.add_argument("out")
+    c.add_argument("--every", type=int, default=60)
     args = ap.parse_args()
     if args.cmd == "trace":
         return cmd_trace(args.a, args.b, args.chunk, args.base)
+    if args.cmd == "compact":
+        return cmd_compact(args.a, args.out, args.every)
     return cmd_dump(args.a, args.b, args.max)
+
+
+def cmd_compact(src, out, every):
+    """Keep the epoch, each tick whose mask or pads differ from the tick
+    before, and every `every`th tick for its hash; drop the chunk hashes.
+    A replay carries the input of a missing tick forward from the last line,
+    and checks the hash only where there is one."""
+    kept = total = 0
+    last = None
+    pending = None              # the last tick, written at the end if skipped
+
+    def line_of(fields, inp):
+        parts = [f"t={fields['t']}", f"m={inp[0]}", f"p={inp[1]}"]
+        if "h" in fields:
+            parts.append(f"h={fields['h']}")
+        return " ".join(parts) + "\n"
+
+    with open(src, "r", encoding="ascii", errors="replace") as f, \
+            open(out, "w", encoding="ascii", newline="\n") as o:
+        for line in f:
+            if line.startswith("#"):
+                o.write(line)
+                continue
+            if not line.startswith("t="):
+                continue
+            total += 1
+            fields = dict(part.split("=", 1) for part in line.split())
+            t = int(fields["t"])
+            inp = (fields.get("m", ""), fields.get("p", ""))
+            if inp != last or t % every == 0:
+                o.write(line_of(fields, inp))
+                kept += 1
+                pending = None
+            else:
+                pending = line_of(fields, inp)
+            last = inp
+        if pending:
+            o.write(pending)        # so a replay runs to the recording's end
+            kept += 1
+    print(f"{out}: {kept} of {total} ticks kept")
+    return 0
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@
  *     the other machines), and the title reads that latch for the whole
  *     frame. Which ports are connected, and from which tick, is fixed too.
  *   - the check. A trace file gets each tick's input and a hash of the game
- *     memory the title names (recomp_lockstep_add_region), per 64 KB chunk,
+ *     memory the title names (recomp_lockstep_add_region), per 4 KB chunk,
  *     so two runs can be compared tick by tick and the first chunk that
  *     differs found.
  *
@@ -28,12 +28,12 @@
  *   RECOMP_LOCKSTEP_TRACE=<file>  write this run's trace
  *   RECOMP_LOCKSTEP_PORTS=<n>     controllers 1..n connected (default 2)
  *   RECOMP_LOCKSTEP_DUMP=<t>[,<t>...]  write the hashed memory at those ticks
- *                                 to <trace>.t<tick>.bin (tools: lockstep_diff.py)
+ *                                 to <trace>.t<tick>.bin (py -m tools.lockstep dump)
  *   RECOMP_LOCKSTEP_END=<t>       end the process at that tick
  *   RECOMP_LOCKSTEP_CALLS=<a>-<b> log the frame thread's kernel calls and
  *                                 noted HLE answers in ticks a..b (see below)
- *   RECOMP_LOCKSTEP_CHUNK=<bytes> the trace's hash granularity (default 65536;
- *                                 4096 finds where two runs differ to the page)
+ *   RECOMP_LOCKSTEP_CHUNK=<bytes> the trace's hash granularity (default 4096;
+ *                                 two traces compare only at the same size)
  *   RECOMP_LOCKSTEP_EPOCH=<n>     the session's wall clock at tick 0 (FILETIME,
  *                                 decimal); a recording carries its own
  */
