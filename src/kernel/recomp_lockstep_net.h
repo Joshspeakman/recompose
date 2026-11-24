@@ -21,6 +21,8 @@ uint32_t lsnet_delay(void);
 void lsnet_frame(uint32_t tick, const RecompLockstepPad *local_now, int have_checkpoint,
                  uint64_t hash, RecompLockstepPad *pads_out);
 void lsnet_leave(void);
+/* A joiner's session folder, holding the host's saves: its E:. */
+const char *lsnet_session_dir(void);
 void lsnet_report(void);
 
 #endif

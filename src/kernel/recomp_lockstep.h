@@ -60,6 +60,11 @@ typedef struct RecompLockstepPad {
 typedef void (*RecompLockstepSampler)(unsigned port, RecompLockstepPad *out);
 
 int recomp_lockstep_active(void);
+/* The session begins: online, a joiner meets its host here (the host's
+ * clock, its saves, the settings checked) and a host opens its port. The
+ * title calls it once the kernel and the paths are up, before its entry
+ * point; without that call it happens at the first frame. */
+void recomp_lockstep_start(void);
 void recomp_lockstep_frame(void);
 uint32_t recomp_lockstep_tick(void);
 /* Ports connected now: none until the console's USB would have found them
@@ -117,6 +122,17 @@ void recomp_lockstep_add_boundary_hook(void (*fn)(void));
 int recomp_lockstep_secondary_delay(int64_t interval_100ns);
 int recomp_lockstep_secondary_block_begin(void);
 void recomp_lockstep_secondary_block_end(void);
+
+/* An online joiner's E: (the hard disk's data partition): a folder holding
+ * the host's saves for this title, which the session handed over before the
+ * game started. NULL when this copy is not one. */
+const char *recomp_lockstep_hdd_dir(void);
+/* A setting that changes the game itself, not only how it is shown (the
+ * widescreen camera widens the title's own view): every machine in a
+ * session must have the same, and a joiner whose differs is refused, told
+ * which. The title adds its own before it starts; the toolkit adds
+ * widescreen. */
+void recomp_lockstep_add_setting(const char *name, const char *value);
 
 /* What build this is, as the title names it (its sources' commits): an
  * online session refuses a machine whose build differs, since a different

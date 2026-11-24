@@ -300,22 +300,14 @@ static void init(void)
         s_epoch = (int64_t)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
         s_epoch -= s_epoch % 10000000;
     }
-    /* Online: a joiner waits here for the host, and takes its clock. With
-     * a recording as well, each machine plays its own controller's column
-     * of it, so a session between machines reproduces a recorded game and
-     * is checked against it as well as against the other machine. */
-    if (net && *net && strcmp(net, "0") != 0 && strcmp(net, "off") != 0) {
-        s_net = lsnet_init(&s_epoch);
-        if (!s_net)
-            fprintf(stderr, "[LOCKSTEP] no online session; this copy plays alone\n");
-    }
+    /* Online, the session begins in recomp_lockstep_start(), once the
+     * kernel and the paths are up: the trace's epoch line waits for tick 1,
+     * since a joiner takes the host's clock there. */
     if (trace && *trace) {
         snprintf(s_trace_path, sizeof s_trace_path, "%s", trace);
         s_trace = fopen(trace, "w");
         if (!s_trace)
             fprintf(stderr, "[LOCKSTEP] cannot write the trace %s\n", trace);
-        else
-            fprintf(s_trace, "# epoch=%lld\n", (long long)s_epoch);
     }
     while (dump && *dump && s_dump_count < MAX_DUMPS) {
         char *e;
@@ -348,6 +340,35 @@ static void init(void)
                     "connected mask 0x%X from tick %u%s%s\n",
             s_ports_mask, ENUM_TICKS, s_trace ? ", trace " : "", s_trace ? s_trace_path : "");
     fflush(stderr);
+}
+
+/* The session itself: online, a joiner meets its host here (its clock, its
+ * saves, the settings checked) and a host opens its port. With a recording
+ * as well, each machine plays its own controller's column of it, so a
+ * session between machines reproduces a recorded game and is checked
+ * against it as well as against the other machine. The title calls this
+ * after the kernel and the paths are up, before its entry point; a title
+ * that does not gets it at its first frame. */
+static int s_started;
+
+void recomp_lockstep_start(void)
+{
+    const char *net = getenv("RECOMP_LOCKSTEP_NET");
+
+    if (!recomp_lockstep_active() || s_started)
+        return;
+    s_started = 1;
+    if (net && *net && strcmp(net, "0") != 0 && strcmp(net, "off") != 0) {
+        s_net = lsnet_init(&s_epoch);
+        if (!s_net)
+            fprintf(stderr, "[LOCKSTEP] no online session; this copy plays alone\n");
+        fflush(stderr);
+    }
+}
+
+const char *recomp_lockstep_hdd_dir(void)
+{
+    return s_net ? lsnet_session_dir() : NULL;
 }
 
 /* Clock reads reach this from any thread, the first possibly before the
@@ -742,10 +763,14 @@ void recomp_lockstep_frame(void)
 
     if (!recomp_lockstep_active())
         return;
+    if (!s_started)
+        recomp_lockstep_start();
     tick = ++s_tick;
     s_frame_thread = GetCurrentThreadId();
     if (s_calls && tick == s_calls_to + 1)
         fflush(s_calls);
+    if (s_trace && tick == 1)
+        fprintf(s_trace, "# epoch=%lld\n", (long long)s_epoch);
 
     /* The hash every frame for a trace or a replay; online, every 60th,
      * for the machines to compare. */

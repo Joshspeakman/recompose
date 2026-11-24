@@ -16,6 +16,7 @@
 #include "xbox_console_id.h"
 #include "xbox_watchpoint.h"
 #include "recomp_config.h"   /* recomp_config_title_id: per-title cache */
+#include "recomp_lockstep.h"  /* an online co-op joiner's E: is the session's */
 #include "platform/host_main.h"   /* host_exe_path: the default disc overlay */
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,7 +81,12 @@ static const char *hdd_dir_setting(void)
     static int looked;
     static const char *dir;
     if (!looked) {
-        const char *v = recomp_config_lookup("RECOMP_HDD_DIR", "hdd_dir");
+        /* An online co-op joiner plays from the host's saves, which the
+         * session handed it before the game started (recomp_lockstep.h):
+         * both machines must start from the same profiles. */
+        const char *v = recomp_lockstep_active() ? recomp_lockstep_hdd_dir() : NULL;
+        if (!v)
+            v = recomp_config_lookup("RECOMP_HDD_DIR", "hdd_dir");
         looked = 1;
         dir = (v && *v) ? v : NULL;
         if (dir)
@@ -735,6 +741,17 @@ int xbox_path_game_dir_utf8(char *out, size_t n)
                                NULL, NULL) > 0;
 }
 
+int xbox_path_hdd_dir_utf8(char *out, size_t n)
+{
+    const char *d = hdd_dir_setting();
+
+    if (d && out && n) {
+        snprintf(out, n, "%s", d);
+        return 1;
+    }
+    return xbox_path_game_dir_utf8(out, n);
+}
+
 /* The host path the last translation produced.
  *
  * A caller that wants to act on the file a title just opened -- playing an FMV
@@ -1111,6 +1128,17 @@ int xbox_path_game_dir_utf8(char *out, size_t n)
         return 0;
     snprintf(out, n, "%s", s_game_dir);
     return 1;
+}
+
+int xbox_path_hdd_dir_utf8(char *out, size_t n)
+{
+    const char *d = hdd_dir_setting();
+
+    if (d && out && n) {
+        snprintf(out, n, "%s", d);
+        return 1;
+    }
+    return xbox_path_game_dir_utf8(out, n);
 }
 
 /*

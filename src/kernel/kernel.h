@@ -567,6 +567,9 @@ int xbox_path_save_dir_utf8(char *out, size_t n);
 /* The game folder xbox_path_init was given, as UTF-8, the same way. The
  * console's own identity is looked for beside it (xbox_console_id.c). */
 int xbox_path_game_dir_utf8(char *out, size_t n);
+/* E:, the hard disk's data partition: hdd_dir (or an online joiner's session
+ * folder) when there is one, else the game folder. */
+int xbox_path_hdd_dir_utf8(char *out, size_t n);
 
 /*
  * Character type of a translated host path. The Win32 file APIs take wide

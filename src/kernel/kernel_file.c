@@ -34,6 +34,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 #if !defined(_WIN32)
 #include <fcntl.h>
@@ -1868,7 +1869,55 @@ typedef struct {
     DIR*   dir;
     char   pattern[64];
     int    returned;        /* an entry has come back since the scan began */
+    char **names;           /* the folder's entries, in the order Windows gives */
+    int    count, pos;
 } DIR_CONTEXT;
+
+/* Entries in the order NTFS lists them: by name, compared in upper case.
+ * readdir's order is the file system's own -- hash order on ext4, another
+ * on APFS -- and the title sees it: the order a folder of saves comes back
+ * in is the order a menu lists them. One order on every host, and the one
+ * Windows gives, is what lets machines on different systems play one game
+ * (online co-op, src/kernel/recomp_lockstep.h). */
+static int dir_name_cmp(const void *a, const void *b)
+{
+    const unsigned char *x = *(const unsigned char *const *)a;
+    const unsigned char *y = *(const unsigned char *const *)b;
+    while (*x && toupper(*x) == toupper(*y)) {
+        x++;
+        y++;
+    }
+    return toupper(*x) - toupper(*y);
+}
+
+static void dir_names_free(DIR_CONTEXT *ctx)
+{
+    int i;
+    for (i = 0; i < ctx->count; i++)
+        free(ctx->names[i]);
+    free(ctx->names);
+    ctx->names = NULL;
+    ctx->count = ctx->pos = 0;
+}
+
+static void dir_names_read(DIR_CONTEXT *ctx)
+{
+    struct dirent *de;
+    int cap = 0;
+
+    dir_names_free(ctx);
+    while ((de = readdir(ctx->dir)) != NULL) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+        if (ctx->count == cap) {
+            cap = cap ? cap * 2 : 32;
+            ctx->names = (char **)realloc(ctx->names, (size_t)cap * sizeof *ctx->names);
+        }
+        ctx->names[ctx->count++] = strdup(de->d_name);
+    }
+    if (ctx->count > 1)
+        qsort(ctx->names, (size_t)ctx->count, sizeof *ctx->names, dir_name_cmp);
+}
 
 /* The end of a search, as FATX says it: see the Windows backend's
  * SEARCH_END. */
@@ -1938,6 +1987,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
 
     if (RestartScan || ctx->dir == NULL) {
         if (ctx->dir) { closedir(ctx->dir); ctx->dir = NULL; }
+        dir_names_free(ctx);
         const char* dpath = w32_handle_path(FileHandle);
         if (!dpath) { LeaveCriticalSection(&s_dir_cs); return STATUS_UNSUCCESSFUL; }
         ctx->dir = opendir(dpath);
@@ -1947,6 +1997,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
             IoStatusBlock->Status = STATUS_NO_SUCH_FILE;
             return STATUS_NO_SUCH_FILE;
         }
+        dir_names_read(ctx);
         if (FileName && FileName->Buffer && FileName->Length > 0) {
             USHORT n = FileName->Length;
             if (n >= sizeof(ctx->pattern)) n = sizeof(ctx->pattern) - 1;
@@ -1958,30 +2009,32 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
     }
 
     /* Advance to the next entry matching the search pattern. */
-    struct dirent* de;
+    const char* dname = NULL;
+    char dname_buf[256];
     const char* dpath = w32_handle_path(FileHandle);
     struct stat st;
     for (;;) {
-        de = readdir(ctx->dir);
-        if (!de) {
+        if (ctx->pos >= ctx->count) {
             NTSTATUS end = SEARCH_END(ctx->returned);
             closedir(ctx->dir);
             ctx->dir = NULL;
             ctx->handle = NULL;
+            dir_names_free(ctx);
             LeaveCriticalSection(&s_dir_cs);
             IoStatusBlock->Status = end;
             return end;
         }
-        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
-            continue;
-        if (fnmatch(ctx->pattern, de->d_name, FNM_CASEFOLD) == 0) {
+        dname = ctx->names[ctx->pos++];
+        if (fnmatch(ctx->pattern, dname, FNM_CASEFOLD) == 0) {
             ctx->returned = 1;
             break;
         }
     }
+    snprintf(dname_buf, sizeof dname_buf, "%s", dname);
+    dname = dname_buf;
 
     char full[MAX_PATH];
-    snprintf(full, sizeof(full), "%s/%s", dpath ? dpath : ".", de->d_name);
+    snprintf(full, sizeof(full), "%s/%s", dpath ? dpath : ".", dname);
     if (stat(full, &st) != 0)
         memset(&st, 0, sizeof(st));
     LeaveCriticalSection(&s_dir_cs);
@@ -1989,7 +2042,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
     PXBOX_FILE_DIRECTORY_INFORMATION entry = (PXBOX_FILE_DIRECTORY_INFORMATION)FileInformation;
     memset(entry, 0, Length);
 
-    int name_len = (int)strlen(de->d_name);
+    int name_len = (int)strlen(dname);
     entry->NextEntryOffset = 0;
     entry->FileIndex = 0;
     unix_to_filetime(st.st_ctime, 0, &entry->CreationTime);
@@ -2004,7 +2057,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
 
     ULONG header_size = (ULONG)((ULONG_PTR)&((PXBOX_FILE_DIRECTORY_INFORMATION)0)->FileName);
     if (name_len > 0 && (header_size + (ULONG)name_len) <= Length)
-        memcpy(entry->FileName, de->d_name, name_len);
+        memcpy(entry->FileName, dname, name_len);
     IoStatusBlock->Status = STATUS_SUCCESS;
     IoStatusBlock->Information = header_size + name_len;
     return STATUS_SUCCESS;
