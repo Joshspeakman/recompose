@@ -34,6 +34,7 @@
  *                                 noted HLE answers in ticks a..b (see below)
  *   RECOMP_LOCKSTEP_CHUNK=<bytes> the trace's hash granularity (default 4096;
  *                                 two traces compare only at the same size)
+ *   RECOMP_LOCKSTEP_NET=host|join online, between machines: recomp_lockstep_net.c
  *   RECOMP_LOCKSTEP_EPOCH=<n>     the session's wall clock at tick 0 (FILETIME,
  *                                 decimal); a recording carries its own
  */
@@ -116,6 +117,11 @@ void recomp_lockstep_add_boundary_hook(void (*fn)(void));
 int recomp_lockstep_secondary_delay(int64_t interval_100ns);
 int recomp_lockstep_secondary_block_begin(void);
 void recomp_lockstep_secondary_block_end(void);
+
+/* What build this is, as the title names it (its sources' commits): an
+ * online session refuses a machine whose build differs, since a different
+ * build computes a different game. Called before the title starts. */
+void recomp_lockstep_set_build_id(const char *id);
 
 /* The session's wall clock at tick 0, as a FILETIME: the recording's, the
  * host machine's, or this machine's when it is alone. */

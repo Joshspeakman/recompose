@@ -26,6 +26,7 @@
 
 #include "recomp_lockstep.h"
 #include "xbox_memory_layout.h"   /* the guest lock, dropped while waiting on a turn */
+#include "recomp_lockstep_net.h"
 
 extern ptrdiff_t g_xbox_mem_offset;
 
@@ -77,6 +78,7 @@ static unsigned s_replay_chunk_count;
 static uint32_t s_mismatches, s_first_mismatch;
 static int s_said_replay_end;
 static int64_t s_epoch;
+static int s_net;                 /* online (recomp_lockstep_net.c) */
 static FILE *s_calls;
 static uint32_t s_calls_from, s_calls_to;
 static volatile DWORD s_frame_thread;
@@ -272,8 +274,10 @@ static void init(void)
     const char *ports = getenv("RECOMP_LOCKSTEP_PORTS");
     const char *dump = getenv("RECOMP_LOCKSTEP_DUMP");
     const char *end = getenv("RECOMP_LOCKSTEP_END");
+    const char *net = getenv("RECOMP_LOCKSTEP_NET");
 
-    s_active = (on && *on && strcmp(on, "0") != 0) || (replay && *replay);
+    s_active = (on && *on && strcmp(on, "0") != 0) || (replay && *replay) ||
+               (net && *net && strcmp(net, "0") != 0 && strcmp(net, "off") != 0);
     if (!s_active)
         return;
     if (ports && *ports) {
@@ -295,6 +299,12 @@ static void init(void)
         /* Whole seconds: the clock is the session's, not this instant's. */
         s_epoch = (int64_t)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
         s_epoch -= s_epoch % 10000000;
+    }
+    /* Online: a joiner waits here for the host, and takes its clock. */
+    if (net && *net && !(replay && *replay)) {
+        s_net = lsnet_init(&s_epoch);
+        if (!s_net)
+            fprintf(stderr, "[LOCKSTEP] no online session; this copy plays alone\n");
     }
     if (trace && *trace) {
         snprintf(s_trace_path, sizeof s_trace_path, "%s", trace);
@@ -734,7 +744,9 @@ void recomp_lockstep_frame(void)
     if (s_calls && tick == s_calls_to + 1)
         fflush(s_calls);
 
-    if (s_region_count) {
+    /* The hash every frame for a trace or a replay; online, every 60th,
+     * for the machines to compare. */
+    if (s_region_count && (s_trace || s_replay || (s_net && tick % 60u == 0))) {
         h = hash_state();
         check_replay(tick, h);
     }
@@ -754,12 +766,31 @@ void recomp_lockstep_frame(void)
         memset(&s_pads[port], 0, sizeof s_pads[port]);
         if (!(s_mask & (1u << port)))
             continue;
+        if (s_net)
+            continue;                 /* below */
         if (s_replay) {
             if (tick <= s_replay_count)
                 s_pads[port] = s_replay[tick - 1].pads[port];
         } else if (s_sampler) {
             s_sampler(port, &s_pads[port]);
         }
+    }
+    if (s_net) {
+        /* This machine's controller 1 is its player's; every player's
+         * controller for this frame comes back, the other machine's once
+         * it has arrived. The guest lock is down while this waits. */
+        RecompLockstepPad local, all[RECOMP_LOCKSTEP_PORTS];
+        int held;
+
+        memset(&local, 0, sizeof local);
+        if (s_sampler)
+            s_sampler(0, &local);
+        held = xbox_GuestLockDropForKernel(1, 0u);
+        lsnet_frame(tick, &local, s_region_count && tick % 60u == 0, h, all);
+        xbox_GuestLockRestoreForKernel(held);
+        for (port = 0; port < RECOMP_LOCKSTEP_PORTS; port++)
+            if (s_mask & (1u << port))
+                s_pads[port] = all[port];
     }
     if (s_replay && tick == s_replay_count + 1 && !s_said_replay_end) {
         s_said_replay_end = 1;
@@ -800,6 +831,10 @@ void recomp_lockstep_frame(void)
         fflush(stderr);
         if (s_trace)
             fclose(s_trace);
+        if (s_net) {
+            lsnet_leave();
+            lsnet_report();
+        }
         _Exit(0);
     }
 }
