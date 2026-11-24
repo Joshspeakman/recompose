@@ -339,6 +339,9 @@ static void defaults_for(Controller *c, int port)
         }
     }
     c->has_key = (port == 0);
+    if (bad && port == 0)
+        fprintf(stderr, "[INPUT] %d of the default bindings (the title's own, if it has them) "
+                "are not sources this build knows; they do nothing\n", bad);
 }
 
 /* ---- a small JSON reader ----------------------------------------------- */
@@ -794,7 +797,8 @@ void recomp_bindings_init(void)
         fprintf(stderr, "[INPUT]   controller %d: %s\n", i + 1, g_ctl[i].label);
     look_settings();
     if (g_look.on)
-        fprintf(stderr, "[INPUT] mouse look: controller 1's right stick, sensitivity %d%s\n",
+        fprintf(stderr, "[INPUT] mouse look: %s, sensitivity %d%s\n",
+                g_native ? "an angle, the title turns by it (native)" : "controller 1's right stick",
                 g_look.sensitivity,
                 g_ctl[0].device == DEV_NONE ? " -- but controller 1 reads nothing" : "");
     fflush(stderr);
@@ -1035,31 +1039,49 @@ static int wheel_magnitude(int d)
     return 255;
 }
 
-/* RECOMP_MOUSE_FAKE=<from ms>-<to ms>:<x>,<y> -- counts added at every
- * take between those times since start-up: native mouse look tested
- * without a hand on a mouse (a scripted run cannot move the real one). */
-static void mouse_fake(float *x, float *y)
+/* RECOMP_MOUSE_FAKE=<from ms>-<to ms>:<x>,<y> -- a mouse moving at x,y
+ * counts every 60th of a second between those times after start-up, fed in
+ * as the real one is (recomp_mouse_move), from the pad polling, which every
+ * screen does: native mouse look tested without a hand on a mouse, through
+ * the intros and menus as well as play. */
+static void mouse_fake_feed(void)
 {
-    static int ready;
-    static unsigned long long from, to, start;
-    static float fx, fy;
-    unsigned long long now = now_ms();
+    /* Up to four windows, separated by ';'. */
+    static int ready, windows;
+    static unsigned long long from[4], to[4], start, fed_at;
+    static float fx[4], fy[4];
+    unsigned long long now = now_ms(), a, b;
+    int w;
 
     if (!ready) {
         const char *v = getenv("RECOMP_MOUSE_FAKE");
 
         ready = 1;
-        if (v && sscanf(v, "%llu-%llu:%f,%f", &from, &to, &fx, &fy) == 4)
-            fprintf(stderr, "[INPUT] RECOMP_MOUSE_FAKE: %g,%g counts a take from %llu to %llu ms\n",
-                    fx, fy, from, to);
-        else
-            to = 0;
+        while (v && *v && windows < 4) {
+            if (sscanf(v, "%llu-%llu:%f,%f", &from[windows], &to[windows], &fx[windows],
+                       &fy[windows]) != 4)
+                break;
+            fprintf(stderr, "[INPUT] RECOMP_MOUSE_FAKE: %g,%g counts a 60th of a second "
+                    "from %llu to %llu ms\n", fx[windows], fy[windows], from[windows],
+                    to[windows]);
+            windows++;
+            v = strchr(v, ';');
+            if (v)
+                v++;
+        }
         start = g_started_ms ? g_started_ms : now;
+        fed_at = now;
     }
-    if (to && now - start >= from && now - start < to) {
-        *x += fx;
-        *y += fy;
+    if (!windows || now <= fed_at)
+        return;
+    /* The part of (fed_at, now] inside each window, in 60ths of a second. */
+    for (w = 0; w < windows; w++) {
+        a = fed_at - start > from[w] ? fed_at - start : from[w];
+        b = now - start < to[w] ? now - start : to[w];
+        if (b > a)
+            recomp_mouse_move(fx[w] * (float)(b - a) * 0.06f, fy[w] * (float)(b - a) * 0.06f);
     }
+    fed_at = now;
 }
 
 /* Degrees per mouse count at sensitivity s: 0.11 at the default 80, which
@@ -1069,12 +1091,20 @@ static void mouse_fake(float *x, float *y)
 
 void recomp_mouse_take_look(float *dx_deg, float *dy_deg)
 {
+    static unsigned long long taken_at;
+    unsigned long long now = now_ms();
     float x = (float)MOUSE_TAKE(&g_mouse_dx) / LOOK_FIXED;
     float y = (float)MOUSE_TAKE(&g_mouse_dy) / LOOK_FIXED;
     float k;
 
     look_settings();
-    mouse_fake(&x, &y);
+    /* Movement nobody took for a while -- through an intro, a menu, the
+     * game's own pause, a level loading -- is dropped rather than turning
+     * the player all at once at the first frame of control. A game taking
+     * it every frame takes it every 17 ms or so. */
+    if (!taken_at || now - taken_at > 100)
+        x = y = 0.0f;
+    taken_at = now;
     if (!g_look.on || g_blocked) {
         *dx_deg = *dy_deg = 0.0f;
         return;
@@ -1280,6 +1310,8 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         }
         return 0;
     }
+    if (port == 0)
+        mouse_fake_feed();
     if (g_blocked) {
         if (port == 0)
             recomp_mouse_release();         /* what moved meanwhile is the menu's */
