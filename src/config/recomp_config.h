@@ -236,6 +236,7 @@ typedef struct RecompSettings {
     int  fullscreen;            /* 0 or 1: borderless, on the window's monitor */
     int  vrr;                   /* 0 or 1: present for variable refresh when fullscreen */
     int  frame_interp;          /* 1 (off) to 4: frames shown for each the game draws */
+    int  fov;                   /* vertical field of view in degrees; 0: the game's own */
     /* Mouse look (src/input/input_bindings.c): the mouse moves controller
      * 1's right stick, on top of whatever is bound to it. Per title, unlike
      * the bindings, because a camera on the mouse is right for one game and
@@ -281,6 +282,10 @@ typedef struct RecompSettings {
  * playing (Oct 2026; it was 25).
  * There is no deadzone setting: a movement pushes the stick in proportion
  * from the centre, because any starting push broke the mouse's feel. */
+/* The field of view a player may choose, vertical degrees. */
+#define RECOMP_FOV_MIN 45
+#define RECOMP_FOV_MAX 100
+
 #define RECOMP_MOUSE_SENSITIVITY_DEFAULT 80
 #define RECOMP_MOUSE_SENSITIVITY_MIN     1
 #define RECOMP_MOUSE_SENSITIVITY_MAX     100

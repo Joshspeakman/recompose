@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -648,6 +649,42 @@ int cap_index(const char *name)
     return 0;
 }
 
+/* The field of view (hle_settings.h): the setting, read once and then the
+ * menu's, and whether the title applies it. */
+std::atomic<int> g_fov{-1};
+int g_fov_title;
+
+} // namespace
+
+extern "C" void hle_fov_title_default(int degrees)
+{
+    g_fov_title = degrees > 0 ? degrees : 0;
+}
+
+extern "C" int hle_fov_title_has(void)
+{
+    return g_fov_title > 0;
+}
+
+extern "C" int hle_fov(void)
+{
+    int v = g_fov.load();
+
+    if (v < 0) {
+        v = recomp_config_int("RECOMP_FOV", "fov", 0);
+        v = v <= 0 ? 0 : v < RECOMP_FOV_MIN ? RECOMP_FOV_MIN : v > RECOMP_FOV_MAX ? RECOMP_FOV_MAX : v;
+        g_fov.store(v);
+    }
+    return v;
+}
+
+extern "C" void hle_set_fov(int degrees)
+{
+    g_fov.store(degrees <= 0 ? 0 : degrees);
+}
+
+namespace {
+
 void tab_display()
 {
     bool fs = hle_window_fullscreen() != 0;
@@ -687,6 +724,36 @@ void tab_display()
     }
     if (m.st.anisotropy != m.started.anisotropy)
         next_start_note();
+
+    if (hle_fov_title_has()) {
+        /* Vertical degrees, with how wide that is on this screen's shape. */
+        int fov = hle_fov() > 0 ? hle_fov() : g_fov_title;
+        float aspect = m.st.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+        float wide = 2.0f * atanf(tanf((float)fov * 0.00872665f) * aspect) * 57.2957795f;
+        char label[64];
+        bool online = !g_held.load();
+
+        snprintf(label, sizeof label, "%d\xc2\xb0 (%.0f\xc2\xb0 across)", fov, wide);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        if (online)
+            ImGui::BeginDisabled();
+        if (ImGui::SliderInt("Field of view", &fov, RECOMP_FOV_MIN, RECOMP_FOV_MAX, label)) {
+            int v = fov == g_fov_title ? 0 : fov;
+            hle_set_fov(v);
+            m.st.fov = v;
+            settings_save();
+        }
+        if (online)
+            ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (online)
+            ImGui::TextDisabled("(both players' must match)");
+        else if (ImGui::SmallButton("Default")) {
+            hle_set_fov(0);
+            m.st.fov = 0;
+            settings_save();
+        }
+    }
 }
 
 void tab_frame_rate()

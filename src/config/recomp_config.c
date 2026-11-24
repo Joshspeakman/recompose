@@ -339,6 +339,7 @@ void recomp_settings_defaults(RecompSettings *s)
     s->fullscreen        = 0;
     s->vrr               = 1;
     s->frame_interp      = 1;
+    s->fov               = 0;
     s->mouse_look        = 0;
     s->mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_DEFAULT;
     s->mouse_invert      = 0;
@@ -416,6 +417,8 @@ static void settings_from_table(RecompSettings *s)
         s->fullscreen = !off_word(v);
     if ((v = from_table("vrr")) != NULL)
         s->vrr = !off_word(v);
+    if ((v = from_table("fov")) != NULL)
+        s->fov = atoi(v) <= 0 ? 0 : clamp_int(atoi(v), RECOMP_FOV_MIN, RECOMP_FOV_MAX);
     if ((v = from_table("frame_interp")) != NULL)
         s->frame_interp = clamp_int(atoi(v), 1, 4);
     if ((v = from_table("mouse_look")) != NULL)
@@ -505,7 +508,7 @@ static void make_parents(const char *path)
  * launcher quietly undid a title's own settings. */
 static const char *const k_written_keys[] = {
     "resolution_scale", "widescreen", "hor_plus", "hor_plus_register", "widescreen_2d",
-    "anisotropy", "frame_cap", "fps_overlay", "fullscreen", "vrr", "frame_interp",
+    "anisotropy", "frame_cap", "fps_overlay", "fullscreen", "vrr", "frame_interp", "fov",
     "mouse_look", "mouse_sensitivity", "mouse_invert", "touch_controls", "touch_opacity", "touch_scale",
     "game_dir", "syslink", "syslink_host", "syslink_port", "syslink_code", "syslink_upnp",
     "coop", "coop_port",
@@ -676,6 +679,11 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "# variable refresh. 1 is off.                   [RECOMP_FRAME_INTERP]\n"
         "frame_interp = %d\n"
         "\n"
+        "# Field of view, the vertical angle in degrees, for a game that lets it\n"
+        "# be changed; 0 is the game's own. A wider screen shows more at the\n"
+        "# sides as well.                                         [RECOMP_FOV]\n"
+        "fov = %d\n"
+        "\n"
         "# Mouse look: moving the mouse moves controller 1's right stick, as\n"
         "# well as anything bound to it, while the game's window has the\n"
         "# pointer. Click in the window to give it the pointer; switching to\n"
@@ -693,6 +701,7 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         s->widescreen_2d[0] ? s->widescreen_2d : "auto",
         s->anisotropy, s->frame_cap[0] ? s->frame_cap : "adaptive", s->fps_overlay,
         s->fullscreen, s->vrr, s->frame_interp < 1 ? 1 : s->frame_interp,
+        s->fov > 0 ? s->fov : 0,
         s->mouse_look ? 1 : 0,
         RECOMP_MOUSE_SENSITIVITY_MIN, RECOMP_MOUSE_SENSITIVITY_MAX,
         RECOMP_MOUSE_SENSITIVITY_DEFAULT, 100000 / RECOMP_MOUSE_SENSITIVITY_DEFAULT,
