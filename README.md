@@ -1,19 +1,18 @@
 <div align="center">
 
-# DirectXbox Recomp
+# Recompose
 
 ### Static recompilation for the original Xbox
 
 **Lift a retail XBE to C. Replace the Direct3D 8 it links with a modern renderer.<br/>Run it natively on Windows and Apple Silicon.**
 
-[![CI](https://github.com/phobos665/xboxrecomp/actions/workflows/ci.yml/badge.svg)](https://github.com/phobos665/xboxrecomp/actions/workflows/ci.yml)
 ![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Hosts: Windows · macOS arm64 · Linux](https://img.shields.io/badge/hosts-Windows%20%C2%B7%20macOS%20arm64%20%C2%B7%20Linux-lightgrey)
 ![Renderers: D3D11 · Vulkan](https://img.shields.io/badge/renderers-D3D11%20%C2%B7%20Vulkan-informational)
 
 [Quick start](#-quick-start) · [Title status](#-title-status) · [How it works](#-how-it-works) · [Xbox Live](#-playing-on-xbox-live-insignia) · [Documentation](#-documentation) · [Contributing](CONTRIBUTING.md)
 
-<sub>Formerly <code>xboxrecomp</code>. The repository, CMake targets and library names keep that name.</sub><br/>
+<sub>A fork of phobos665's <a href="https://github.com/phobos665/DirectXbox-Recomp">DirectXbox-Recomp</a> (formerly <code>xboxrecomp</code>), developed separately since November 2026. The CMake targets, library names and settings folder keep the name <code>xboxrecomp</code>.</sub><br/>
 <sub>An independent project, not affiliated with or endorsed by Microsoft. See <a href="#trademarks">Trademarks</a>.</sub>
 
 </div>
@@ -22,7 +21,7 @@
 
 ## 📦 What this is
 
-**DirectXbox Recomp** turns an original Xbox (2001–2005) executable into a native program. It
+**Recompose** turns an original Xbox (2001–2005) executable into a native program. It
 disassembles the game's x86 code, lifts every function to C, and links the result against a
 runtime that stands in for the Xbox kernel, the XDK, the GPU and the audio hardware.
 
@@ -81,7 +80,7 @@ against this toolkit, and contains no game code or data. Start with its README.
 
 | Game | XDK | Status | Project |
 |---|:---:|---|---|
-| **TimeSplitters 2** | 4721 | ⭐ Perfect | [split2-recomp](https://github.com/phobos665/split2-recomp) |
+| **TimeSplitters 2** | 4721 | ⭐ Perfect | [Timeslip](https://github.com/Joshspeakman/timeslip) |
 | **Gladius** | 5659 | 🟢 Playable | [gladius-recomp](https://github.com/phobos665/gladius-recomp) |
 | **Pro Evolution Soccer 5** | 5849 | 🟢 Playable | [pro-evo-5-recomp](https://github.com/phobos665/pro-evo-5-recomp) |
 | **Max Payne** | 4134 | 🟢 Playable | [payne-recomp](https://github.com/phobos665/payne-recomp) |
@@ -127,7 +126,7 @@ explains why each flag is there, is [docs/GETTING_STARTED.md](docs/GETTING_START
 
 ```bash
 # 1. Clone with submodules, and build the XDK symbol tool once.
-git clone --recurse-submodules https://github.com/phobos665/xboxrecomp.git
+git clone --recurse-submodules https://github.com/Joshspeakman/recompose.git
 cd xboxrecomp
 cmake -S third_party/XbSymbolDatabase -B third_party/XbSymbolDatabase/build
 cmake --build third_party/XbSymbolDatabase/build --config Release
@@ -323,7 +322,7 @@ flowchart LR
 │    recomp/gen/*.c     recomp_manual.c     main.c          │
 │    (lifted code)      (hand overrides)    (boot)          │
 ├───────────────────────────────────────────────────────────┤
-│  DirectXbox Recomp runtime libraries                      │
+│  Recompose runtime libraries                              │
 │                                                           │
 │    kernel       Xbox kernel ordinals, XAPI, memory,       │
 │                 files, threads, FATX saves                │
@@ -519,7 +518,7 @@ Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## ™️ Trademarks
 
-DirectXbox Recomp is an independent project. It is not affiliated with, endorsed by or
+Recompose is an independent project. It is not affiliated with, endorsed by or
 sponsored by Microsoft Corporation. Xbox, DirectX and Direct3D are trademarks of the Microsoft
 group of companies; they are used here only to say which console and which graphics API this
 project works with. Game titles named in this repository are trademarks of their respective
@@ -532,6 +531,12 @@ The project's icon (`assets/icon`) is its own design, not Microsoft's logo or ha
 
 This project stands on other people's work.
 
+- **[phobos665/DirectXbox-Recomp](https://github.com/phobos665/DirectXbox-Recomp)** is what
+  Recompose was forked from, in November 2026, and its history is kept here. phobos665 and its
+  contributors ([CONTRIBUTORS.md](CONTRIBUTORS.md)) built most of what this toolkit is: the
+  renderers, the D3D8 and DirectSound replacements, the platforms and the titles. Nothing is
+  sent back upstream from here. phobos665 can be supported on
+  [Ko-fi](https://ko-fi.com/phobos665).
 - **[sp00nznet/xboxrecomp](https://github.com/sp00nznet/xboxrecomp)** is where this began. Its
   author built the first public static recompilation toolkit for the original Xbox, proved it on
   Burnout 3, and released it under MIT, whose notice is kept in
