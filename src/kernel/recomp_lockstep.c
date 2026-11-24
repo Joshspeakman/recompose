@@ -300,8 +300,11 @@ static void init(void)
         s_epoch = (int64_t)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
         s_epoch -= s_epoch % 10000000;
     }
-    /* Online: a joiner waits here for the host, and takes its clock. */
-    if (net && *net && !(replay && *replay)) {
+    /* Online: a joiner waits here for the host, and takes its clock. With
+     * a recording as well, each machine plays its own controller's column
+     * of it, so a session between machines reproduces a recorded game and
+     * is checked against it as well as against the other machine. */
+    if (net && *net && strcmp(net, "0") != 0 && strcmp(net, "off") != 0) {
         s_net = lsnet_init(&s_epoch);
         if (!s_net)
             fprintf(stderr, "[LOCKSTEP] no online session; this copy plays alone\n");
@@ -783,8 +786,13 @@ void recomp_lockstep_frame(void)
         int held;
 
         memset(&local, 0, sizeof local);
-        if (s_sampler)
+        if (s_replay) {
+            uint32_t lt = tick + lsnet_delay();     /* where this sample lands */
+            if (lt >= 1 && lt <= s_replay_count)
+                local = s_replay[lt - 1].pads[lsnet_local_port()];
+        } else if (s_sampler) {
             s_sampler(0, &local);
+        }
         held = xbox_GuestLockDropForKernel(1, 0u);
         lsnet_frame(tick, &local, s_region_count && tick % 60u == 0, h, all);
         xbox_GuestLockRestoreForKernel(held);
