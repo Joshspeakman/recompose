@@ -9,10 +9,18 @@
 
 # The resource script naming the .ico, written once into the build folder:
 # an absolute path, so rc.exe finds it from wherever it runs.
+# A title with its own icon sets XBOXRECOMP_TITLE_ICON (an .ico) before this
+# runs -- in its CMakeLists, or through recomp_add_launcher's ICON -- and both
+# of its executables carry that one instead.
 function(xboxrecomp_icon_rc OUT)
-    get_filename_component(_ico "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../assets/icon/xboxrecomp.ico"
-                           ABSOLUTE)
-    set(_rc "${CMAKE_BINARY_DIR}/xboxrecomp_icon.rc")
+    if(XBOXRECOMP_TITLE_ICON)
+        get_filename_component(_ico "${XBOXRECOMP_TITLE_ICON}" ABSOLUTE)
+        set(_rc "${CMAKE_BINARY_DIR}/title_icon.rc")
+    else()
+        get_filename_component(_ico "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../assets/icon/xboxrecomp.ico"
+                               ABSOLUTE)
+        set(_rc "${CMAKE_BINARY_DIR}/xboxrecomp_icon.rc")
+    endif()
     set(_text "1 ICON \"${_ico}\"\n")
     if(EXISTS "${_rc}")
         file(READ "${_rc}" _old)

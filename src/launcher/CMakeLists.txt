@@ -26,7 +26,7 @@
 # title's CMakeLists need not ask which host it is on.
 
 function(recomp_add_launcher TARGET GAME_EXE)
-    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "DEFAULTS" "" ${ARGN})
+    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "DEFAULTS;BRAND;ICON" "" ${ARGN})
     set(_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
 
     if(WIN32)
@@ -38,7 +38,12 @@ function(recomp_add_launcher TARGET GAME_EXE)
             ${_dir}/launcher_bindings.c
         )
         if(COMMAND xboxrecomp_icon_rc)
-            xboxrecomp_icon_rc(_icon_rc)        # cmake/title_icon.cmake
+            # ICON <file.ico>: the title's own; else XBOXRECOMP_TITLE_ICON, else
+            # the toolkit's (cmake/title_icon.cmake).
+            if(_launcher_ICON)
+                set(XBOXRECOMP_TITLE_ICON "${_launcher_ICON}")
+            endif()
+            xboxrecomp_icon_rc(_icon_rc)
             target_sources(${TARGET} PRIVATE "${_icon_rc}")
         endif()
     elseif(APPLE)
@@ -124,8 +129,9 @@ function(recomp_add_launcher TARGET GAME_EXE)
     target_link_libraries(${TARGET} PRIVATE xbox_config xbox_input xbox_net)
     if(WIN32)
         # The rest is in every Windows.
-        # ole32 for the open dialog a self-building release asks with.
-        target_link_libraries(${TARGET} PRIVATE user32 gdi32 ole32)
+        # ole32 for the open dialog a self-building release asks with;
+        # shell32 for files dropped on the window and the command line.
+        target_link_libraries(${TARGET} PRIVATE user32 gdi32 ole32 shell32)
     elseif(APPLE)
         target_link_libraries(${TARGET} PRIVATE SDL3::SDL3
             "-framework CoreText" "-framework CoreGraphics"
@@ -142,6 +148,11 @@ function(recomp_add_launcher TARGET GAME_EXE)
     # fighters cannot reach.
     if(_launcher_NO_WIDESCREEN)
         target_compile_definitions(${TARGET} PRIVATE LAUNCHER_NO_WIDESCREEN=1)
+    endif()
+    # BRAND <name>: what the window is called -- the project's name rather
+    # than the toolkit's. Without it, "Recompose - <the game's name>".
+    if(_launcher_BRAND)
+        target_compile_definitions(${TARGET} PRIVATE LAUNCHER_BRAND="${_launcher_BRAND}")
     endif()
     # COOP: the title's build supports online co-op (it hooks its frame for
     # src/kernel/recomp_lockstep.h), so the System Link tab offers hosting

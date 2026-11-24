@@ -56,6 +56,10 @@ void launcher_draw(void);               /* into the theme's back buffer */
 /* What the player picked in lhost_pick's dialog: a path, or NULL when they
  * cancelled. Called on the front end's own thread, from its loop. */
 void launcher_picked(const char *path);
+/* A path dropped on the window, or the first one on the command line (a disc
+ * image dropped on the launcher's icon): the game's source on the setup
+ * screen, as if chosen with Disc image... or Folder... Ignored anywhere else. */
+void launcher_dropped(const char *path);
 
 /* ---- the front end, for launcher.c ---- */
 

@@ -1855,10 +1855,10 @@ static void draw_setup(void)
         : g_rel_stale
         ? "This release is newer than the game it built for you. Build it again "
           "from the same disc to bring it up to date; your saves and settings stay."
-        : "Choose your disc image (.iso) or the folder the game's files are in. "
-          "The game is built from it once, here on this computer, which takes a "
-          "minute or two. An image is extracted to your home folder; a folder is "
-          "linked, never copied or changed.", 12, THEME_TEXT_DIM);
+        : "Drop your disc image (.iso) or the folder the game's files are in onto "
+          "this window, or choose it below. The game is built from it once, here on "
+          "this computer, which takes a minute or two. An image is extracted to your "
+          "home folder; a folder is linked, never copied or changed.", 12, THEME_TEXT_DIM);
 
     r = setup_rect(0);
     theme_panel(r, g_setup_sel == 0 ? 0.8 : 0.25);
@@ -1870,7 +1870,7 @@ static void draw_setup(void)
                  g_setup_sel == 0 && ((int)(g_pulse * 4) & 1) ? "_" : "");
         theme_text(r, shown, 12, 400, THEME_TEXT, THEME_LEFT);
     } else {
-        theme_text(r, "Type or paste a path, or choose one below", 12, 400,
+        theme_text(r, "Drop the disc image or folder here, or type or paste its path", 12, 400,
                    THEME_TEXT_DIM, THEME_LEFT);
     }
     for (i = 1; i <= 3; i++) {
@@ -1902,7 +1902,7 @@ static void draw_setup(void)
     r.x = 60; r.y = g_ch - 44; r.w = g_cw - 120; r.h = 24;
     theme_text(r, g_pad_seen
                   ? "A  Choose      B  Quit      D-pad  Move"
-                  : "Enter  Choose      Esc  Quit      Type or paste a path in the box",
+                  : "Enter  Choose      Esc  Quit      Drop it on the window, or type or paste its path",
                11, 400, THEME_TEXT_DIM, THEME_LEFT);
 }
 
@@ -2078,6 +2078,15 @@ void launcher_picked(const char *path)
     }
     snprintf(g_source, sizeof g_source, "%s", path);
     release_start_build();
+}
+
+void launcher_dropped(const char *path)
+{
+    if (!path || !*path || !g_release || g_rel != REL_SETUP)
+        return;
+    g_setup_sel = 3;
+    g_rel_note[0] = '\0';
+    launcher_picked(path);
 }
 
 static void draw(void)
@@ -2410,14 +2419,19 @@ void launcher_init(void)
     }
 }
 
-/* The window's title: the toolkit's name, then the game's, without its
- * colons ("Turok: Evolution" reads as "Turok Evolution" after the dash). */
-#define LAUNCHER_BRAND "DirectXboxRecomp"
-
+/* The window's title. A title's own project names itself (recomp_add_launcher
+ * BRAND: "Timeslip"); otherwise the toolkit's name, then the game's, without
+ * its colons ("Turok: Evolution" reads as "Turok Evolution" after the dash). */
+#ifdef LAUNCHER_BRAND
+const char *launcher_title(void)
+{
+    return LAUNCHER_BRAND;
+}
+#else
 const char *launcher_title(void)
 {
     static char title[sizeof g_title_name + 32];
-    size_t n = (size_t)snprintf(title, sizeof title, LAUNCHER_BRAND " - ");
+    size_t n = (size_t)snprintf(title, sizeof title, "Recompose - ");
     const char *c;
 
     for (c = g_title_name; *c && n + 1 < sizeof title; c++)
@@ -2426,6 +2440,7 @@ const char *launcher_title(void)
     title[n] = '\0';
     return title;
 }
+#endif
 
 int launcher_mouse_button(int button)
 {

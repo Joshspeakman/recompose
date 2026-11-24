@@ -10,6 +10,7 @@
 #endif
 #define COBJMACROS
 #include <windows.h>
+#include <shellapi.h>   /* DragAcceptFiles, CommandLineToArgvW */
 #include <shobjidl.h>
 
 #include <stdio.h>
@@ -482,6 +483,18 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         free((void *)lp);
         InvalidateRect(h, NULL, FALSE);
         return 0;
+    case WM_DROPFILES: {
+        /* A disc image or folder dragged from Explorer: the first one. */
+        char path[MAX_PATH * 2];
+        HDROP drop = (HDROP)wp;
+
+        if (DragQueryFileA(drop, 0, path, sizeof path))
+            launcher_dropped(path);
+        DragFinish(drop);
+        SetForegroundWindow(h);
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+    }
     case WM_DESTROY:
         /* Closing the window cancels a build, as on the other front ends. */
         lhost_job_cancel();
@@ -539,6 +552,22 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 
     ShowWindow(g_hwnd, show);
     SetTimer(g_hwnd, 1, 16, NULL);          /* the pad, and the glow */
+    /* Files dragged onto the window, and the first argument: what Windows
+     * passes when a disc image is dropped on the launcher's own icon. */
+    DragAcceptFiles(g_hwnd, TRUE);
+    {
+        int argc = 0;
+        LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+
+        if (argv && argc > 1) {
+            char path[MAX_PATH * 2];
+
+            if (WideCharToMultiByte(CP_ACP, 0, argv[1], -1, path, sizeof path, NULL, NULL))
+                launcher_dropped(path);
+        }
+        if (argv)
+            LocalFree(argv);
+    }
 
     while (GetMessageA(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);

@@ -558,6 +558,10 @@ int main(int argc, char **argv)
     }
     SDL_StartTextInput(g_win);
     fit();
+    /* A disc image or folder given on the command line, as a file manager
+     * passes one dropped on the launcher (launcher_dropped). */
+    if (argc > 1 && argv[1] && argv[1][0] != '-')
+        launcher_dropped(argv[1]);
 
     next_tick = SDL_GetTicks();
     while (!g_quit) {
@@ -576,6 +580,10 @@ int main(int argc, char **argv)
                 break;
             case SDL_EVENT_TEXT_INPUT:
                 on_text(e.text.text);
+                break;
+            case SDL_EVENT_DROP_FILE:
+                /* A disc image or folder dragged onto the window. */
+                launcher_dropped(e.drop.data);
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN: {
                 int b = e.button.button == SDL_BUTTON_LEFT   ? LMOUSE_LEFT
