@@ -87,7 +87,7 @@ int xbox_path_hdd_dir_utf8(char *out, size_t n);
 int xbox_path_save_dir_utf8(char *out, size_t n);
 extern unsigned char xbox_HDKey[16];
 
-#define LS_VERSION      2u
+#define LS_VERSION      3u
 #define DEFAULT_PORT    27620
 #define DEFAULT_DELAY   4u
 #define RING            512u          /* frames of input kept per player */
@@ -98,7 +98,8 @@ extern unsigned char xbox_HDKey[16];
 #define MAX_SAVE_FILES  4096
 #define SETTINGS_LEN    256
 
-enum { T_HELLO = 1, T_WELCOME, T_REFUSE, T_INPUT, T_BYE, T_SAVEREQ, T_SAVE };
+enum { T_HELLO = 1, T_WELCOME, T_REFUSE, T_INPUT, T_BYE, T_SAVEREQ, T_SAVE,
+       T_PING, T_PONG };
 
 typedef struct Checkpoint { uint32_t tick; uint64_t hash; } Checkpoint;
 
@@ -121,6 +122,13 @@ static struct {
     uint64_t last_heard_ms;
     int gone;                         /* the other player left or went silent */
     int welcomed;
+    /* The input delay is agreed before either game takes a frame: a joiner
+     * measures the round trip once it is in and every INPUT it sends carries
+     * the delay that covers it; the host's first frame waits for that. A
+     * delay the host's settings name is used as it is. */
+    int started;                      /* the delay is agreed */
+    int delay_fixed;                  /* the host's settings named one */
+    uint32_t rtt_ms;
     char refused[160];
     /* the host's saves: its snapshot (host) or what has arrived (joiner) */
     uint8_t *saves;
@@ -708,7 +716,7 @@ static int settings_differ(char *why, size_t n)
  * own receipt and newest checkpoint. Called with the lock held. */
 static void send_input_locked(void)
 {
-    uint8_t b[27 + MAX_SEND * 18];
+    uint8_t b[30 + MAX_SEND * 18];
     uint32_t first = g.remote_acked + 1, count, i;
     const Checkpoint *ck = NULL;
 
@@ -732,9 +740,11 @@ static void send_input_locked(void)
     b[14] = (uint8_t)count;
     put32(b + 15, ck ? ck->tick : 0u);
     put64(b + 19, ck ? ck->hash : 0u);
+    b[27] = (uint8_t)(g.started ? g.delay : 0u);
+    put16(b + 28, (uint16_t)(g.rtt_ms > 65535u ? 65535u : g.rtt_ms));
     for (i = 0; i < count; i++)
-        pad_put(b + 27 + 18 * i, &g.local[(first + i) % RING]);
-    send_raw(b, 27 + 18 * (int)count);
+        pad_put(b + 30 + 18 * i, &g.local[(first + i) % RING]);
+    send_raw(b, 30 + 18 * (int)count);
 }
 
 /* The other side's checkpoint against ours for the same frame. */
@@ -773,21 +783,29 @@ static void on_input_locked(const uint8_t *b, int n)
     uint32_t ack, first, count, i, ck_tick;
     uint64_t ck_hash;
 
-    if (n < 27)
+    if (n < 30)
         return;
+    if (g.host && !g.started && b[27]) {
+        /* The joiner's measured delay: the session starts. */
+        g.delay = b[27];
+        g.rtt_ms = get16(b + 28);
+        g.started = 1;
+        say("the joiner measured %u ms there and back: input delay %u frames",
+            (unsigned)g.rtt_ms, g.delay);
+    }
     ack = get32(b + 6);
     first = get32(b + 10);
     count = b[14];
     ck_tick = get32(b + 15);
     ck_hash = get64(b + 19);
-    if (n < 27 + 18 * (int)count)
+    if (n < 30 + 18 * (int)count)
         return;
     if (ack > g.remote_acked && ack <= g.local_upto)
         g.remote_acked = ack;
     for (i = 0; i < count; i++) {
         uint32_t t = first + i;
         if (t == g.remote_upto + 1) {
-            pad_get(&g.remote[t % RING], b + 27 + 18 * i);
+            pad_get(&g.remote[t % RING], b + 30 + 18 * i);
             g.remote_upto = t;
         }
     }
@@ -837,7 +855,7 @@ static void on_hello_locked(const uint8_t *b, int n, const struct sockaddr_in *f
     g.last_heard_ms = now_ms();
     header(w, T_WELCOME);
     put64(w + 5, (uint64_t)g.epoch);
-    w[13] = (uint8_t)g.delay;
+    w[13] = (uint8_t)(g.delay_fixed ? g.delay : 0u);   /* 0: the joiner measures */
     w[14] = (uint8_t)g.remote_port;
     put32(w + 15, g.saves_size);
     put64(w + 19, g.saves_hash);
@@ -920,7 +938,10 @@ static void *receive_thread(void *arg)
                     if (!g.welcomed) {
                         uint16_t sl = get16(b + 27);
                         g.epoch = (int64_t)get64(b + 5);
-                        g.delay = b[13];
+                        if (b[13]) {
+                            g.delay = b[13];
+                            g.delay_fixed = 1;
+                        }
                         g.local_port = b[14];
                         g.remote_port = 0;
                         g.saves_size = get32(b + 15);
@@ -948,6 +969,16 @@ static void *receive_thread(void *arg)
                         g.have_count++;
                     }
                     g.last_heard_ms = now_ms();
+                    SetEvent(g.arrived);
+                } else if (g.host && type == T_PING && from_peer && n >= 13) {
+                    uint8_t pong[13];
+                    memcpy(pong, b, 13);
+                    header(pong, T_PONG);
+                    send_to(&from, pong, 13);
+                } else if (!g.host && type == T_PONG && n >= 13) {
+                    uint32_t rtt = (uint32_t)(now_ms() - get64(b + 5));
+                    if (!g.rtt_ms || rtt < g.rtt_ms)
+                        g.rtt_ms = rtt ? rtt : 1;   /* the best: the path, not a hiccup */
                     SetEvent(g.arrived);
                 } else if (type == T_INPUT && from_peer) {
                     g.last_heard_ms = now_ms();
@@ -1106,6 +1137,33 @@ static void join(const char *peer, int port)
     }
     if (!write_saves())
         leave_now(3, "could not write the host's saves into the session folder");
+
+    /* The round trip, by ten pings 30 ms apart, and the delay that covers
+     * half of it with two frames to spare, so a press reaches the other
+     * machine before the frame it belongs to: 3 frames on a LAN, 5 at 50 ms
+     * each way, 8 at 100. */
+    {
+        int i;
+        for (i = 0; i < 10; i++) {
+            uint8_t ping[13];
+            header(ping, T_PING);
+            put64(ping + 5, now_ms());
+            send_raw(ping, 13);
+            WaitForSingleObject(g.arrived, 30);
+        }
+        WaitForSingleObject(g.arrived, 300);
+        lock();
+        if (!g.delay_fixed) {
+            uint32_t one_way = g.rtt_ms ? (g.rtt_ms + 1) / 2 : 100;
+            g.delay = (one_way * 60u + 999u) / 1000u + 2u;      /* frames, rounded up, +2 */
+            if (g.delay < 3) g.delay = 3;
+            if (g.delay > 30) g.delay = 30;
+        }
+        g.started = 1;
+        unlock();
+        say("measured %u ms there and back; input delay %u frames%s", (unsigned)g.rtt_ms,
+            g.delay, g.delay_fixed ? " (the host's setting)" : "");
+    }
     say("joined as controller %u; input delay %u frames; playing from the host's saves "
         "(%u bytes) in %s", g.local_port + 1u, g.delay, (unsigned)g.saves_size, g.session_dir);
 }
@@ -1142,6 +1200,7 @@ int lsnet_init(int64_t *epoch)
     g.arrived = CreateEventA(NULL, FALSE, FALSE, NULL);
     g.host = strcmp(mode, "host") == 0;
     g.delay = delay && *delay ? (uint32_t)atoi(delay) : DEFAULT_DELAY;
+    g.delay_fixed = delay && *delay;
     if (g.delay < 1) g.delay = 1;
     if (g.delay > 60) g.delay = 60;
     g.local_port = g.host ? 0u : 1u;
@@ -1237,13 +1296,43 @@ uint32_t lsnet_delay(void)
     return g.delay;
 }
 
+/* The host, before its first frame: until the joiner has measured the
+ * round trip, the delay (and so where this frame's sample lands) is not
+ * known. lsnet_frame waits for it too; this lets the caller ask first. */
+void lsnet_wait_start(void)
+{
+    lock();
+    while (g.host && !g.started && !g.gone) {
+        unlock();
+        WaitForSingleObject(g.arrived, 50);
+        lock();
+    }
+    unlock();
+}
+
 void lsnet_frame(uint32_t tick, const RecompLockstepPad *local_now, int have_checkpoint,
                  uint64_t hash, RecompLockstepPad *pads_out)
 {
-    uint32_t want = tick + g.delay, t;
+    uint32_t want, t;
     uint64_t wait_start = 0, last_said = 0;
 
     lock();
+    /* The host's first frame waits for the session's start (the joiner's
+     * measured delay): nothing of this machine's may land before it. */
+    while (g.host && !g.started && !g.gone) {
+        unlock();
+        WaitForSingleObject(g.arrived, 50);
+        lock();
+        if (!wait_start)
+            wait_start = now_ms();
+        if (!g.have_peer && now_ms() - wait_start > 600000) {
+            g.gone = 1;
+            g.started = 1;
+            fprintf(stderr, "[LOCKSTEP-NET] nobody joined in 10 minutes; playing alone\n");
+            fflush(stderr);
+        }
+    }
+    want = tick + g.delay;
     /* This machine's controller now lands DELAY frames ahead; the frames
      * before the first ever sample are neutral on every machine. */
     while (g.local_upto < want) {

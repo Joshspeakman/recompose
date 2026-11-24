@@ -836,6 +836,9 @@ void recomp_lockstep_frame(void)
         int held;
 
         memset(&local, 0, sizeof local);
+        held = xbox_GuestLockDropForKernel(1, 0u);
+        lsnet_wait_start();               /* the delay is agreed before frame 1 */
+        xbox_GuestLockRestoreForKernel(held);
         if (s_replay) {
             uint32_t lt = tick + lsnet_delay();     /* where this sample lands */
             if (lt >= 1 && lt <= s_replay_count)

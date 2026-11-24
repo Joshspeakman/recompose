@@ -20,6 +20,9 @@ uint32_t lsnet_delay(void);
  * controller for this frame, waiting for the other machine's if need be. */
 void lsnet_frame(uint32_t tick, const RecompLockstepPad *local_now, int have_checkpoint,
                  uint64_t hash, RecompLockstepPad *pads_out);
+/* The host, before its first frame: until the session has started (the
+ * joiner's measured delay), what lsnet_delay() says may still change. */
+void lsnet_wait_start(void);
 void lsnet_leave(void);
 /* A joiner's session folder, holding the host's saves: its E:. */
 const char *lsnet_session_dir(void);
