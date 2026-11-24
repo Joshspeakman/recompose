@@ -370,6 +370,7 @@ void xbox_D3D8SetTickSource(uint32_t (*tick)(void))
 static void dump_presented(void)
 {
     static int ready = -1, count, max = 24, nticks, next_tick, frames = 1, run_left, run_index;
+    static int scene = -1;
     static uint32_t ticks[64], run_tick;
     static char prefix[512];
     static unsigned long long every = 5000, next;
@@ -423,11 +424,29 @@ static void dump_presented(void)
             return;
         next = now + every;
     }
-    if (rhi_swapchain_readback(NULL, 0, &w, &h) != 0 || !w || !h)
+    /* RECOMP_PRESENT_DUMP_SCENE=1: the scene target itself, at the size it
+     * was rendered (RECOMP_RES_SCALE times the title's), not the window's
+     * picture of it -- one-pixel cracks average away on the way down. Both
+     * are RGBA8. */
+    if (scene < 0)
+    {
+        const char *v = getenv("RECOMP_PRESENT_DUMP_SCENE");
+        scene = v && *v && strcmp(v, "0") != 0;
+    }
+    if (scene && d3d8_GetSceneImage()) {
+        RhiImageDesc sd;
+
+        rhi_image_get_desc(d3d8_GetSceneImage(), &sd);
+        w = sd.width;
+        h = sd.height;
+    } else if (rhi_swapchain_readback(NULL, 0, &w, &h) != 0) {
         return;
-    if (!(px = (uint8_t *)malloc((size_t)w * h * 4u)))
+    }
+    if (!w || !h || !(px = (uint8_t *)malloc((size_t)w * h * 4u)))
         return;
-    if (rhi_swapchain_readback(px, w * 4u, &w, &h) == 0) {
+    if (scene && d3d8_GetSceneImage()
+            ? rhi_image_readback(d3d8_GetSceneImage(), 0, px, w * 4u) == 0
+            : rhi_swapchain_readback(px, w * 4u, &w, &h) == 0) {
         if (tick && frames > 1)
             snprintf(path, sizeof path, "%st%05u-%d.bmp", prefix, tick, index);
         else if (tick)
