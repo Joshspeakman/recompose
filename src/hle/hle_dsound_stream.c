@@ -50,6 +50,7 @@
 #include <string.h>
 
 #include "hle.h"
+#include "recomp_lockstep.h"
 
 /* The DirectSound replacement: off under RECOMP_AUDIO=apu, when the title's
  * own DirectSound drives the emulated APU (src/hle/audio_path.c). */
@@ -185,7 +186,16 @@ static void lock(void)
     EnterCriticalSection(&g_lock);
 }
 static void unlock(void) { LeaveCriticalSection(&g_lock); }
-static uint64_t now_ms(void) { return GetTickCount64(); }
+/* Under lockstep (src/kernel/recomp_lockstep.h) the play state runs on frame
+ * time, so whether a sound has finished -- which a title can turn into game
+ * state: TimeSplitters 2 frees a voice when GetStatus stops saying PLAYING --
+ * is the same answer at the same frame on every machine. The model's
+ * position does not depend on how often it is advanced, so the service
+ * thread and the game thread can both advance it within a frame. */
+static uint64_t now_ms(void)
+{
+    return recomp_lockstep_active() ? recomp_lockstep_frame_ms() : GetTickCount64();
+}
 
 /* Name the first few call sites of a replaced stream method, once each: a
  * title that waits on a status this file reports differently from the console
@@ -398,6 +408,10 @@ static void sync_to_host(Stream *s, uint64_t now)
     uint64_t played = 0, pos;
     uint32_t queued = 0;
 
+    /* Under lockstep the stream keeps frame time only: where the host's
+     * device has got to is different on every machine. */
+    if (recomp_lockstep_active())
+        return;
     if (!s->output || s->paused || !s->resumed_ms || !s->voice)
         return;
     if (!recomp_audio_output_position(slot_of(s), &played, &queued) || queued == 0)
@@ -704,7 +718,10 @@ void hle_dsound_stream_service(uint64_t now)
         if (!s->iface)
             continue;
         sync_to_host(s, now);
-        if (!s->callback)
+        /* Under lockstep packets finish at the frame boundary instead
+         * (hle_dsound.c, lockstep_boundary): a status written from here
+         * lands at a different moment in the frame on every machine. */
+        if (!s->callback && !recomp_lockstep_active())
             complete_passed(s, now);
         pump(s, now);
     }

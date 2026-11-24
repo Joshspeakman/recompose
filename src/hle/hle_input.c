@@ -41,6 +41,7 @@
 #include "input_model.h"
 #include "input_host.h"
 #include "input_bindings.h"
+#include "recomp_lockstep.h"
 
 /* RECOMP_INPUT_LOG=1 -- see the read in XInputGetState below. */
 static int input_log_wanted(void)
@@ -107,6 +108,24 @@ static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
  * (default 500; 0 attaches at once, as before). */
 static ULONGLONG g_enum_until;
 
+/* Lockstep (src/kernel/recomp_lockstep.h) latches every connected port once
+ * a frame through this, and the title then reads the latch: the same pads
+ * for the whole frame, recorded or replayed or, online, agreed. */
+static void lockstep_sample(unsigned port, RecompLockstepPad *out)
+{
+    RecompInputGamepad g;
+    int i;
+
+    recomp_input_host_sample_port(port, &g);
+    out->buttons = g.buttons;
+    for (i = 0; i < 8; i++)
+        out->analog[i] = g.analog_buttons[i];
+    out->thumb_lx = g.thumb_lx;
+    out->thumb_ly = g.thumb_ly;
+    out->thumb_rx = g.thumb_rx;
+    out->thumb_ry = g.thumb_ry;
+}
+
 static BOOL CALLBACK init(PINIT_ONCE once, PVOID param, PVOID *ctx)
 {
     uint32_t present, port, count = 0u;
@@ -114,6 +133,8 @@ static BOOL CALLBACK init(PINIT_ONCE once, PVOID param, PVOID *ctx)
     (void)once; (void)param; (void)ctx;
     InitializeCriticalSection(&g_lock);
     recomp_bindings_init();               /* logs the config file it read */
+    if (recomp_lockstep_active())
+        recomp_lockstep_set_sampler(lockstep_sample);
     present = recomp_bindings_present_mask() | recomp_input_host_scripted_mask();
     {
         const char *v = getenv("RECOMP_INPUT_ENUM_MS");
@@ -161,6 +182,13 @@ static void unlock(void) { LeaveCriticalSection(&g_lock); }
 static void refresh_connected(void)
 {
     uint32_t present = recomp_bindings_present_mask() | recomp_input_host_scripted_mask(), port;
+
+    if (recomp_lockstep_active()) {
+        /* The session's ports, from a fixed tick: when a pad arrives is
+         * part of the game, so it cannot depend on the wall clock. */
+        present = recomp_lockstep_connected_mask();
+        g_enum_until = 0;
+    }
 
     if (g_enum_until) {
         if (GetTickCount64() < g_enum_until)
@@ -317,7 +345,19 @@ HLE_EXPORT(XInputGetState)
      * four guest threads on the slowest of them. */
     if (!recomp_input_port_for_handle(handle, &port))
         HLE_RETURN(ERR_DEVICE_NOT_CONNECTED);
-    recomp_input_host_sample_port(port, &sampled);
+    if (recomp_lockstep_active()) {
+        RecompLockstepPad lp;
+        recomp_lockstep_pad(port, &lp);
+        sampled.buttons = lp.buttons;
+        for (i = 0; i < RECOMP_INPUT_ANALOG_BUTTON_COUNT; i++)
+            sampled.analog_buttons[i] = lp.analog[i];
+        sampled.thumb_lx = lp.thumb_lx;
+        sampled.thumb_ly = lp.thumb_ly;
+        sampled.thumb_rx = lp.thumb_rx;
+        sampled.thumb_ry = lp.thumb_ry;
+    } else {
+        recomp_input_host_sample_port(port, &sampled);
+    }
     lock();
     recomp_input_set_gamepad(&g_model, handle, &sampled);
     if (recomp_input_get_state(&g_model, handle, &packet, &pad)) {

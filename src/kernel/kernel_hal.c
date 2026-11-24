@@ -12,6 +12,7 @@
  */
 
 #include "kernel.h"
+#include "recomp_lockstep.h"
 #include "xbox_memory_layout.h"   /* xbox_EnvSwitch */
 #include "recomp_config.h"
 #include <stdio.h>
@@ -403,6 +404,13 @@ LARGE_INTEGER __stdcall xbox_KeQueryPerformanceCounter(void)
 
     if (!qpc_ready)
         xbox_hal_init_timers();
+    if (recomp_lockstep_active()) {
+        /* Frame time, so every machine in the session reads the same. */
+        uint64_t t = recomp_lockstep_time_100ns();
+        counter.QuadPart = (LONGLONG)((t / 10000000ull) * (uint64_t)XBOX_ACPI_FREQUENCY
+                         + (t % 10000000ull) * (uint64_t)XBOX_ACPI_FREQUENCY / 10000000ull);
+        return counter;
+    }
     QueryPerformanceCounter(&counter);
     if (qpc_passthru)
         return counter;
@@ -483,6 +491,12 @@ VOID __stdcall xbox_KeQuerySystemTime(PLARGE_INTEGER CurrentTime)
 
     if (!CurrentTime)
         return;
+    if (recomp_lockstep_active()) {
+        /* The session's clock, advanced by frames (recomp_lockstep.h). */
+        CurrentTime->QuadPart = (LONGLONG)(recomp_lockstep_epoch()
+                              + (int64_t)recomp_lockstep_time_100ns());
+        return;
+    }
 
     InitOnceExecuteOnce(&s_time_once, anchor_system_time, NULL, NULL);
     QueryPerformanceCounter(&now);
@@ -1121,6 +1135,8 @@ ULONGLONG __stdcall xbox_KeQueryInterruptTime(void)
      * scale by 10,000. Resolution is coarser than the real kernel's, but it is
      * monotonic, which is the property callers actually depend on.
      */
+    if (recomp_lockstep_active())
+        return (ULONGLONG)recomp_lockstep_time_100ns();
     return (ULONGLONG)GetTickCount64() * 10000ULL;
 }
 
@@ -1197,6 +1213,10 @@ uint64_t xbox_ReadTimeStampCounter(void)
     static LARGE_INTEGER origin;
     LARGE_INTEGER now;
 
+    if (recomp_lockstep_active()) {
+        uint64_t t = recomp_lockstep_time_100ns();
+        return (t / 10000000ull) * XBOX_TSC_HZ + (t % 10000000ull) * XBOX_TSC_HZ / 10000000ull;
+    }
     if (freq.QuadPart == 0) {
         QueryPerformanceFrequency(&freq);
         QueryPerformanceCounter(&origin);

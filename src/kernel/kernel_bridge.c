@@ -26,6 +26,7 @@
  */
 
 #include "kernel.h"
+#include "recomp_lockstep.h"
 #include "xbox_memory_layout.h"
 #include "recomp_icall_feedback.h"
 #include "platform/host_timer.h"   /* the vblank clock's precise sleep */
@@ -2607,6 +2608,17 @@ static void bridge_KeDelayExecutionThread(void)
     BRIDGE_ALERTABLE_APCS(alertable);
     uint32_t interval_ptr = STACK_ARG(2);
 
+    /* Under lockstep another guest thread's sleep is counted in frames:
+     * it parks until the frame boundary its wake time falls in, and runs
+     * there while the frame's thread waits (recomp_lockstep.h). */
+    if (interval_ptr) {
+        int64_t interval;
+        memcpy(&interval, XBOX_TO_NATIVE(interval_ptr), sizeof interval);
+        if (recomp_lockstep_secondary_delay(interval)) {
+            g_eax = 0;
+            return;
+        }
+    }
 
     g_eax = (uint32_t)xbox_KeDelayExecutionThread(
         (KPROCESSOR_MODE)wait_mode, (BOOLEAN)alertable,
@@ -2641,6 +2653,12 @@ static void bridge_KeBugCheckEx(void)
 /* ── NtYieldExecution (ordinal 238) ──────────────────────── */
 static void bridge_NtYieldExecution(void)
 {
+    /* Under lockstep another guest thread's yield waits for the next frame
+     * boundary, as a Sleep(0) does (recomp_lockstep.h). */
+    if (recomp_lockstep_secondary_delay(0)) {
+        g_eax = 0;
+        return;
+    }
     g_eax = (uint32_t)xbox_NtYieldExecution();
 }
 
@@ -11461,6 +11479,20 @@ static void kpoll_check(const char *when, ULONG ordinal, uint32_t ret)
     }
 }
 
+/* The waits on objects: KeWaitForMultipleObjects, KeWaitForSingleObject,
+ * NtWaitForSingleObject(Ex), NtWaitForMultipleObjectsEx and
+ * NtSignalAndWaitForSingleObjectEx. Not file reads, which finish inside the
+ * call, so a thread keeps its turn across one. */
+static int lockstep_wait_ordinal(ULONG ordinal)
+{
+    switch (ordinal) {
+    case 158: case 159: case 230: case 233: case 234: case 235:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static void kernel_thunk_dispatch(void)
 {
     int slot = g_kernel_dispatch_slot;
@@ -11605,6 +11637,12 @@ static void kernel_thunk_dispatch(void)
          * right about that list. */
         int _guest_held = xbox_GuestLockDropForKernel(bridge_may_block(ordinal), ordinal);
         xbox_GuestLiftedLeave();
+        /* Under lockstep another guest thread waiting on an object gives
+         * up its frame-boundary turn, and takes the next one when the wait
+         * returns (recomp_lockstep.h). KeDelayExecutionThread parks in its
+         * bridge instead. */
+        int _ls_turn = lockstep_wait_ordinal(ordinal) &&
+                       recomp_lockstep_secondary_block_begin();
         if (xbox_FpsWaitProfileOn()) {
             /* RECOMP_WAIT_PROFILE: how long this call held the thread. */
             LARGE_INTEGER _t0, _t1;
@@ -11616,6 +11654,8 @@ static void kernel_thunk_dispatch(void)
         } else {
             bridge();
         }
+        if (_ls_turn)
+            recomp_lockstep_secondary_block_end();
         /* Re-acquire first, then count. Counting first made a thread waiting
          * for the lock look like a thread running lifted code, so switching
          * the lock on -- which is meant to make overlap impossible -- took
@@ -11668,6 +11708,9 @@ static void kernel_thunk_dispatch(void)
         }
         g_eax = 0;
     }
+
+    if (recomp_lockstep_noting())
+        recomp_lockstep_note("k", ordinal, g_kernel_caller, g_eax);
 
     /* Clean stdcall args from the simulated stack.
      * On real x86, stdcall callee does "ret N" to pop the return address

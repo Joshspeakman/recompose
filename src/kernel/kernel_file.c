@@ -16,6 +16,21 @@
 
 #define _GNU_SOURCE   /* FNM_CASEFOLD */
 #include "kernel.h"
+#include "recomp_lockstep.h"
+
+/* Lockstep (recomp_lockstep.h): every file shows the session's clock. Each
+ * machine's copy of a save was written at its own moment, and a title keeps
+ * what it reads (TimeSplitters 2 holds a save's time in its globals), so the
+ * host's times would make two machines' games differ. */
+#define LOCKSTEP_FILE_TIMES(p) do { \
+        if (recomp_lockstep_active()) { \
+            LONGLONG e_ = (LONGLONG)recomp_lockstep_epoch(); \
+            (p)->CreationTime.QuadPart = e_; \
+            (p)->LastAccessTime.QuadPart = e_; \
+            (p)->LastWriteTime.QuadPart = e_; \
+            (p)->ChangeTime.QuadPart = e_; \
+        } \
+    } while (0)
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -577,6 +592,7 @@ NTSTATUS __stdcall xbox_NtQueryInformationFile(
             info->LastWriteTime.LowPart   = fi.ftLastWriteTime.dwLowDateTime;
             info->LastWriteTime.HighPart  = fi.ftLastWriteTime.dwHighDateTime;
             info->ChangeTime = info->LastWriteTime;
+            LOCKSTEP_FILE_TIMES(info);
             info->FileAttributes = fi.dwFileAttributes;
             IoStatusBlock->Status = STATUS_SUCCESS;
             IoStatusBlock->Information = sizeof(XBOX_FILE_BASIC_INFORMATION);
@@ -620,6 +636,7 @@ NTSTATUS __stdcall xbox_NtQueryInformationFile(
             info->LastWriteTime.LowPart   = fi.ftLastWriteTime.dwLowDateTime;
             info->LastWriteTime.HighPart  = fi.ftLastWriteTime.dwHighDateTime;
             info->ChangeTime = info->LastWriteTime;
+            LOCKSTEP_FILE_TIMES(info);
             info->EndOfFile.QuadPart = ((LONGLONG)fi.nFileSizeHigh << 32) | fi.nFileSizeLow;
             info->AllocationSize.QuadPart = (info->EndOfFile.QuadPart + 4095) & ~4095LL;
             info->FileAttributes = fi.dwFileAttributes;
@@ -1026,6 +1043,7 @@ NTSTATUS __stdcall xbox_NtQueryFullAttributesFile(
     FileInformation->LastWriteTime.LowPart   = fad.ftLastWriteTime.dwLowDateTime;
     FileInformation->LastWriteTime.HighPart  = fad.ftLastWriteTime.dwHighDateTime;
     FileInformation->ChangeTime = FileInformation->LastWriteTime;
+    LOCKSTEP_FILE_TIMES(FileInformation);
     FileInformation->EndOfFile.QuadPart = ((LONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
     FileInformation->AllocationSize.QuadPart = (FileInformation->EndOfFile.QuadPart + 4095) & ~4095LL;
     FileInformation->FileAttributes = fad.dwFileAttributes;
@@ -1200,6 +1218,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
     entry->LastWriteTime.LowPart  = ctx->find_data.ftLastWriteTime.dwLowDateTime;
     entry->LastWriteTime.HighPart = ctx->find_data.ftLastWriteTime.dwHighDateTime;
     entry->ChangeTime = entry->LastWriteTime;
+    LOCKSTEP_FILE_TIMES(entry);
     entry->EndOfFile.QuadPart = ((LONGLONG)ctx->find_data.nFileSizeHigh << 32) | ctx->find_data.nFileSizeLow;
     entry->AllocationSize.QuadPart = (entry->EndOfFile.QuadPart + 4095) & ~4095LL;
     entry->FileAttributes = ctx->find_data.dwFileAttributes;
@@ -1550,6 +1569,7 @@ NTSTATUS __stdcall xbox_NtQueryInformationFile(
             unix_to_filetime(st.st_atime, 0, &info->LastAccessTime);
             unix_to_filetime(st.st_mtime, 0, &info->LastWriteTime);
             info->ChangeTime = info->LastWriteTime;
+            LOCKSTEP_FILE_TIMES(info);
             info->FileAttributes = mode_to_xbox_attrs(st.st_mode);
             IoStatusBlock->Status = STATUS_SUCCESS;
             IoStatusBlock->Information = sizeof(XBOX_FILE_BASIC_INFORMATION);
@@ -1581,6 +1601,7 @@ NTSTATUS __stdcall xbox_NtQueryInformationFile(
             unix_to_filetime(st.st_atime, 0, &info->LastAccessTime);
             unix_to_filetime(st.st_mtime, 0, &info->LastWriteTime);
             info->ChangeTime = info->LastWriteTime;
+            LOCKSTEP_FILE_TIMES(info);
             info->EndOfFile.QuadPart = st.st_size;
             info->AllocationSize.QuadPart = (st.st_size + 4095) & ~4095LL;
             info->FileAttributes = mode_to_xbox_attrs(st.st_mode);
@@ -1833,6 +1854,7 @@ NTSTATUS __stdcall xbox_NtQueryFullAttributesFile(
     unix_to_filetime(st.st_atime, 0, &FileInformation->LastAccessTime);
     unix_to_filetime(st.st_mtime, 0, &FileInformation->LastWriteTime);
     FileInformation->ChangeTime = FileInformation->LastWriteTime;
+    LOCKSTEP_FILE_TIMES(FileInformation);
     FileInformation->EndOfFile.QuadPart = st.st_size;
     FileInformation->AllocationSize.QuadPart = (st.st_size + 4095) & ~4095LL;
     FileInformation->FileAttributes = mode_to_xbox_attrs(st.st_mode);
@@ -1974,6 +1996,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
     unix_to_filetime(st.st_atime, 0, &entry->LastAccessTime);
     unix_to_filetime(st.st_mtime, 0, &entry->LastWriteTime);
     entry->ChangeTime = entry->LastWriteTime;
+    LOCKSTEP_FILE_TIMES(entry);
     entry->EndOfFile.QuadPart = st.st_size;
     entry->AllocationSize.QuadPart = (st.st_size + 4095) & ~4095LL;
     entry->FileAttributes = mode_to_xbox_attrs(st.st_mode);

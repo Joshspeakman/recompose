@@ -13,6 +13,7 @@
  */
 
 #include "xbox_memory_layout.h"
+#include "recomp_lockstep.h"
 #include "kernel.h"
 #include "recomp_config.h"
 #include "xbox_watchpoint.h"
@@ -2943,7 +2944,9 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
          * hardware whether or not anyone is asleep. GetTickCount() shares the
          * millisecond unit, so the rate matches. */
         *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
-                               + g_memory_offset) = GetTickCount();
+                               + g_memory_offset) = recomp_lockstep_active()
+            ? (uint32_t)((uint64_t)recomp_lockstep_tick() * 1000u / 60u)  /* frame time */
+            : GetTickCount();
 
         nv2a_ack_wait();
     }

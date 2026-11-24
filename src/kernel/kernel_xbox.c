@@ -10,6 +10,7 @@
  */
 
 #include "kernel.h"
+#include "recomp_lockstep.h"
 #include "xbox_memory_layout.h"   /* xbox_EnvSwitch */
 #include "recomp_config.h"
 #include "xbox_nic.h"
@@ -169,6 +170,17 @@ static void tz_init(void)
 {
     if (s_tz_ready)
         return;
+    if (recomp_lockstep_active()) {
+        /* Every machine in a lockstep session keeps the same clock, so the
+         * same zone too: UTC, no daylight time. A title that turns the time
+         * of day into game state (TimeSplitters 2 seeds its random numbers
+         * from it) would otherwise play a different game in each zone. */
+        memset(&s_tz, 0, sizeof s_tz);
+        tz_name4(s_tz.std_name, "UTC");
+        tz_name4(s_tz.dlt_name, "UTC");
+        InterlockedExchange(&s_tz_ready, 1);
+        return;
+    }
 #ifdef _WIN32
     {
         TIME_ZONE_INFORMATION tzi;

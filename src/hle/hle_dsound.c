@@ -46,6 +46,7 @@
 #include <string.h>
 
 #include "hle.h"
+#include "recomp_lockstep.h"
 
 /* The DirectSound replacement: off under RECOMP_AUDIO=apu, when the title's
  * own DirectSound drives the emulated APU (src/hle/audio_path.c). */
@@ -924,7 +925,16 @@ static Buffer *model_for(uint32_t iface, uint64_t now)
     return model_for_known(NULL, iface, now);
 }
 
-static uint64_t now_ms(void) { return GetTickCount64(); }
+/* Under lockstep (src/kernel/recomp_lockstep.h) the play state runs on frame
+ * time, so whether a sound has finished -- which a title can turn into game
+ * state: TimeSplitters 2 frees a voice when GetStatus stops saying PLAYING --
+ * is the same answer at the same frame on every machine. The model's
+ * position does not depend on how often it is advanced, so the service
+ * thread and the game thread can both advance it within a frame. */
+static uint64_t now_ms(void)
+{
+    return recomp_lockstep_active() ? recomp_lockstep_frame_ms() : GetTickCount64();
+}
 
 /* After a control change, restart the output from the model unless this is a
  * Play that simply continues a sound already playing. The old voice plays out
@@ -1007,6 +1017,24 @@ static void mixins_service(uint64_t now)
     }
 }
 
+/* Under lockstep (src/kernel/recomp_lockstep.h): what the hardware would
+ * do to the guest on its own -- a stream's packets finishing, a buffer's
+ * notification positions passing -- is done here, at each frame boundary on
+ * the frame's thread, so it lands at the same point in the game on every
+ * machine. The service thread above only feeds the host. */
+static void lockstep_boundary(void)
+{
+    uint64_t now = now_ms();
+    uint32_t i;
+
+    lock();
+    for (i = 0; i < SLOTS; i++)
+        if (g_buffers[i].iface)
+            notify_check(&g_buffers[i], now);
+    unlock();
+    hle_dsound_stream_tick(now);
+}
+
 static DWORD WINAPI service_thread(LPVOID param)
 {
     host_timer *timer = host_timer_create(HOST_TIMER_ANY);
@@ -1022,8 +1050,8 @@ static DWORD WINAPI service_thread(LPVOID param)
             Buffer *b = &g_buffers[i];
             if (b->iface && b->output && b->output_model.playing)
                 pump(b, now);
-            if (b->iface)
-                notify_check(b, now);
+            if (b->iface && !recomp_lockstep_active())
+                notify_check(b, now);      /* lockstep: at the frame boundary */
         }
         unlock();
         hle_dsound_stream_service(now);
@@ -1044,6 +1072,8 @@ static BOOL CALLBACK start_service(PINIT_ONCE once, PVOID param, PVOID *ctx)
     HANDLE thread;
     (void)once; (void)param; (void)ctx;
 
+    if (recomp_lockstep_active())
+        recomp_lockstep_add_boundary_hook(lockstep_boundary);
     if (!xbox_EnvSwitch("RECOMP_DSOUND_SERVICE", 1)) {
         fprintf(stderr, "[DSOUND] RECOMP_DSOUND_SERVICE=0: sound is fed only when "
                         "the title calls DirectSound\n");
@@ -1622,6 +1652,8 @@ HLE_EXPORT(IDirectSoundBuffer_GetStatus)
     }
     unlock();
     HLE_MEM32(out) = status;          /* never played here: not playing */
+    if (recomp_lockstep_noting())
+        recomp_lockstep_note("ds-status", iface, status, (uint32_t)now);
     HLE_RETURN(RECOMP_DSOUND_OK);
 }
 
@@ -1647,8 +1679,11 @@ HLE_EXPORT(IDirectSoundBuffer_GetCurrentPosition)
          * (consecutive submissions on its ring stopped joining: 18 bad joins
          * in 5 s). The read position is at most one pump behind the clock.
          * RECOMP_DSOUND_READ_CURSOR=0 reports the clock's, as before. */
+        /* Not under lockstep: how far the service thread has read depends
+         * on when it last ran, and the clock's answer is the same everywhere. */
         if (read_cursor < 0)
-            read_cursor = xbox_EnvSwitch("RECOMP_DSOUND_READ_CURSOR", 1);
+            read_cursor = !recomp_lockstep_active() &&
+                          xbox_EnvSwitch("RECOMP_DSOUND_READ_CURSOR", 1);
         if (read_cursor && b->output && b->model.playing && b->output_model.playing)
             cursor = b->output_model.cursor_bytes;
         /* ADPCM is clocked in decoded bytes; the game asks in source bytes. */
@@ -1682,6 +1717,8 @@ HLE_EXPORT(IDirectSoundBuffer_GetCurrentPosition)
         if (out != 0u)
             HLE_MEM32(out) = cursor;
     }
+    if (recomp_lockstep_noting())
+        recomp_lockstep_note("ds-cursor", iface, cursor, (uint32_t)now);
     HLE_RETURN(RECOMP_DSOUND_OK);
 }
 
