@@ -24,6 +24,7 @@
 #define BIND_PORTS      4
 #define BIND_CONTROLS   24
 #define BIND_SOURCE_LEN 32
+#define BIND_MORE_LEN 96
 
 /* The 24 Xbox inputs, in the order the launcher lists them, by the names
  * the config file uses. */
@@ -42,6 +43,9 @@ typedef struct BindPort {
      * shape a player thinks in. */
     char pad_src[BIND_CONTROLS][BIND_SOURCE_LEN];
     char key_src[BIND_CONTROLS][BIND_SOURCE_LEN];
+    /* Key and mouse sources past the first, space-separated: not shown here,
+     * kept as read and written back (a title's defaults may have several). */
+    char key_more[BIND_CONTROLS][BIND_MORE_LEN];
 } BindPort;
 
 /* Which API reads the pads, for every port and every game: SDL3 reads

@@ -545,6 +545,19 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     case WM_INPUT:
         shadow_mouse_raw(lp);
         break;                          /* DefWindowProc cleans up after it */
+    case WM_MOUSEWHEEL: {
+        /* mouse:wheel_up / wheel_down. A fine-grained wheel reports less
+         * than a notch at a time: whole notches only, the rest kept. */
+        static int part;
+        int n;
+
+        part += GET_WHEEL_DELTA_WPARAM(wp);
+        n = part / WHEEL_DELTA;
+        part -= n * WHEEL_DELTA;
+        if (n)
+            recomp_mouse_wheel(n);
+        return 0;
+    }
     case WM_ACTIVATE:
         /* Switched to by keyboard: take the pointer now. Clicked to the
          * front: on the click, if it lands in the window (shadow_mouse_button)
@@ -567,6 +580,10 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     case WM_MOVE:
         if (g_mouse_captured)
             shadow_mouse_clip(hwnd);
+        /* A title held by the menu presents only when asked: the held
+         * frame again at the window's new size. */
+        if (msg == WM_SIZE)
+            host_request_redraw();
         break;
     case WM_SYSKEYDOWN:
         /* Alt+Enter, the usual Windows key for it: fullscreen and back. */
@@ -935,8 +952,19 @@ static void shadow_host_ui(void *user, int kind, int a, int b, float x, float y)
         recomp_menu_toggle();
         return;
     }
-    if (!recomp_menu_is_open())
+    if (!recomp_menu_is_open()) {
+        if (kind == HOST_UI_WHEEL) {
+            static float part;
+            int n;
+
+            part += y;
+            n = (int)part;
+            part -= (float)n;
+            if (n)
+                recomp_mouse_wheel(n);
+        }
         return;
+    }
     switch (kind) {
     case HOST_UI_POS:    recomp_menu_mouse_pos(x, y); break;
     case HOST_UI_BUTTON: recomp_menu_mouse_pos(x, y); recomp_menu_mouse_button(a, b); break;

@@ -287,6 +287,27 @@ typedef struct RecompSettings {
 
 void recomp_settings_defaults(RecompSettings *s);
 
+/* A title's own defaults, where the toolkit's do not suit it: TimeSplitters
+ * 2 wants mouse look on, and keys laid out for a shooter. Both are pairs,
+ * NULL at the end, and are kept as given (static tables).
+ *
+ *   settings: "key", "value" -- what recomp_settings_defaults starts from
+ *             (so a new settings file is written with them) and what a
+ *             lookup answers when neither the environment nor the file
+ *             has the key.
+ *   bindings: "control", "source source ..." -- controller 1's keyboard
+ *             and mouse sources, replacing the toolkit's whole keyboard
+ *             column (a control not named has none). A bindings file
+ *             still wins for any control it names.
+ *
+ * The game installs them before anything reads a setting or a pad; the
+ * launcher, built with recomp_add_launcher(... DEFAULTS <file>), installs
+ * the same tables, so both show and use the same defaults. */
+void recomp_title_defaults_install(const char *const *bindings, const char *const *settings);
+int  recomp_title_has_binding_defaults(void);
+const char *recomp_title_binding_default(const char *control);   /* NULL: none */
+const char *recomp_title_setting_default(const char *key);       /* NULL: none */
+
 /* Read the file at `path` into `s`, starting from the defaults. Absent
  * keys keep their default, so an older file gains new settings rather
  * than losing them. Returns 0 if the file could not be read at all. */

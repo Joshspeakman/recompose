@@ -142,8 +142,8 @@ static const char *const PAD_BUTTONS[PB_COUNT] = {
 
 /* "mouse:" sources, in RECOMP_MOUSE_* order. x1 and x2 are the side buttons
  * (back and forward). */
-static const char *const MOUSE_BUTTONS[RECOMP_MOUSE_BUTTONS] = {
-    "left", "right", "middle", "x1", "x2"
+static const char *const MOUSE_BUTTONS[RECOMP_MOUSE_SOURCES] = {
+    "left", "right", "middle", "x1", "x2", "wheel_up", "wheel_down"
 };
 
 typedef struct {
@@ -248,7 +248,7 @@ static int parse_source(const char *text, Source *out)
     }
     if (strncmp(text, "mouse:", 6) == 0) {
         int i;
-        for (i = 0; i < RECOMP_MOUSE_BUTTONS; i++)
+        for (i = 0; i < RECOMP_MOUSE_SOURCES; i++)
             if (strcmp(MOUSE_BUTTONS[i], text + 6) == 0) {
                 out->kind = SRC_MOUSE;
                 out->arg = (short)i;
@@ -314,8 +314,29 @@ static void defaults_for(Controller *c, int port)
         if (k < 0)
             continue;
         bind_add(&c->bind[k], DEFAULTS[i].pad, &bad);
-        if (port == 0 && DEFAULTS[i].key)
+        if (port != 0)
+            continue;
+        if (recomp_title_has_binding_defaults()) {
+            /* The title's keyboard and mouse column replaces the
+             * toolkit's: space-separated sources, or none. */
+            const char *list = recomp_title_binding_default(DEFAULTS[i].control);
+            char one[64];
+
+            while (list && *list) {
+                size_t n = strcspn(list, " ");
+
+                if (n && n < sizeof one) {
+                    memcpy(one, list, n);
+                    one[n] = '\0';
+                    bind_add(&c->bind[k], one, &bad);
+                }
+                list += n;
+                while (*list == ' ')
+                    list++;
+            }
+        } else if (DEFAULTS[i].key) {
             bind_add(&c->bind[k], DEFAULTS[i].key, &bad);
+        }
     }
     c->has_key = (port == 0);
 }
@@ -959,6 +980,43 @@ void recomp_mouse_button(int button, int down)
         MOUSE_AND(&g_mouse_held, ~(1L << button));
 }
 
+/* The wheel: each notch a short press of its source (mouse:wheel_up,
+ * mouse:wheel_down), long enough for a title reading its pad once a frame
+ * to see it go down and come up again -- 50 ms down, 50 ms up -- and
+ * queued, at most four ahead, so a quick flick of several notches is
+ * several presses rather than one. Any thread samples; the worst a race
+ * does is one press more or less. */
+#define WHEEL_PRESS_MS 50ull
+#define WHEEL_GAP_MS   50ull
+#define WHEEL_QUEUE    4
+static volatile long g_wheel_pending[2];        /* [0] away from the player, [1] towards */
+static unsigned long long g_wheel_until[2], g_wheel_next[2];
+
+void recomp_mouse_wheel(int notches)
+{
+    int d = notches > 0 ? 0 : 1, n = notches > 0 ? notches : -notches;
+
+    while (n-- > 0)
+        if (g_wheel_pending[d] < WHEEL_QUEUE)
+            MOUSE_ADD(&g_wheel_pending[d], 1);
+}
+
+static int wheel_magnitude(int d)
+{
+    unsigned long long now = now_ms();
+
+    if (d < 0 || d > 1)
+        return 0;
+    if (now < g_wheel_until[d])
+        return 255;
+    if (now < g_wheel_next[d] || g_wheel_pending[d] <= 0)
+        return 0;
+    MOUSE_ADD(&g_wheel_pending[d], -1);
+    g_wheel_until[d] = now + WHEEL_PRESS_MS;
+    g_wheel_next[d] = g_wheel_until[d] + WHEEL_GAP_MS;
+    return 255;
+}
+
 void recomp_mouse_release(void)
 {
     MOUSE_AND(&g_mouse_held, 0);
@@ -1067,6 +1125,8 @@ static int axis_value(const RecompPadState *g, int axis)
 
 /* Every source reads as a 0..255 magnitude, whatever it is: that is what
  * makes a trigger bindable to a key and a button bindable to a stick. */
+static int wheel_magnitude(int d);
+
 static int source_magnitude(const Source *s, KeyCache *kc,
                             const RecompPadState *pad, int have_pad, int deadzone)
 {
@@ -1074,6 +1134,8 @@ static int source_magnitude(const Source *s, KeyCache *kc,
     case SRC_KEY:
         return key_down(kc, s->arg) ? 255 : 0;
     case SRC_MOUSE:
+        if (s->arg >= RECOMP_MOUSE_BUTTONS)
+            return wheel_magnitude(s->arg - RECOMP_MOUSE_BUTTONS);
         return (g_mouse_held & (1L << s->arg)) ? 255 : 0;
     case SRC_PAD_BUTTON:
         if (!have_pad)

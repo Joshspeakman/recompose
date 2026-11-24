@@ -46,6 +46,42 @@ static uint32_t g_title_id;
 static char    g_path[1024];
 static int     g_have_path;
 
+/* A title's own defaults (recomp_title_defaults_install): pairs, NULL at
+ * the end, kept as given -- they are the title's static tables. */
+static const char *const *g_title_bindings;
+static const char *const *g_title_settings;
+
+void recomp_title_defaults_install(const char *const *bindings, const char *const *settings)
+{
+    g_title_bindings = bindings;
+    g_title_settings = settings;
+}
+
+int recomp_title_has_binding_defaults(void)
+{
+    return g_title_bindings != NULL;
+}
+
+const char *recomp_title_binding_default(const char *control)
+{
+    const char *const *p;
+
+    for (p = g_title_bindings; p && p[0] && p[1]; p += 2)
+        if (!strcmp(p[0], control))
+            return p[1];
+    return NULL;
+}
+
+const char *recomp_title_setting_default(const char *key)
+{
+    const char *const *p;
+
+    for (p = g_title_settings; p && p[0] && p[1]; p += 2)
+        if (!strcmp(p[0], key))
+            return p[1];
+    return NULL;
+}
+
 void recomp_config_set_title(uint32_t title_id)
 {
     g_title_id = title_id;
@@ -286,6 +322,8 @@ static int readable(const char *path)
 
 /* ------------------------------------------------------------ settings */
 
+static void settings_from_table(RecompSettings *s);
+
 void recomp_settings_defaults(RecompSettings *s)
 {
     if (!s)
@@ -317,9 +355,99 @@ void recomp_settings_defaults(RecompSettings *s)
     s->syslink_upnp      = 1;
     snprintf(s->coop, sizeof s->coop, "off");
     s->coop_port         = RECOMP_COOP_DEFAULT_PORT;
+    if (g_title_settings) {
+        /* The title's own over the toolkit's, read as the file is read. The
+         * table is the lookup path's; borrowed and put back. */
+        static Entry saved[MAX_ENTRIES];
+        int saved_count = g_entry_count, saved_loaded = g_loaded;
+        const char *const *p;
+
+        memcpy(saved, g_entries, sizeof saved);
+        g_entry_count = 0;
+        for (p = g_title_settings; p[0] && p[1]; p += 2)
+            store(p[0], p[1]);
+        settings_from_table(s);
+        memcpy(g_entries, saved, sizeof saved);
+        g_entry_count = saved_count;
+        g_loaded = saved_loaded;
+    }
 }
 
 static int clamp_int(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+/* The settings the lookup table holds, over what `s` has: the file's
+ * lines, or a title's defaults (recomp_title_defaults_install). */
+static void settings_from_table(RecompSettings *s)
+{
+    const char *v;
+
+    if ((v = from_table("resolution_scale")) != NULL)
+        s->resolution_scale = clamp_int(atoi(v), 1, 8);
+    if ((v = from_table("widescreen")) != NULL)
+        s->widescreen = !off_word(v);
+    /* A number is an override and is kept as one; "auto", like no
+     * line at all, leaves it to the title (recomp_widescreen_resolve).
+     * Nothing below zero is a factor, and the runtime has always read
+     * one as "leave the camera alone", so it is kept as that rather
+     * than colliding with the mark for auto. */
+    if ((v = from_table("hor_plus")) != NULL) {
+        double factor = atof(v);
+
+        if (ieq(v, "auto"))
+            s->hor_plus = RECOMP_HOR_PLUS_AUTO;
+        else
+            s->hor_plus = factor < 0.0 ? 0.0 : factor;
+    }
+    if ((v = from_table("hor_plus_register")) != NULL) {
+        if (ieq(v, "auto"))
+            s->hor_plus_register = RECOMP_REGISTER_AUTO;
+        else
+            s->hor_plus_register = clamp_int(atoi(v), 0, VS_CONSTANTS - 1);
+    }
+    if ((v = from_table("widescreen_2d")) != NULL)
+        snprintf(s->widescreen_2d, sizeof s->widescreen_2d, "%s", v);
+    if ((v = from_table("anisotropy")) != NULL)
+        s->anisotropy = clamp_int(atoi(v), 1, 16);
+    if ((v = from_table("frame_cap")) != NULL)
+        snprintf(s->frame_cap, sizeof s->frame_cap, "%s", v);
+    if ((v = from_table("fps_overlay")) != NULL)
+        s->fps_overlay = !off_word(v);
+    if ((v = from_table("fullscreen")) != NULL)
+        s->fullscreen = !off_word(v);
+    if ((v = from_table("vrr")) != NULL)
+        s->vrr = !off_word(v);
+    if ((v = from_table("frame_interp")) != NULL)
+        s->frame_interp = clamp_int(atoi(v), 1, 4);
+    if ((v = from_table("mouse_look")) != NULL)
+        s->mouse_look = !off_word(v);
+    if ((v = from_table("mouse_invert")) != NULL)
+        s->mouse_invert = !off_word(v);
+    if ((v = from_table("mouse_sensitivity")) != NULL)
+        s->mouse_sensitivity = clamp_int(atoi(v), RECOMP_MOUSE_SENSITIVITY_MIN,
+                                         RECOMP_MOUSE_SENSITIVITY_MAX);
+    if ((v = from_table("touch_controls")) != NULL)
+        snprintf(s->touch_controls, sizeof s->touch_controls, "%s", v);
+    if ((v = from_table("touch_opacity")) != NULL)
+        s->touch_opacity = atof(v);
+    if ((v = from_table("touch_scale")) != NULL)
+        s->touch_scale = atof(v);
+    if ((v = from_table("game_dir")) != NULL)
+        snprintf(s->game_dir, sizeof s->game_dir, "%s", v);
+    if ((v = from_table("syslink")) != NULL)
+        snprintf(s->syslink, sizeof s->syslink, "%s", v);
+    if ((v = from_table("syslink_host")) != NULL)
+        snprintf(s->syslink_host, sizeof s->syslink_host, "%s", v);
+    if ((v = from_table("syslink_port")) != NULL)
+        s->syslink_port = clamp_int(atoi(v), 1, 65535);
+    if ((v = from_table("syslink_code")) != NULL)
+        snprintf(s->syslink_code, sizeof s->syslink_code, "%s", v);
+    if ((v = from_table("syslink_upnp")) != NULL)
+        s->syslink_upnp = !off_word(v);
+    if ((v = from_table("coop")) != NULL)
+        snprintf(s->coop, sizeof s->coop, "%s", v);
+    if ((v = from_table("coop_port")) != NULL)
+        s->coop_port = clamp_int(atoi(v), 1, 65535);
+}
 
 int recomp_settings_read(const char *path, RecompSettings *s)
 {
@@ -343,76 +471,7 @@ int recomp_settings_read(const char *path, RecompSettings *s)
     parse(f);
     fclose(f);
 
-    {
-        const char *v;
-
-        if ((v = from_table("resolution_scale")) != NULL)
-            s->resolution_scale = clamp_int(atoi(v), 1, 8);
-        if ((v = from_table("widescreen")) != NULL)
-            s->widescreen = !off_word(v);
-        /* A number is an override and is kept as one; "auto", like no
-         * line at all, leaves it to the title (recomp_widescreen_resolve).
-         * Nothing below zero is a factor, and the runtime has always read
-         * one as "leave the camera alone", so it is kept as that rather
-         * than colliding with the mark for auto. */
-        if ((v = from_table("hor_plus")) != NULL) {
-            double factor = atof(v);
-
-            if (ieq(v, "auto"))
-                s->hor_plus = RECOMP_HOR_PLUS_AUTO;
-            else
-                s->hor_plus = factor < 0.0 ? 0.0 : factor;
-        }
-        if ((v = from_table("hor_plus_register")) != NULL) {
-            if (ieq(v, "auto"))
-                s->hor_plus_register = RECOMP_REGISTER_AUTO;
-            else
-                s->hor_plus_register = clamp_int(atoi(v), 0, VS_CONSTANTS - 1);
-        }
-        if ((v = from_table("widescreen_2d")) != NULL)
-            snprintf(s->widescreen_2d, sizeof s->widescreen_2d, "%s", v);
-        if ((v = from_table("anisotropy")) != NULL)
-            s->anisotropy = clamp_int(atoi(v), 1, 16);
-        if ((v = from_table("frame_cap")) != NULL)
-            snprintf(s->frame_cap, sizeof s->frame_cap, "%s", v);
-        if ((v = from_table("fps_overlay")) != NULL)
-            s->fps_overlay = !off_word(v);
-        if ((v = from_table("fullscreen")) != NULL)
-            s->fullscreen = !off_word(v);
-        if ((v = from_table("vrr")) != NULL)
-            s->vrr = !off_word(v);
-        if ((v = from_table("frame_interp")) != NULL)
-            s->frame_interp = clamp_int(atoi(v), 1, 4);
-        if ((v = from_table("mouse_look")) != NULL)
-            s->mouse_look = !off_word(v);
-        if ((v = from_table("mouse_invert")) != NULL)
-            s->mouse_invert = !off_word(v);
-        if ((v = from_table("mouse_sensitivity")) != NULL)
-            s->mouse_sensitivity = clamp_int(atoi(v), RECOMP_MOUSE_SENSITIVITY_MIN,
-                                             RECOMP_MOUSE_SENSITIVITY_MAX);
-        if ((v = from_table("touch_controls")) != NULL)
-            snprintf(s->touch_controls, sizeof s->touch_controls, "%s", v);
-        if ((v = from_table("touch_opacity")) != NULL)
-            s->touch_opacity = atof(v);
-        if ((v = from_table("touch_scale")) != NULL)
-            s->touch_scale = atof(v);
-        if ((v = from_table("game_dir")) != NULL)
-            snprintf(s->game_dir, sizeof s->game_dir, "%s", v);
-        if ((v = from_table("syslink")) != NULL)
-            snprintf(s->syslink, sizeof s->syslink, "%s", v);
-        if ((v = from_table("syslink_host")) != NULL)
-            snprintf(s->syslink_host, sizeof s->syslink_host, "%s", v);
-        if ((v = from_table("syslink_port")) != NULL)
-            s->syslink_port = clamp_int(atoi(v), 1, 65535);
-        if ((v = from_table("syslink_code")) != NULL)
-            snprintf(s->syslink_code, sizeof s->syslink_code, "%s", v);
-        if ((v = from_table("syslink_upnp")) != NULL)
-            s->syslink_upnp = !off_word(v);
-        if ((v = from_table("coop")) != NULL)
-            snprintf(s->coop, sizeof s->coop, "%s", v);
-        if ((v = from_table("coop_port")) != NULL)
-            s->coop_port = clamp_int(atoi(v), 1, 65535);
-    }
+    settings_from_table(s);
 
     memcpy(g_entries, saved, sizeof saved);
     g_entry_count = saved_count;
@@ -829,13 +888,19 @@ static const char *from_table(const char *key)
     return NULL;
 }
 
+/* The file's value for `key`, or the title's default when the file has
+ * none (recomp_title_defaults_install): every lookup, of any type, sees
+ * the title's defaults the same way. */
 static const char *from_file(const char *key)
 {
+    const char *v;
+
     if (!key)
         return NULL;
     if (!g_loaded)
         load_and_report();
-    return from_table(key);
+    v = from_table(key);
+    return v ? v : recomp_title_setting_default(key);
 }
 
 const char *recomp_config_lookup(const char *env_name, const char *key)

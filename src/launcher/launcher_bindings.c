@@ -7,6 +7,7 @@
  * written back rather than thrown away.
  */
 #include "launcher_bindings.h"
+#include "recomp_config.h"   /* a title's own defaults */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,9 +87,24 @@ void bind_defaults(BindConfig *c)
         c->port[p].deadzone = 7849;          /* XInput's own left-stick value */
         for (i = 0; i < BIND_CONTROLS; i++) {
             snprintf(c->port[p].pad_src[i], BIND_SOURCE_LEN, "%s", k_defaults[i].pad);
-            /* The keyboard column is port 1 only, as in the runtime. */
-            snprintf(c->port[p].key_src[i], BIND_SOURCE_LEN, "%s",
-                     p == 0 ? k_defaults[i].key : "");
+            /* The keyboard column is port 1 only, as in the runtime: the
+             * title's own when it has one (recomp_title_defaults_install),
+             * the first shown and the rest kept. */
+            c->port[p].key_more[i][0] = '\0';
+            if (p == 0 && recomp_title_has_binding_defaults()) {
+                const char *list = recomp_title_binding_default(bind_control_names[i]);
+                size_t n;
+
+                list = list ? list : "";
+                n = strcspn(list, " ");
+                snprintf(c->port[p].key_src[i], BIND_SOURCE_LEN, "%.*s", (int)n, list);
+                while (list[n] == ' ')
+                    n++;
+                snprintf(c->port[p].key_more[i], BIND_MORE_LEN, "%s", list + n);
+            } else {
+                snprintf(c->port[p].key_src[i], BIND_SOURCE_LEN, "%s",
+                         p == 0 ? k_defaults[i].key : "");
+            }
         }
     }
 }
@@ -238,6 +254,7 @@ static const char *parse_sources(const char *p, BindPort *bp, int k)
     if (k >= 0) {
         bp->pad_src[k][0] = '\0';
         bp->key_src[k][0] = '\0';
+        bp->key_more[k][0] = '\0';
     }
     if (*p == '[') {
         p = ws(p + 1);
@@ -252,6 +269,12 @@ static const char *parse_sources(const char *p, BindPort *bp, int k)
                 } else if (is_kbm_source(value) && !got_key) {
                     snprintf(bp->key_src[k], BIND_SOURCE_LEN, "%s", value);
                     got_key = 1;
+                } else if (is_kbm_source(value)) {
+                    size_t used = strlen(bp->key_more[k]);
+
+                    if (used + strlen(value) + 2 < BIND_MORE_LEN)
+                        snprintf(bp->key_more[k] + used, BIND_MORE_LEN - used, "%s%s",
+                                 used ? " " : "", value);
                 }
             }
             p = ws(p);
@@ -471,6 +494,22 @@ int bind_save(const char *path, const BindConfig *c)
             if (*pd) fprintf(f, "\"%s\"", pd);
             if (*pd && *ky) fprintf(f, ", ");
             if (*ky) fprintf(f, "\"%s\"", ky);
+            {
+                /* The extras, as they were read: one string each. */
+                const char *m = bp->key_more[i];
+                int any = *pd || *ky;
+
+                while (*m) {
+                    size_t n = strcspn(m, " ");
+
+                    if (n)
+                        fprintf(f, "%s\"%.*s\"", any ? ", " : "", (int)n, m);
+                    any = 1;
+                    m += n;
+                    while (*m == ' ')
+                        m++;
+                }
+            }
             fprintf(f, "]");
         }
         fprintf(f, "\n      }\n    }%s\n", p + 1 < BIND_PORTS ? "," : "");
@@ -504,6 +543,7 @@ static const struct { const char *src, *label; } k_labels[] = {
     { "mouse:left", "Left mouse button" }, { "mouse:right", "Right mouse button" },
     { "mouse:middle", "Middle mouse button" },
     { "mouse:x1", "Mouse back button" }, { "mouse:x2", "Mouse forward button" },
+    { "mouse:wheel_up", "Mouse wheel up" }, { "mouse:wheel_down", "Mouse wheel down" },
     { NULL, NULL }
 };
 

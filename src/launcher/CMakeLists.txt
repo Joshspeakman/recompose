@@ -26,7 +26,7 @@
 # title's CMakeLists need not ask which host it is on.
 
 function(recomp_add_launcher TARGET GAME_EXE)
-    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "" "" ${ARGN})
+    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "DEFAULTS" "" ${ARGN})
     set(_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
 
     if(WIN32)
@@ -148,6 +148,15 @@ function(recomp_add_launcher TARGET GAME_EXE)
     # and joining one, which saves coop = host|join.
     if(_launcher_COOP)
         target_compile_definitions(${TARGET} PRIVATE LAUNCHER_COOP=1)
+    endif()
+    # DEFAULTS <file>: the title's own defaults (recomp_title_defaults_install
+    # in recomp_config.h), the same C file the game is built with, so the
+    # launcher shows and writes what the game uses: it defines
+    # recomp_title_bindings[] and recomp_title_settings[].
+    if(_launcher_DEFAULTS)
+        get_filename_component(_defaults "${_launcher_DEFAULTS}" ABSOLUTE)
+        target_sources(${TARGET} PRIVATE "${_defaults}")
+        target_compile_definitions(${TARGET} PRIVATE LAUNCHER_TITLE_DEFAULTS=1)
     endif()
     if(MSVC)
         target_compile_options(${TARGET} PRIVATE

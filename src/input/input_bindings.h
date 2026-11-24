@@ -60,8 +60,17 @@ void recomp_bindings_rumble(unsigned port, unsigned short low, unsigned short hi
 enum {
     RECOMP_MOUSE_LEFT, RECOMP_MOUSE_RIGHT, RECOMP_MOUSE_MIDDLE,
     RECOMP_MOUSE_X1, RECOMP_MOUSE_X2,
-    RECOMP_MOUSE_BUTTONS
+    RECOMP_MOUSE_BUTTONS,
+    /* Sources only, past the buttons: the wheel's two directions
+     * (mouse:wheel_up, mouse:wheel_down), fed by recomp_mouse_wheel. */
+    RECOMP_MOUSE_WHEEL_UP = RECOMP_MOUSE_BUTTONS,
+    RECOMP_MOUSE_WHEEL_DOWN,
+    RECOMP_MOUSE_SOURCES
 };
+
+/* The wheel turned: positive notches away from the player (up), negative
+ * towards. Each is a short press of mouse:wheel_up or mouse:wheel_down. */
+void recomp_mouse_wheel(int notches);
 
 /* Mouse look is on and controller 1 reads something: the window should
  * take the pointer (hide it and keep it inside) while it has the focus. */

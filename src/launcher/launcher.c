@@ -1066,10 +1066,26 @@ static int capture_mouse(int button)
 
 /* ------------------------------------------------------------ persistence */
 
+#if defined(LAUNCHER_TITLE_DEFAULTS)
+/* The title's own defaults (recomp_add_launcher(... DEFAULTS <file>)). */
+extern const char *const recomp_title_bindings[];
+extern const char *const recomp_title_settings[];
+#endif
+
+/* Before anything reads a default: the settings and the bindings both
+ * start from the title's. */
+static void title_defaults(void)
+{
+#if defined(LAUNCHER_TITLE_DEFAULTS)
+    recomp_title_defaults_install(recomp_title_bindings, recomp_title_settings);
+#endif
+}
+
 static void settings_load(void)
 {
     char path[1024];
 
+    title_defaults();
     recomp_settings_defaults(&g_settings);
     if (recomp_settings_path(g_title_id, path, sizeof path))
         recomp_settings_read(path, &g_settings);
@@ -1110,6 +1126,7 @@ static void bindings_load(void)
 {
     char path[1024];
 
+    title_defaults();
     bind_defaults(&g_bind);
     if (bind_config_path(path, sizeof path))
         bind_load(path, &g_bind);
