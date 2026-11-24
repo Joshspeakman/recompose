@@ -182,6 +182,9 @@ typedef struct D3D8Texture {
     BOOL                    dirty;
     UINT                    palette;    /* Palette index (texture stage) this P8 texture bakes */
     BOOL                    screen_copy; /* the frame was copied into it (d3d8_screencopy.c) */
+    /* The image is this many times width x height: a render target made at
+     * the scene's scale (d3d8_offscreen_scale). 0 or 1: the title's size. */
+    UINT                    host_scale;
 } D3D8Texture;
 
 typedef struct D3D8Surface {
@@ -199,6 +202,10 @@ typedef struct D3D8Surface {
     /* Subresource of `image` this surface aliases (array*MipLevels+mip).
      * 0 for a standalone offscreen surface. */
     UINT                    subresource;
+
+    /* Its pixels are this many host pixels across and down: a render
+     * target or depth surface made at the scene's scale. 0 or 1: one. */
+    UINT                    host_scale;
 
     /* Multisample state (requested Xbox type + resolved host count). */
     D3DMULTISAMPLE_TYPE     multsample_type;
@@ -246,7 +253,15 @@ typedef struct D3D8CubeTexture {
     BOOL                    locked;
     BOOL                    dirty;
     UINT                    palette;    /* Palette index (texture stage) this P8 texture bakes */
+    UINT                    host_scale;     /* as D3D8Texture's */
 } D3D8CubeTexture;
+
+/* The factor an offscreen render target or depth surface of w x h is made
+ * at: the scene's own (RECOMP_RES_SCALE), so what a title renders into a
+ * texture -- a copy of the screen, a glow, a reflection, a shadow map -- is
+ * as sharp as the screen it ends up on. 1 below a scaled scene, with
+ * RECOMP_RT_SCALE=0, or where the image would pass the backend's size. */
+UINT d3d8_offscreen_scale(UINT w, UINT h);
 
 /* 3D texture. The leading fields mirror D3D8CubeTexture
  * up to `srv` (layout overlay) when read through the D3D8Texture prefix.

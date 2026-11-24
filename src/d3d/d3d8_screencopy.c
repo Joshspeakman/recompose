@@ -214,6 +214,7 @@ static HRESULT copy_to_texture(IDirect3DTexture8 *dst, const RECT *src, const PO
     float blend_factor[4] = { 1, 1, 1, 1 };
     UINT back_w = d3d8_GetBackBufferWidth(), back_h = d3d8_GetBackBufferHeight();
     void *mapped;
+    float ts;
 
     if (!rhi_device_ready() || !tex || !tex->image || !back_w || !back_h)
         return E_INVALIDARG;
@@ -236,11 +237,15 @@ static HRESULT copy_to_texture(IDirect3DTexture8 *dst, const RECT *src, const PO
     rhi_output_save(&saved);
     probe_source(&saved, tex, back_w, back_h);
 
+    /* A texture made at the scene's scale (d3d8_offscreen_scale) has ts
+     * host pixels to each of the title's: the copy fills all of them, so a
+     * scaled frame lands in it one to one rather than every fifth pixel. */
+    ts = tex->host_scale > 1 ? (float)tex->host_scale : 1.0f;
     vp.x = vp.y = 0.0f;
-    vp.width = (float)tex->width;
-    vp.height = (float)tex->height;
-    c.scale_x = tex->width ? (float)back_w / (float)tex->width : 1.0f;
-    c.scale_y = tex->height ? (float)back_h / (float)tex->height : 1.0f;
+    vp.width = (float)tex->width * ts;
+    vp.height = (float)tex->height * ts;
+    c.scale_x = tex->width ? (float)back_w / ((float)tex->width * ts) : 1.0f;
+    c.scale_y = tex->height ? (float)back_h / ((float)tex->height * ts) : 1.0f;
     c.off_x = c.off_y = 0.0f;
     if (src) {
         /* The rectangle is in the title's pixels and the frame may be
@@ -263,12 +268,12 @@ static HRESULT copy_to_texture(IDirect3DTexture8 *dst, const RECT *src, const PO
         if (ay < 0) { h += ay; ay = 0; }
         if (ax + w > (LONG)tex->width)  w = (LONG)tex->width - ax;
         if (ay + h > (LONG)tex->height) h = (LONG)tex->height - ay;
-        vp.x = (float)ax;
-        vp.y = (float)ay;
-        vp.width = (float)w;
-        vp.height = (float)h;
-        c.scale_x = kx;
-        c.scale_y = ky;
+        vp.x = (float)ax * ts;
+        vp.y = (float)ay * ts;
+        vp.width = (float)w * ts;
+        vp.height = (float)h * ts;
+        c.scale_x = kx / ts;
+        c.scale_y = ky / ts;
         c.off_x = (float)src->left * kx - (float)ax * kx;
         c.off_y = (float)src->top * ky - (float)ay * ky;
     }

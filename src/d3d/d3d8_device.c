@@ -317,14 +317,18 @@ int d3d8_GetWBufferProjection(float out[4])
  * rather than a precondition. */
 static float rt_scale_x(void)
 {
-    if (g_cur_rt || !g_device_state.present_width)
+    if (g_cur_rt)       /* made at the scene's scale, or the title's size */
+        return g_cur_rt->host_scale > 1 ? (float)g_cur_rt->host_scale : 1.0f;
+    if (!g_device_state.present_width)
         return 1.0f;
     return (float)g_device_state.width / (float)g_device_state.present_width;
 }
 
 static float rt_scale_y(void)
 {
-    if (g_cur_rt || !g_device_state.present_height)
+    if (g_cur_rt)
+        return g_cur_rt->host_scale > 1 ? (float)g_cur_rt->host_scale : 1.0f;
+    if (!g_device_state.present_height)
         return 1.0f;
     return (float)g_device_state.height / (float)g_device_state.present_height;
 }
@@ -365,12 +369,13 @@ void xbox_D3D8SetTickSource(uint32_t (*tick)(void))
  * recording. */
 static void dump_presented(void)
 {
-    static int ready = -1, count, max = 24, nticks, next_tick;
-    static uint32_t ticks[64];
+    static int ready = -1, count, max = 24, nticks, next_tick, frames = 1, run_left, run_index;
+    static uint32_t ticks[64], run_tick;
     static char prefix[512];
     static unsigned long long every = 5000, next;
     unsigned long long now;
     uint32_t w = 0, h = 0, y, tick = 0;
+    int index = 0;
     uint8_t *px;
     char path[600];
     FILE *f;
@@ -380,11 +385,15 @@ static void dump_presented(void)
         const char *e = getenv("RECOMP_PRESENT_DUMP_EVERY_MS");
         const char *m = getenv("RECOMP_PRESENT_DUMP_MAX");
         const char *t = getenv("RECOMP_PRESENT_DUMP_TICKS");
+        const char *n = getenv("RECOMP_PRESENT_DUMP_FRAMES");
         ready = p && *p;
         if (ready)
             snprintf(prefix, sizeof prefix, "%s", p);
         if (e && *e) every = strtoull(e, NULL, 10);
         if (m && *m) max = atoi(m);
+        /* RECOMP_PRESENT_DUMP_FRAMES=<n>: that many presents in a row from
+         * each tick -- with frame interpolation, the in-between frames too. */
+        if (n && atoi(n) > 1) frames = atoi(n);
         while (t && *t && nticks < 64) {
             ticks[nticks++] = (uint32_t)strtoul(t, (char **)&t, 10);
             while (*t == ',' || *t == ' ')
@@ -393,7 +402,11 @@ static void dump_presented(void)
     }
     if (!ready || count >= max)
         return;
-    if (nticks) {
+    if (nticks && run_left > 0) {
+        run_left--;                     /* the presents after a tick's first */
+        tick = run_tick;
+        index = ++run_index;
+    } else if (nticks) {
         if (!g_tick_source || next_tick >= nticks)
             return;
         tick = g_tick_source();
@@ -401,6 +414,9 @@ static void dump_presented(void)
             return;
         while (next_tick < nticks && ticks[next_tick] <= tick)
             next_tick++;
+        run_tick = tick;
+        run_left = frames - 1;
+        run_index = 0;
     } else {
         now = GetTickCount64();
         if (next && now < next)
@@ -412,7 +428,9 @@ static void dump_presented(void)
     if (!(px = (uint8_t *)malloc((size_t)w * h * 4u)))
         return;
     if (rhi_swapchain_readback(px, w * 4u, &w, &h) == 0) {
-        if (tick)
+        if (tick && frames > 1)
+            snprintf(path, sizeof path, "%st%05u-%d.bmp", prefix, tick, index);
+        else if (tick)
             snprintf(path, sizeof path, "%st%05u.bmp", prefix, tick);
         else
             snprintf(path, sizeof path, "%s%03d.bmp", prefix, count);
@@ -1191,8 +1209,10 @@ static HRESULT __stdcall dev_Clear(IDirect3DDevice8 *self, DWORD Count, const D3
      * and whatever the viewport and the scissor say (d3d8_clear.c). A
      * rectangle that is the whole target, or none at all, is the native
      * clear below. */
-    target_w = g_cur_rt ? g_cur_rt->width : g_device_state.width;
-    target_h = g_cur_rt ? g_cur_rt->height : g_device_state.height;
+    target_w = g_cur_rt ? g_cur_rt->width * (g_cur_rt->host_scale > 1 ? g_cur_rt->host_scale : 1)
+                        : g_device_state.width;
+    target_h = g_cur_rt ? g_cur_rt->height * (g_cur_rt->host_scale > 1 ? g_cur_rt->host_scale : 1)
+                        : g_device_state.height;
     if (!clear_rects_to_host(Count, pRects, target_w, target_h, host_rects, &n_rects)) {
         /* A depth-only rectangle belongs to the 3D viewport it was worked
          * out for (Max Payne clears a portal's rectangle before drawing
@@ -2003,8 +2023,12 @@ static HRESULT __stdcall dev_CreateRenderTarget(IDirect3DDevice8 *self, UINT Wid
 
     memset(&td, 0, sizeof(td));
     td.type = RHI_IMAGE_2D;
-    td.width = Width;
-    td.height = Height;
+    {
+        UINT s = d3d8_offscreen_scale(Width, Height);
+
+        td.width = Width * s;
+        td.height = Height * s;
+    }
     td.depth = 1;
     td.mip_levels = 1;
     td.format = d3d8_to_dxgi_format(Format);
@@ -2022,6 +2046,8 @@ static HRESULT __stdcall dev_CreateRenderTarget(IDirect3DDevice8 *self, UINT Wid
     *ppSurface = d3d8_surface_create(img, 0, 0, Width, Height, Format,
                                      D3DPOOL_DEFAULT, D3DUSAGE_RENDERTARGET,
                                      MultiSample, NULL, 0);
+    if (*ppSurface)
+        ((D3D8Surface *)*ppSurface)->host_scale = td.width / Width;
     rhi_image_destroy(img);
     return *ppSurface ? S_OK : E_OUTOFMEMORY;
 }
@@ -2066,10 +2092,17 @@ static HRESULT __stdcall dev_CreateDepthStencilSurface(IDirect3DDevice8 *self, U
         }
     }
 
+    /* At the scene's scale, as the colour targets it is drawn beside are
+     * (d3d8_offscreen_scale); the device's own depth is the scene's already
+     * and is not made here. */
     memset(&td, 0, sizeof(td));
     td.type = RHI_IMAGE_2D;
-    td.width = Width;
-    td.height = Height;
+    {
+        UINT s = d3d8_offscreen_scale(Width, Height);
+
+        td.width = Width * s;
+        td.height = Height * s;
+    }
     td.depth = 1;
     td.mip_levels = 1;
     td.format = host;
@@ -2087,6 +2120,8 @@ static HRESULT __stdcall dev_CreateDepthStencilSurface(IDirect3DDevice8 *self, U
     *ppSurface = d3d8_surface_create(img, 0, 0, Width, Height, surface_format,
                                      D3DPOOL_DEFAULT, D3DUSAGE_DEPTHSTENCIL,
                                      MultiSample, NULL, 0);
+    if (*ppSurface)
+        ((D3D8Surface *)*ppSurface)->host_scale = td.width / Width;
     rhi_image_destroy(img);
     return *ppSurface ? S_OK : E_OUTOFMEMORY;
 }

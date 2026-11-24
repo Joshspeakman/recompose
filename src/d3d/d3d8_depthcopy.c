@@ -177,12 +177,13 @@ HRESULT xbox_D3D8CopyDepthToTexture(IDirect3DTexture8 *dst)
     rhi_image_get_desc(d3d8_GetDepthImage(), &dd);
     rhi_output_save(&saved);
     vp.x = vp.y = 0.0f;
-    vp.width = (float)tex->width;
-    vp.height = (float)tex->height;
+    /* A texture made at the scene's scale gets every one of its pixels. */
+    vp.width = (float)tex->width * (tex->host_scale > 1 ? (float)tex->host_scale : 1.0f);
+    vp.height = (float)tex->height * (tex->host_scale > 1 ? (float)tex->host_scale : 1.0f);
     vp.min_depth = 0.0f;
     vp.max_depth = 1.0f;
-    c.scale_x = tex->width ? (float)dd.width / (float)tex->width : 1.0f;
-    c.scale_y = tex->height ? (float)dd.height / (float)tex->height : 1.0f;
+    c.scale_x = vp.width > 0.0f ? (float)dd.width / vp.width : 1.0f;
+    c.scale_y = vp.height > 0.0f ? (float)dd.height / vp.height : 1.0f;
     {
         float m[4] = { 0, 0, 0, 0 };
         c.wbuffer = d3d8_GetWBufferProjection(m) ? 1.0f : 0.0f;

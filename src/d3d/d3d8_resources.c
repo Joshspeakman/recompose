@@ -7,6 +7,7 @@
  */
 
 #include "d3d8_internal.h"
+#include "recomp_config.h"   /* RECOMP_RES_SCALE */
 #include "d3d8_swizzle.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1245,6 +1246,24 @@ static HRESULT __stdcall sf_LockRect(IDirect3DSurface8 *self, D3DLOCKED_RECT *pL
         free(full);
         return E_FAIL;
     }
+    if (sf->host_scale > 1 && level_w == sf->width * sf->host_scale) {
+        /* Made at the scene's scale: the title's pixels are every s-th host
+         * pixel, so it reads what it wrote, at its own size. */
+        UINT s = sf->host_scale, px = full_pitch / level_w, x;
+
+        row_bytes = rw * px;
+        region = (BYTE *)malloc((size_t)row_bytes * rh);
+        if (!region) {
+            free(full);
+            return E_OUTOFMEMORY;
+        }
+        for (y = 0; y < rh; y++)
+            for (x = 0; x < rw; x++)
+                memcpy(region + (size_t)y * row_bytes + (size_t)x * px,
+                       full + (size_t)((ry + y) * s) * full_pitch + (size_t)(rx + x) * s * px, px);
+        free(full);
+        goto locked;
+    }
 
     if (rx == 0 && ry == 0 && rw == level_w && rh == level_h) {
         region = full;
@@ -1265,6 +1284,7 @@ static HRESULT __stdcall sf_LockRect(IDirect3DSurface8 *self, D3DLOCKED_RECT *pL
         free(full);
     }
 
+locked:
     sf->locked = TRUE;
     sf->lock_readonly = (Flags & D3DLOCK_READONLY) != 0;
     sf->lock_x = rx;
@@ -1307,7 +1327,31 @@ static HRESULT __stdcall sf_UnlockRect(IDirect3DSurface8 *self)
      * read-only. A multisampled image cannot be written from the CPU at all;
      * the D3D11 code this replaced tried to resolve into it, which D3D11
      * refuses, so it was never written there either. */
-    if (!sf->lock_readonly && sf->image && sf->sample_count <= 1) {
+    if (!sf->lock_readonly && sf->image && sf->sample_count <= 1 && sf->host_scale > 1) {
+        /* Back at the scene's scale: each title pixel written s x s. */
+        UINT s = sf->host_scale, px = sf->lock_w ? (UINT)sf->locked_pitch / sf->lock_w : 4;
+        UINT bw = sf->lock_w * s, bh = sf->lock_h * s, y, x, k;
+        BYTE *big = (BYTE *)malloc((size_t)bw * px * bh);
+
+        if (big) {
+            RhiBox box;
+
+            for (y = 0; y < bh; y++)
+                for (x = 0; x < sf->lock_w; x++)
+                    for (k = 0; k < s; k++)
+                        memcpy(big + (size_t)y * bw * px + (size_t)(x * s + k) * px,
+                               sf->locked_bits + (size_t)(y / s) * sf->locked_pitch + (size_t)x * px,
+                               px);
+            box.left = sf->lock_x * s;
+            box.top = sf->lock_y * s;
+            box.front = 0;
+            box.right = box.left + bw;
+            box.bottom = box.top + bh;
+            box.back = 1;
+            rhi_image_update(sf->image, sf->subresource, &box, big, bw * px, 0);
+            free(big);
+        }
+    } else if (!sf->lock_readonly && sf->image && sf->sample_count <= 1) {
         RhiBox box;
         box.left = sf->lock_x;
         box.top = sf->lock_y;
@@ -1422,6 +1466,8 @@ static HRESULT __stdcall tex_GetSurfaceLevel(IDirect3DTexture8 *self, UINT Level
                                          ? tex->sys_mem + tex_level_offset(tex, Level)
                                          : NULL,
                                      tex->palette);
+    if (*ppSurface)
+        ((D3D8Surface *)*ppSurface)->host_scale = tex->host_scale;
     return *ppSurface ? S_OK : E_OUTOFMEMORY;
 }
 
@@ -1438,6 +1484,38 @@ static HRESULT __stdcall tex_LockRect(IDirect3DTexture8 *self, UINT Level, D3DLO
     tex->locked = TRUE;
     return S_OK;
 }
+
+UINT d3d8_offscreen_scale(UINT w, UINT h)
+{
+    static int on = -1;
+    static UINT scene = 0;
+    UINT s, big = w > h ? w : h;
+
+    /* The scene's scale, read as d3d8_display.c reads it (a whole 1..8), from
+     * the settings rather than from that file: the tests that compile this
+     * one alone link the settings and not the display. */
+    if (!scene) {
+        const char *v = recomp_config_lookup("RECOMP_RES_SCALE", "resolution_scale");
+        int n = v && *v ? atoi(v) : 1;
+
+        scene = n < 1 ? 1u : n > 8 ? 8u : (UINT)n;
+    }
+    s = scene;
+
+    if (on < 0) {
+        const char *v = getenv("RECOMP_RT_SCALE");
+        on = !(v && (v[0] == '0' || v[0] == '1') && v[1] == '\0');
+        if (!on)
+            fprintf(stderr, "D3D8 display: RECOMP_RT_SCALE=%s: offscreen targets stay at "
+                    "the title's size\n", v);
+    }
+    if (!on || s <= 1 || !big)
+        return 1;
+    while (s > 1 && big * s > 16384u)   /* every backend's largest 2D image */
+        s--;
+    return s;
+}
+
 
 /* Upload one 2D mip level (or a single cube face level) into the given
  * D3D11 texture subresource: unswizzle (swizzled formats), convert to the
@@ -1477,6 +1555,39 @@ static void d3d8_upload_mip_level(RhiImage *image, D3DFORMAT fmt,
             upload_data = converted;
             upload_pitch = w * ubpp;
             rows = h;
+        }
+    }
+
+    {
+        /* A render target made at the scene's scale (d3d8_offscreen_scale)
+         * holds each of the title's texels as s x s: what the CPU writes
+         * into one is spread the same way. */
+        RhiImageDesc id;
+        UINT mip, lw, s;
+
+        rhi_image_get_desc(image, &id);
+        mip = subresource % (id.mip_levels ? id.mip_levels : 1);
+        lw = id.width >> mip ? id.width >> mip : 1;
+        s = w ? lw / w : 1;
+        if (s > 1 && lw == w * s && !d3d8_format_is_compressed(fmt) && upload_pitch >= w) {
+            UINT px = upload_pitch / w, y, x, k;
+            BYTE *big = (BYTE *)malloc((size_t)lw * px * h * s);
+
+            if (big) {
+                for (y = 0; y < h * s; y++) {
+                    const BYTE *from = upload_data + (size_t)(y / s) * upload_pitch;
+                    BYTE *to = big + (size_t)y * lw * px;
+
+                    for (x = 0; x < w; x++)
+                        for (k = 0; k < s; k++)
+                            memcpy(to + (size_t)(x * s + k) * px, from + (size_t)x * px, px);
+                }
+                rhi_image_update(image, subresource, NULL, big, lw * px, lw * px * h * s);
+                free(big);
+            }
+            if (linear) free(linear);
+            if (converted) free(converted);
+            return;
         }
     }
 
@@ -1584,11 +1695,14 @@ HRESULT d3d8_CreateTextureImpl(UINT Width, UINT Height, UINT Levels, DWORD Usage
     tex->sys_mem = (BYTE *)calloc(1, tex_total_size(tex));
     if (!tex->sys_mem) { free(tex); return E_OUTOFMEMORY; }
 
-    /* Create the host image */
+    /* Create the host image: a render target or depth texture at the
+     * scene's scale (d3d8_offscreen_scale), anything else at its own size. */
+    tex->host_scale = (Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL))
+                      ? d3d8_offscreen_scale(Width, Height) : 1;
     memset(&td, 0, sizeof(td));
     td.type = RHI_IMAGE_2D;
-    td.width = Width;
-    td.height = Height;
+    td.width = Width * tex->host_scale;
+    td.height = Height * tex->host_scale;
     td.depth = 1;
     td.mip_levels = tex->levels;
     td.format = tex->host_format;
@@ -1959,6 +2073,8 @@ static HRESULT __stdcall cube_GetCubeMapSurface(IDirect3DCubeTexture8 *self, D3D
                                          ? cube_level_ptr(cube, face, Level)
                                          : NULL,
                                      cube->palette);
+    if (*ppSurface)
+        ((D3D8Surface *)*ppSurface)->host_scale = cube->host_scale;
     return *ppSurface ? S_OK : E_OUTOFMEMORY;
 }
 
@@ -2069,10 +2185,12 @@ HRESULT d3d8_CreateCubeTextureImpl(UINT EdgeLength, UINT Levels, DWORD Usage, D3
     cube->sys_mem = (BYTE *)calloc(1, (size_t)6 * face_size);
     if (!cube->sys_mem) { free(cube); return E_OUTOFMEMORY; }
 
+    cube->host_scale = (Usage & D3DUSAGE_RENDERTARGET) ? d3d8_offscreen_scale(EdgeLength, EdgeLength)
+                                                       : 1;
     memset(&td, 0, sizeof(td));
     td.type = RHI_IMAGE_2D;
-    td.width = EdgeLength;
-    td.height = EdgeLength;
+    td.width = EdgeLength * cube->host_scale;
+    td.height = EdgeLength * cube->host_scale;
     td.depth = 6;
     td.mip_levels = cube->levels;
     td.format = cube->host_format;
