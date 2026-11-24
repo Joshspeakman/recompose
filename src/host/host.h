@@ -77,8 +77,24 @@ typedef struct {
      * loses the focus reports every button up. Main thread. */
     void (*on_mouse_motion)(void *user, float dx, float dy);
     void (*on_mouse_button)(void *user, int button, int down);
+    /* What an in-game menu needs (src/hle/hle_menu.h), main thread:
+     * HOST_UI_ESCAPE when Esc goes down; HOST_UI_POS, the pointer's position
+     * in drawable pixels while the window does not hold it; HOST_UI_BUTTON,
+     * a button (a: 0 left, 1 right, 2 middle; b: down) with the position;
+     * HOST_UI_WHEEL, y notches away from the player; HOST_UI_KEY, a: one of
+     * HOST_UI_KEY_* (the same numbers as RECOMP_MENU_KEY_*), b: down. Buttons
+     * also go to on_mouse_button, as before. */
+    void (*on_ui)(void *user, int kind, int a, int b, float x, float y);
     void *user;
 } host_window_callbacks;
+
+enum { HOST_UI_ESCAPE = 1, HOST_UI_POS, HOST_UI_BUTTON, HOST_UI_WHEEL, HOST_UI_KEY };
+enum {
+    HOST_UI_KEY_TAB = 1, HOST_UI_KEY_LEFT, HOST_UI_KEY_RIGHT, HOST_UI_KEY_UP, HOST_UI_KEY_DOWN,
+    HOST_UI_KEY_PAGE_UP, HOST_UI_KEY_PAGE_DOWN, HOST_UI_KEY_HOME, HOST_UI_KEY_END,
+    HOST_UI_KEY_DELETE, HOST_UI_KEY_BACKSPACE, HOST_UI_KEY_SPACE, HOST_UI_KEY_ENTER,
+    HOST_UI_KEY_ESCAPE, HOST_UI_KEY_SHIFT, HOST_UI_KEY_CTRL, HOST_UI_KEY_ALT
+};
 
 /* RECOMP_WINDOW_BACKGROUND is set (and not "0"). */
 int host_window_background(void);

@@ -38,7 +38,23 @@ add_library(xbox_hle STATIC
     # The host pads behind the replaced XAPI input, through src/input's
     # bindings (SDL3 or XInput), plus RECOMP_FAKE_INPUT / RECOMP_INPUT_SEQ.
     input_host.c
+    # The in-game menu (Esc), Dear ImGui drawn through the RHI.
+    hle_menu.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/imgui/imgui.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/imgui/imgui_draw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/imgui/imgui_tables.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/imgui/imgui_widgets.cpp
 )
+target_include_directories(xbox_hle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/imgui)
+# Dear ImGui without the parts a game's menu has no use for, and without
+# its own OS helpers (no clipboard or IME through Win32).
+set_source_files_properties(hle_menu.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/imgui/imgui.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/imgui/imgui_draw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/imgui/imgui_tables.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/imgui/imgui_widgets.cpp
+    PROPERTIES COMPILE_DEFINITIONS
+    "IMGUI_DISABLE_OBSOLETE_FUNCTIONS;IMGUI_DISABLE_DEMO_WINDOWS;IMGUI_DISABLE_DEBUG_TOOLS;IMGUI_DISABLE_WIN32_DEFAULT_CLIPBOARD_FUNCTIONS;IMGUI_DISABLE_WIN32_DEFAULT_IME_FUNCTIONS")
 
 # Host audio: XAudio2 on Windows, SDL3 elsewhere, with the same switches
 # (RECOMP_MUTE, RECOMP_AUDIO_GAIN) and the same play-position clock.

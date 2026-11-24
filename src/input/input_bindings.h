@@ -74,6 +74,16 @@ void recomp_mouse_button(int button, int down);
  * not yet read is dropped, so nothing is left held or moving. */
 void recomp_mouse_release(void);
 
+/* Mouse look's settings changed while the title runs (the in-game menu):
+ * on or off, the sensitivity (RECOMP_MOUSE_SENSITIVITY_MIN..MAX) and
+ * whether forward looks down. */
+void recomp_mouse_look_configure(int on, int sensitivity, int invert);
+int  recomp_mouse_invert(void);
+
+/* 1 while the in-game menu has the keyboard and mouse: every port then
+ * reads as connected with nothing pressed (recomp_bindings_sample). */
+void recomp_bindings_block(int on);
+
 #ifdef __cplusplus
 }
 #endif

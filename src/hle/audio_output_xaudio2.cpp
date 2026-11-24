@@ -585,6 +585,16 @@ extern "C" void recomp_audio_output_initialize(void)
         "[audio-output] initialized backend=xaudio2_9 master_gain=%.6f\n", gain);
 }
 
+extern "C" void recomp_audio_output_pause(int on)
+{
+    if (!engine)
+        return;
+    if (on)
+        engine->StopEngine();
+    else
+        engine->StartEngine();
+}
+
 extern "C" void recomp_audio_output_shutdown(void)
 {
     if (summary_printed) return;

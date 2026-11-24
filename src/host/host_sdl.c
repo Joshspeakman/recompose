@@ -663,6 +663,30 @@ static void window_closed(host_window *w)
         recomp_host_loop_quit(0);
 }
 
+/* A key an in-game menu moves with, as HOST_UI_KEY_*; 0 for any other. */
+static int ui_key(SDL_Keycode k)
+{
+    switch (k) {
+    case SDLK_TAB:       return HOST_UI_KEY_TAB;
+    case SDLK_LEFT:      return HOST_UI_KEY_LEFT;
+    case SDLK_RIGHT:     return HOST_UI_KEY_RIGHT;
+    case SDLK_UP:        return HOST_UI_KEY_UP;
+    case SDLK_DOWN:      return HOST_UI_KEY_DOWN;
+    case SDLK_PAGEUP:    return HOST_UI_KEY_PAGE_UP;
+    case SDLK_PAGEDOWN:  return HOST_UI_KEY_PAGE_DOWN;
+    case SDLK_HOME:      return HOST_UI_KEY_HOME;
+    case SDLK_END:       return HOST_UI_KEY_END;
+    case SDLK_DELETE:    return HOST_UI_KEY_DELETE;
+    case SDLK_BACKSPACE: return HOST_UI_KEY_BACKSPACE;
+    case SDLK_SPACE:     return HOST_UI_KEY_SPACE;
+    case SDLK_RETURN:    return HOST_UI_KEY_ENTER;
+    case SDLK_LSHIFT: case SDLK_RSHIFT: return HOST_UI_KEY_SHIFT;
+    case SDLK_LCTRL:  case SDLK_RCTRL:  return HOST_UI_KEY_CTRL;
+    case SDLK_LALT:   case SDLK_RALT:   return HOST_UI_KEY_ALT;
+    default:             return 0;
+    }
+}
+
 static void dispatch_event(const SDL_Event *e)
 {
     host_window *w = &g_window;
@@ -699,11 +723,38 @@ static void dispatch_event(const SDL_Event *e)
         if (e->motion.windowID == w->id && w->cb.on_mouse_motion &&
             SDL_GetWindowRelativeMouseMode(w->sdl))
             w->cb.on_mouse_motion(w->cb.user, e->motion.xrel, e->motion.yrel);
+        else if (e->motion.windowID == w->id && w->cb.on_ui) {
+            float d = SDL_GetWindowPixelDensity(w->sdl);
+
+            w->cb.on_ui(w->cb.user, HOST_UI_POS, 0, 0, e->motion.x * d, e->motion.y * d);
+        }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (e->button.windowID == w->id && w->cb.on_ui) {
+            float d = SDL_GetWindowPixelDensity(w->sdl);
+            int b = e->button.button == SDL_BUTTON_LEFT ? 0 :
+                    e->button.button == SDL_BUTTON_RIGHT ? 1 :
+                    e->button.button == SDL_BUTTON_MIDDLE ? 2 : -1;
+
+            if (b >= 0)
+                w->cb.on_ui(w->cb.user, HOST_UI_BUTTON, b, e->button.down ? 1 : 0,
+                            e->button.x * d, e->button.y * d);
+        }
         if (e->button.windowID == w->id && w->cb.on_mouse_button)
             w->cb.on_mouse_button(w->cb.user, e->button.button, e->button.down ? 1 : 0);
+        break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        if (e->wheel.windowID == w->id && w->cb.on_ui)
+            w->cb.on_ui(w->cb.user, HOST_UI_WHEEL, 0, 0, 0.0f, e->wheel.y);
+        break;
+    case SDL_EVENT_KEY_UP:
+        if (e->key.windowID == w->id && w->cb.on_ui) {
+            int k = ui_key(e->key.key);
+
+            if (k)
+                w->cb.on_ui(w->cb.user, HOST_UI_KEY, k, 0, 0.0f, 0.0f);
+        }
         break;
     case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
     case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
@@ -725,7 +776,17 @@ static void dispatch_event(const SDL_Event *e)
             w->cb.on_resize(w->cb.user, e->window.data1, e->window.data2);
         break;
     case SDL_EVENT_KEY_DOWN:
-        if (e->key.repeat || e->key.windowID != w->id)
+        if (e->key.windowID != w->id)
+            break;
+        if (w->cb.on_ui) {
+            int k = ui_key(e->key.key);
+
+            if (e->key.key == SDLK_ESCAPE && !e->key.repeat)
+                w->cb.on_ui(w->cb.user, HOST_UI_ESCAPE, 0, 0, 0.0f, 0.0f);
+            else if (k)
+                w->cb.on_ui(w->cb.user, HOST_UI_KEY, k, 1, 0.0f, 0.0f);
+        }
+        if (e->key.repeat)
             break;
         if (e->key.key == SDLK_RETURN && (e->key.mod & (SDL_KMOD_ALT | SDL_KMOD_GUI))) {
             window_op op;

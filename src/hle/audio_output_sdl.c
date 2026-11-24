@@ -665,6 +665,17 @@ void recomp_audio_output_initialize(void)
     pthread_mutex_unlock(&g_lock);
 }
 
+void recomp_audio_output_pause(int on)
+{
+    if (on) {
+        if (g_device) SDL_PauseAudioDevice(g_device);
+        if (g_bus) SDL_PauseAudioDevice(g_bus);
+    } else {
+        if (g_device) SDL_ResumeAudioDevice(g_device);
+        if (g_bus) SDL_ResumeAudioDevice(g_bus);
+    }
+}
+
 void recomp_audio_output_shutdown(void)
 {
     uint32_t i;

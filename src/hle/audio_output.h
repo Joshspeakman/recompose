@@ -30,6 +30,11 @@ extern "C" {
 
 void recomp_audio_output_initialize(void);
 void recomp_audio_output_shutdown(void);
+/* Hold all sound where it is (1) or let it go on (0): the in-game menu
+   holds the title at its frame, and a looping sound or a stream would
+   otherwise go round and round. The device stops consuming, so the
+   positions the title reads stop with it. */
+void recomp_audio_output_pause(int on);
 void recomp_audio_output_reset_voice(uint32_t slot);
 /* A voice whose buffer was stopped: no more sound is coming, but what was
    already submitted -- the sound due before the stop, which the voice plays a

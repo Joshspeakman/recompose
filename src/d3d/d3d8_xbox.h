@@ -1262,6 +1262,11 @@ void xbox_D3D8SetPresentCrop(float x, float y, float w, float h);
  * draw regardless, so the game sees nothing different. */
 void xbox_D3D8SetDrawFilter(int (*keep)(void));
 
+/* Draw over every presented frame, after the picture, the frame counter and
+ * the touch controls: the in-game menu. out_view is the swap chain's RhiView,
+ * width and height its size. Called on the presenting thread. NULL: nothing. */
+void xbox_D3D8SetUiHook(void (*draw)(void *out_view, unsigned width, unsigned height));
+
 /* The window now fills its screen (borderless fullscreen), or no longer
  * does. While it does, and the vrr setting allows (RECOMP_VRR, on by
  * default), frames are presented for a variable-refresh display

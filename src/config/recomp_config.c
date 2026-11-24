@@ -303,6 +303,7 @@ void recomp_settings_defaults(RecompSettings *s)
     s->frame_interp      = 1;
     s->mouse_look        = 0;
     s->mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_DEFAULT;
+    s->mouse_invert      = 0;
 #if defined(__ANDROID__)
     snprintf(s->touch_controls, sizeof s->touch_controls, "auto");
 #else
@@ -384,6 +385,8 @@ int recomp_settings_read(const char *path, RecompSettings *s)
             s->frame_interp = clamp_int(atoi(v), 1, 4);
         if ((v = from_table("mouse_look")) != NULL)
             s->mouse_look = !off_word(v);
+        if ((v = from_table("mouse_invert")) != NULL)
+            s->mouse_invert = !off_word(v);
         if ((v = from_table("mouse_sensitivity")) != NULL)
             s->mouse_sensitivity = clamp_int(atoi(v), RECOMP_MOUSE_SENSITIVITY_MIN,
                                              RECOMP_MOUSE_SENSITIVITY_MAX);
@@ -436,6 +439,73 @@ static void make_parents(const char *path)
     }
 }
 
+/* The keys recomp_settings_write writes itself. A line in the file with any
+ * other key -- one a title reads for itself (TimeSplitters 2's ts2_menus,
+ * coop_view), or one put there by hand -- is kept when the file is written
+ * again, after everything else. Writing it used to drop them: saving in the
+ * launcher quietly undid a title's own settings. */
+static const char *const k_written_keys[] = {
+    "resolution_scale", "widescreen", "hor_plus", "hor_plus_register", "widescreen_2d",
+    "anisotropy", "frame_cap", "fps_overlay", "fullscreen", "vrr", "frame_interp",
+    "mouse_look", "mouse_sensitivity", "mouse_invert", "touch_controls", "touch_opacity", "touch_scale",
+    "game_dir", "syslink", "syslink_host", "syslink_port", "syslink_code", "syslink_upnp",
+    "coop", "coop_port",
+};
+
+/* The lines of the file at `path` whose key is not one of those, joined;
+ * NULL when there are none or no file. */
+static char *kept_read(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    char line[1024], *out = NULL;
+    size_t used = 0;
+
+    if (!f)
+        return NULL;
+    while (fgets(line, sizeof line, f)) {
+        const char *p = line, *eq;
+        size_t klen, i, n;
+        int written = 0;
+        char *grown;
+
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (*p == '#' || *p == '\r' || *p == '\n' || !*p || !(eq = strchr(p, '=')))
+            continue;
+        klen = (size_t)(eq - p);
+        while (klen && (p[klen - 1] == ' ' || p[klen - 1] == '\t'))
+            klen--;
+        for (i = 0; i < sizeof k_written_keys / sizeof k_written_keys[0]; i++)
+            if (strlen(k_written_keys[i]) == klen && !strncmp(k_written_keys[i], p, klen))
+                written = 1;
+        if (written || !klen)
+            continue;
+        n = strlen(p);
+        grown = (char *)realloc(out, used + n + 2);
+        if (!grown)
+            break;
+        out = grown;
+        memcpy(out + used, p, n);
+        used += n;
+        if (out[used - 1] != '\n')
+            out[used++] = '\n';
+        out[used] = '\0';
+    }
+    fclose(f);
+    return out;
+}
+
+static void kept_write(FILE *f, const char *kept)
+{
+    if (!kept || !*kept)
+        return;
+    fprintf(f,
+        "\n"
+        "# Other settings: the game's own, or added by hand. Kept as they were\n"
+        "# whenever this file is written again.\n");
+    fputs(kept, f);
+}
+
 /* The one place the file's text is written: the runtime's first-run
  * default and the launcher's save are the same function, so the comments
  * a player reads cannot drift from the keys the runtime looks for. */
@@ -443,6 +513,7 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
 {
     RecompSettings d;
     char hor_plus[48], reg[48];
+    char *kept;
     FILE *f;
 
     if (!path)
@@ -452,10 +523,13 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         s = &d;
     }
 
+    kept = kept_read(path);
     make_parents(path);
     f = fopen(path, "wb");
-    if (!f)
+    if (!f) {
+        free(kept);
         return 0;
+    }
 
     /* An override is written as a line, auto as the same line commented
      * out. Not as the word alone: a build from before "auto" would read it
@@ -551,7 +625,11 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "#\n"
         "# How far a movement pushes the stick, %d to %d; %d is the default, a\n"
         "# full push at %d mouse counts a second.  [RECOMP_MOUSE_SENSITIVITY]\n"
-        "mouse_sensitivity = %d\n",
+        "mouse_sensitivity = %d\n"
+        "#\n"
+        "# 1: moving the mouse forward looks down, as a flight stick does.\n"
+        "#                                               [RECOMP_MOUSE_INVERT]\n"
+        "mouse_invert = %d\n",
         s->resolution_scale, s->widescreen, hor_plus, reg,
         s->widescreen_2d[0] ? s->widescreen_2d : "auto",
         s->anisotropy, s->frame_cap[0] ? s->frame_cap : "adaptive", s->fps_overlay,
@@ -560,7 +638,8 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         RECOMP_MOUSE_SENSITIVITY_MIN, RECOMP_MOUSE_SENSITIVITY_MAX,
         RECOMP_MOUSE_SENSITIVITY_DEFAULT, 100000 / RECOMP_MOUSE_SENSITIVITY_DEFAULT,
         clamp_int(s->mouse_sensitivity, RECOMP_MOUSE_SENSITIVITY_MIN,
-                  RECOMP_MOUSE_SENSITIVITY_MAX));
+                  RECOMP_MOUSE_SENSITIVITY_MAX),
+        s->mouse_invert ? 1 : 0);
 
     fprintf(f,
         "\n"
@@ -632,6 +711,8 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         s->coop[0] ? s->coop : "off",
         s->coop_port > 0 ? s->coop_port : RECOMP_COOP_DEFAULT_PORT);
 
+    kept_write(f, kept);
+    free(kept);
     fclose(f);
     return 1;
 }

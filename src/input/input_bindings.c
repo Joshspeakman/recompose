@@ -680,7 +680,13 @@ static struct {
     int ready;
     int on;
     int sensitivity;        /* RECOMP_MOUSE_SENSITIVITY_MIN..MAX */
+    int invert;             /* mouse_invert: forward looks down */
 } g_look;
+
+/* While the in-game menu is open (recomp_bindings_block), every port reads
+ * as nothing pressed and nothing moved, and connected as before: the menu
+ * has the keyboard and the mouse, and the game must not see them. */
+static volatile int g_blocked;
 
 static void look_settings(void)
 {
@@ -693,7 +699,31 @@ static void look_settings(void)
                           RECOMP_MOUSE_SENSITIVITY_DEFAULT);
     g_look.sensitivity = v < RECOMP_MOUSE_SENSITIVITY_MIN ? RECOMP_MOUSE_SENSITIVITY_MIN
                        : v > RECOMP_MOUSE_SENSITIVITY_MAX ? RECOMP_MOUSE_SENSITIVITY_MAX : v;
+    g_look.invert = recomp_config_bool("RECOMP_MOUSE_INVERT", "mouse_invert", 0);
     g_look.ready = 1;
+}
+
+void recomp_mouse_look_configure(int on, int sensitivity, int invert)
+{
+    look_settings();
+    if (sensitivity < RECOMP_MOUSE_SENSITIVITY_MIN) sensitivity = RECOMP_MOUSE_SENSITIVITY_MIN;
+    if (sensitivity > RECOMP_MOUSE_SENSITIVITY_MAX) sensitivity = RECOMP_MOUSE_SENSITIVITY_MAX;
+    g_look.sensitivity = sensitivity;
+    g_look.invert = invert ? 1 : 0;
+    g_look.on = on ? 1 : 0;
+    fprintf(stderr, "[INPUT] mouse look %s, sensitivity %d%s\n", g_look.on ? "on" : "off",
+            g_look.sensitivity, g_look.invert ? ", inverted" : "");
+}
+
+int recomp_mouse_invert(void)
+{
+    look_settings();
+    return g_look.invert;
+}
+
+void recomp_bindings_block(int on)
+{
+    g_blocked = on ? 1 : 0;
 }
 
 void recomp_bindings_init(void)
@@ -1121,6 +1151,11 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         }
         return 0;
     }
+    if (g_blocked) {
+        if (port == 0)
+            recomp_mouse_release();         /* what moved meanwhile is the menu's */
+        return 1;
+    }
     memset(&kc, 0, sizeof kc);
     key_cache_tick();
     memset(&pad, 0, sizeof pad);
@@ -1174,7 +1209,7 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         if (look[0] != 0.0f || look[1] != 0.0f) {
             say_first_press(port, "mouse look");
             out->sThumbRX = add_look(out->sThumbRX, look[0]);
-            out->sThumbRY = add_look(out->sThumbRY, look[1]);
+            out->sThumbRY = add_look(out->sThumbRY, g_look.invert ? -look[1] : look[1]);
         }
     }
     /* The on-screen controls, on top of everything bound (touch_controls.h). */

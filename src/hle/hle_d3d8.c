@@ -83,6 +83,7 @@ static int draw_kept(void);      /* xbox_D3D8SetDrawFilter, beside the draws */
 #include "d3d8_xbox_map.h"
 #include "hle_d3d8_record.h"
 #include "rhi.h"                         /* rhi_set_wait_hooks */
+#include "hle_menu.h"                    /* the in-game menu: Esc */
 #include "input_bindings.h"              /* the mouse, for mouse look and mouse: bindings */
 #include "../kernel/xbox_memory_layout.h"  /* the guest lock */
 
@@ -168,6 +169,8 @@ static unsigned long g_shadow_swaps;
 
 #ifdef _WIN32
 #define SHADOW_WM_DESTROY (WM_APP + 1)
+#define SHADOW_WM_FULLSCREEN (WM_APP + 2)   /* wParam: on (hle_window_set_fullscreen) */
+#define SHADOW_WM_MENU       (WM_APP + 3)   /* wParam: the menu is open (hle_window_menu_pointer) */
 #else
 #include "host.h"
 #endif
@@ -352,9 +355,10 @@ static int shadow_mouse_look(void)
 
         /* Never for a background run: it must not take anything from the
          * person at the desk, the pointer least of all. */
-        g_mouse_look = recomp_mouse_look() && !(bg && *bg && strcmp(bg, "0") != 0);
+        g_mouse_look = !(bg && *bg && strcmp(bg, "0") != 0);
     }
-    return g_mouse_look;
+    /* Asked each time: the in-game menu turns it on and off. */
+    return g_mouse_look && recomp_mouse_look();
 }
 
 static void shadow_mouse_clip(HWND hwnd)
@@ -374,7 +378,8 @@ static void shadow_mouse_clip(HWND hwnd)
 
 static void shadow_mouse_capture(HWND hwnd, int on)
 {
-    if (on && !shadow_mouse_look())
+    /* The menu has the pointer while it is open. */
+    if (on && (!shadow_mouse_look() || recomp_menu_is_open()))
         return;
     if (on == g_mouse_captured) {
         if (on)
@@ -455,8 +460,85 @@ static void shadow_mouse_raw(LPARAM lp)
         recomp_mouse_move((float)ri.data.mouse.lLastX, (float)ri.data.mouse.lLastY);
 }
 
+/* The in-game menu's keys, from a virtual-key code. */
+static int shadow_menu_key(WPARAM vk)
+{
+    switch (vk) {
+    case VK_TAB:     return RECOMP_MENU_KEY_TAB;
+    case VK_LEFT:    return RECOMP_MENU_KEY_LEFT;
+    case VK_RIGHT:   return RECOMP_MENU_KEY_RIGHT;
+    case VK_UP:      return RECOMP_MENU_KEY_UP;
+    case VK_DOWN:    return RECOMP_MENU_KEY_DOWN;
+    case VK_PRIOR:   return RECOMP_MENU_KEY_PAGE_UP;
+    case VK_NEXT:    return RECOMP_MENU_KEY_PAGE_DOWN;
+    case VK_HOME:    return RECOMP_MENU_KEY_HOME;
+    case VK_END:     return RECOMP_MENU_KEY_END;
+    case VK_DELETE:  return RECOMP_MENU_KEY_DELETE;
+    case VK_BACK:    return RECOMP_MENU_KEY_BACKSPACE;
+    case VK_SPACE:   return RECOMP_MENU_KEY_SPACE;
+    case VK_RETURN:  return RECOMP_MENU_KEY_ENTER;
+    case VK_SHIFT:   return RECOMP_MENU_KEY_SHIFT;
+    case VK_CONTROL: return RECOMP_MENU_KEY_CTRL;
+    case VK_MENU:    return RECOMP_MENU_KEY_ALT;
+    default:         return RECOMP_MENU_KEY_NONE;
+    }
+}
+
+/* While the menu is open, the mouse and keyboard are its: 1 when the
+ * message was one of those and has been handed to it. Esc opens and closes
+ * it whatever else is going on. */
+static int shadow_menu_input(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    int b = -1, down = 0;
+
+    if (msg == WM_KEYDOWN && wp == VK_ESCAPE) {
+        if (!(lp & (1 << 30)))              /* not a repeat */
+            recomp_menu_toggle();
+        return 1;
+    }
+    if (!recomp_menu_is_open())
+        return 0;
+    switch (msg) {
+    case WM_MOUSEMOVE:
+        recomp_menu_mouse_pos((float)(short)LOWORD(lp), (float)(short)HIWORD(lp));
+        return 1;
+    case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: b = 0; down = 1; break;
+    case WM_LBUTTONUP:   b = 0; break;
+    case WM_RBUTTONDOWN: case WM_RBUTTONDBLCLK: b = 1; down = 1; break;
+    case WM_RBUTTONUP:   b = 1; break;
+    case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: b = 2; down = 1; break;
+    case WM_MBUTTONUP:   b = 2; break;
+    case WM_XBUTTONDOWN: case WM_XBUTTONUP:
+        return 1;
+    case WM_MOUSEWHEEL:
+        recomp_menu_mouse_wheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
+        return 1;
+    case WM_KEYDOWN: case WM_KEYUP: {
+        int k = shadow_menu_key(wp);
+
+        if (k != RECOMP_MENU_KEY_NONE)
+            recomp_menu_key(k, msg == WM_KEYDOWN);
+        return 1;
+    }
+    case WM_CHAR:
+        recomp_menu_char((unsigned)wp);
+        return 1;
+    default:
+        return 0;
+    }
+    recomp_menu_mouse_pos((float)(short)LOWORD(lp), (float)(short)HIWORD(lp));
+    recomp_menu_mouse_button(b, down);
+    if (down)
+        SetCapture(hwnd);
+    else
+        ReleaseCapture();
+    return 1;
+}
+
 static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (shadow_menu_input(hwnd, msg, wp, lp))
+        return msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP ? TRUE : 0;
     if (shadow_mouse_button(hwnd, msg, wp))
         return msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP ? TRUE : 0;
     switch (msg) {
@@ -500,7 +582,8 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     case WM_SETCURSOR:
         /* The game has no pointer; over a fullscreen picture it is in the
          * way, and with mouse look the pointer is not a pointer at all. */
-        if ((g_shadow_fullscreen || g_mouse_captured) && LOWORD(lp) == HTCLIENT) {
+        if ((g_shadow_fullscreen || g_mouse_captured) && !recomp_menu_is_open() &&
+            LOWORD(lp) == HTCLIENT) {
             SetCursor(NULL);
             return TRUE;
         }
@@ -513,6 +596,24 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         fprintf(stderr, "[HLE-D3D8] window closed by the user\n");
         fflush(stderr);
         xbox_HostExit("window closed");
+        return 0;
+    case SHADOW_WM_FULLSCREEN:           /* hle_window_set_fullscreen, from any thread */
+        if ((int)wp != g_shadow_fullscreen)
+            shadow_set_fullscreen(hwnd, (int)wp);
+        return 0;
+    case SHADOW_WM_MENU:                 /* hle_window_menu_pointer */
+        if (wp) {
+            POINT pt;
+
+            shadow_mouse_capture(hwnd, 0);
+            /* The pointer where the menu is: the middle of the window. */
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            recomp_menu_mouse_pos((float)pt.x, (float)pt.y);
+            SetCursor(LoadCursor(NULL, IDC_ARROW));
+        } else if (GetForegroundWindow() == hwnd) {
+            shadow_mouse_capture(hwnd, 1);
+        }
         return 0;
     case SHADOW_WM_DESTROY:              /* DestroyWindow only works on this thread */
         DestroyWindow(hwnd);
@@ -720,12 +821,34 @@ static HWND shadow_window(UINT width, UINT height)
     WaitForSingleObject(req.ready, INFINITE);
     CloseHandle(req.ready);
     CloseHandle(thread);                 /* it keeps running; only the handle goes */
+    /* While the in-game menu holds the title, its frame presented again
+     * with the menu over it whenever the menu asks (the flip gate). */
+    xbox_Nv2aFlipGateSetHeldRedraw(held_redraw);
+    recomp_menu_install();
     return req.hwnd;
 }
 
 static void shadow_window_close(HWND hwnd)
 {
     PostMessageA(hwnd, SHADOW_WM_DESTROY, 0, 0);
+}
+
+/* hle_menu.h: what the in-game menu asks of the window. */
+void hle_window_set_fullscreen(int on)
+{
+    if (g_shadow_hwnd)
+        PostMessageA(g_shadow_hwnd, SHADOW_WM_FULLSCREEN, on ? 1 : 0, 0);
+}
+
+int hle_window_fullscreen(void)
+{
+    return g_shadow_fullscreen;
+}
+
+void hle_window_menu_pointer(int menu_open)
+{
+    if (g_shadow_hwnd)
+        PostMessageA(g_shadow_hwnd, SHADOW_WM_MENU, menu_open ? 1 : 0, 0);
 }
 
 /* The overlay's keys, read while the window is in front (overlay_frame). */
@@ -790,6 +913,8 @@ static void shadow_host_mouse_motion(void *user, float dx, float dy)
 static void shadow_host_mouse_button(void *user, int button, int down)
 {
     (void)user;
+    if (recomp_menu_is_open() && down)
+        return;                     /* the menu's (shadow_host_ui); releases still go */
     switch (button) {
     case 1: recomp_mouse_button(RECOMP_MOUSE_LEFT, down);   break;
     case 2: recomp_mouse_button(RECOMP_MOUSE_MIDDLE, down); break;
@@ -798,6 +923,45 @@ static void shadow_host_mouse_button(void *user, int button, int down)
     case 5: recomp_mouse_button(RECOMP_MOUSE_X2, down);     break;
     default: break;
     }
+}
+
+/* The in-game menu (hle_menu.h): Esc opens and closes it, and while it is
+ * open the pointer, its buttons, the wheel and the keys it moves with are
+ * its. The shell's key numbers are the menu's. */
+static void shadow_host_ui(void *user, int kind, int a, int b, float x, float y)
+{
+    (void)user;
+    if (kind == HOST_UI_ESCAPE) {
+        recomp_menu_toggle();
+        return;
+    }
+    if (!recomp_menu_is_open())
+        return;
+    switch (kind) {
+    case HOST_UI_POS:    recomp_menu_mouse_pos(x, y); break;
+    case HOST_UI_BUTTON: recomp_menu_mouse_pos(x, y); recomp_menu_mouse_button(a, b); break;
+    case HOST_UI_WHEEL:  recomp_menu_mouse_wheel(y); break;
+    case HOST_UI_KEY:    recomp_menu_key(a, b); break;
+    default: break;
+    }
+}
+
+void hle_window_set_fullscreen(int on)
+{
+    if (g_shadow_host)
+        host_window_set_fullscreen(g_shadow_host, on);
+}
+
+int hle_window_fullscreen(void)
+{
+    return g_shadow_fullscreen;
+}
+
+void hle_window_menu_pointer(int menu_open)
+{
+    if (!g_shadow_host || host_window_background())
+        return;
+    host_window_set_relative_mouse(g_shadow_host, menu_open ? 0 : recomp_mouse_look());
 }
 
 /* Online co-op's status in the window's title, as the Win32 window above
@@ -825,6 +989,7 @@ static HWND shadow_window(UINT width, UINT height)
     cb.on_fullscreen = shadow_host_fullscreen;
     cb.on_mouse_motion = shadow_host_mouse_motion;
     cb.on_mouse_button = shadow_host_mouse_button;
+    cb.on_ui = shadow_host_ui;
     /* The title's own name, out of its XBE certificate (UTF-8). */
     g_shadow_host = host_window_open((int)width, (int)height, xbox_XbeTitleName(), &cb);
     if (!g_shadow_host) {
@@ -837,6 +1002,7 @@ static HWND shadow_window(UINT width, UINT height)
     d3d8_touch_set_source(recomp_touch_shapes);
     /* A setting changed while the title is held: the held frame again. */
     xbox_Nv2aFlipGateSetHeldRedraw(held_redraw);
+    recomp_menu_install();          /* Esc: the in-game menu, drawn over each present */
     target = host_window_present_target(g_shadow_host);
     if (!target) {
         fprintf(stderr, "[HLE-D3D8] shadow: the window has nothing this renderer can "

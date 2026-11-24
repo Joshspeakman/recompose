@@ -585,6 +585,16 @@ static BOOL window_size(const D3D8DeviceState *s, UINT *w, UINT *h)
 #endif
 }
 
+/* What draws over every presented frame after the picture, the overlay and
+ * the touch controls: the in-game menu (src/hle/hle_menu.cpp). Called on the
+ * presenting thread, with the swap chain's view and size. */
+static void (*g_ui_hook)(void *out_view, unsigned width, unsigned height);
+
+void xbox_D3D8SetUiHook(void (*draw)(void *out_view, unsigned width, unsigned height))
+{
+    g_ui_hook = draw;
+}
+
 static void present_scene(void)
 {
     D3D8DeviceState *s = &g_device_state;
@@ -626,6 +636,8 @@ static void present_scene(void)
     d3d8_display_resolve(s->rhi_scene_srv, s->width, s->height, rhi_swapchain_view(), fit);
     d3d8_overlay_present(rhi_swapchain_view(), s->swap_width, s->swap_height, fit.x, fit.y, fit.h);
     d3d8_touch_draw(rhi_swapchain_view(), s->swap_width, s->swap_height);
+    if (g_ui_hook)
+        g_ui_hook(rhi_swapchain_view(), s->swap_width, s->swap_height);
     keep_presented();
 }
 
