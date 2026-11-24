@@ -111,6 +111,16 @@ static ULONGLONG g_enum_until;
 /* Lockstep (src/kernel/recomp_lockstep.h) latches every connected port once
  * a frame through this, and the title then reads the latch: the same pads
  * for the whole frame, recorded or replayed or, online, agreed. */
+/* Degrees to the latch's 1/64ths, clamped to what an int16 holds. */
+static int16_t look_q(float deg)
+{
+    float q = deg * 64.0f;
+
+    if (q > 32767.0f) q = 32767.0f;
+    if (q < -32767.0f) q = -32767.0f;
+    return (int16_t)(q < 0.0f ? q - 0.5f : q + 0.5f);
+}
+
 static void lockstep_sample(unsigned port, RecompLockstepPad *out)
 {
     RecompInputGamepad g;
@@ -124,6 +134,44 @@ static void lockstep_sample(unsigned port, RecompLockstepPad *out)
     out->thumb_ly = g.thumb_ly;
     out->thumb_rx = g.thumb_rx;
     out->thumb_ry = g.thumb_ry;
+    out->look_x = out->look_y = 0;
+    /* This machine's mouse goes with its controller 1 (port 0 here is
+     * that one, online or not), as an angle in 1/64 degree: both machines
+     * then turn by exactly the same amount. */
+    if (port == 0 && recomp_mouse_look_is_native()) {
+        float dx, dy;
+
+        recomp_mouse_take_look(&dx, &dy);
+        out->look_x = look_q(dx);
+        out->look_y = look_q(dy);
+    }
+}
+
+/* hle_input.h: the look for a guest port this frame, in degrees. */
+int recomp_input_look(unsigned port, float *dx_deg, float *dy_deg)
+{
+    static uint32_t taken_at[4];
+
+    *dx_deg = *dy_deg = 0.0f;
+    if (port >= 4)
+        return 0;
+    if (recomp_lockstep_active()) {
+        /* The latched look, given once per tick: a title that asks twice
+         * in one frame turns once. */
+        RecompLockstepPad lp;
+        uint32_t tick = recomp_lockstep_tick();
+
+        if (taken_at[port] == tick)
+            return 0;
+        taken_at[port] = tick;
+        if (!recomp_lockstep_pad(port, &lp))
+            return 0;
+        *dx_deg = (float)lp.look_x / 64.0f;
+        *dy_deg = (float)lp.look_y / 64.0f;
+    } else if (port == 0 && recomp_mouse_look_is_native()) {
+        recomp_mouse_take_look(dx_deg, dy_deg);
+    }
+    return *dx_deg != 0.0f || *dy_deg != 0.0f;
 }
 
 static BOOL CALLBACK init(PINIT_ONCE once, PVOID param, PVOID *ctx)

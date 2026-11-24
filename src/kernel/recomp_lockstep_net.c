@@ -87,7 +87,7 @@ int xbox_path_hdd_dir_utf8(char *out, size_t n);
 int xbox_path_save_dir_utf8(char *out, size_t n);
 extern unsigned char xbox_HDKey[16];
 
-#define LS_VERSION      3u
+#define LS_VERSION      4u      /* 4: a pad carries the mouse's look */
 #define DEFAULT_PORT    27620
 #define DEFAULT_DELAY   4u
 #define RING            512u          /* frames of input kept per player */
@@ -179,6 +179,9 @@ static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
 static uint32_t get32(const uint8_t *p) { return get16(p) | (uint32_t)get16(p + 2) << 16; }
 static uint64_t get64(const uint8_t *p) { return get32(p) | (uint64_t)get32(p + 4) << 32; }
 
+/* One frame's pad on the wire: the gamepad's 18 bytes and the mouse's look. */
+#define NET_PAD 22
+
 static void pad_put(uint8_t *b, const RecompLockstepPad *p)
 {
     int i;
@@ -189,6 +192,8 @@ static void pad_put(uint8_t *b, const RecompLockstepPad *p)
     put16(b + 12, (uint16_t)p->thumb_ly);
     put16(b + 14, (uint16_t)p->thumb_rx);
     put16(b + 16, (uint16_t)p->thumb_ry);
+    put16(b + 18, (uint16_t)p->look_x);
+    put16(b + 20, (uint16_t)p->look_y);
 }
 
 static void pad_get(RecompLockstepPad *p, const uint8_t *b)
@@ -201,6 +206,8 @@ static void pad_get(RecompLockstepPad *p, const uint8_t *b)
     p->thumb_ly = (int16_t)get16(b + 12);
     p->thumb_rx = (int16_t)get16(b + 14);
     p->thumb_ry = (int16_t)get16(b + 16);
+    p->look_x = (int16_t)get16(b + 18);
+    p->look_y = (int16_t)get16(b + 20);
 }
 
 static uint64_t fnv64(const uint8_t *p, size_t n)
@@ -716,7 +723,7 @@ static int settings_differ(char *why, size_t n)
  * own receipt and newest checkpoint. Called with the lock held. */
 static void send_input_locked(void)
 {
-    uint8_t b[30 + MAX_SEND * 18];
+    uint8_t b[30 + MAX_SEND * NET_PAD];
     uint32_t first = g.remote_acked + 1, count, i;
     const Checkpoint *ck = NULL;
 
@@ -743,8 +750,8 @@ static void send_input_locked(void)
     b[27] = (uint8_t)(g.started ? g.delay : 0u);
     put16(b + 28, (uint16_t)(g.rtt_ms > 65535u ? 65535u : g.rtt_ms));
     for (i = 0; i < count; i++)
-        pad_put(b + 30 + 18 * i, &g.local[(first + i) % RING]);
-    send_raw(b, 30 + 18 * (int)count);
+        pad_put(b + 30 + NET_PAD * i, &g.local[(first + i) % RING]);
+    send_raw(b, 30 + NET_PAD * (int)count);
 }
 
 /* The other side's checkpoint against ours for the same frame. */
@@ -798,14 +805,14 @@ static void on_input_locked(const uint8_t *b, int n)
     count = b[14];
     ck_tick = get32(b + 15);
     ck_hash = get64(b + 19);
-    if (n < 30 + 18 * (int)count)
+    if (n < 30 + NET_PAD * (int)count)
         return;
     if (ack > g.remote_acked && ack <= g.local_upto)
         g.remote_acked = ack;
     for (i = 0; i < count; i++) {
         uint32_t t = first + i;
         if (t == g.remote_upto + 1) {
-            pad_get(&g.remote[t % RING], b + 30 + 18 * i);
+            pad_get(&g.remote[t % RING], b + 30 + NET_PAD * i);
             g.remote_upto = t;
         }
     }

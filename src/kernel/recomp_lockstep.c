@@ -9,7 +9,8 @@
  *
  * Each pad is the 18 bytes of XINPUT_GAMEPAD in hex (buttons, the 8 analog
  * bytes, the four stick axes, little-endian), one per connected port in port
- * order. h hashes every named region at the start of the tick, i.e. the state
+ * order; 22 when the pad carries the mouse's look (two more axes, 1/64
+ * degree), so a recording made without a mouse reads as it always did. h hashes every named region at the start of the tick, i.e. the state
  * the previous frames left; c is the same per 4 KB chunk (8 hex digits each,
  * regions in the order they were named), which is what says *where* two runs
  * first differ. A replay reads p= back and checks h= as it goes.
@@ -102,7 +103,11 @@ static int hexval(int c)
     return -1;
 }
 
-static void pad_to_bytes(const RecompLockstepPad *p, uint8_t b[18])
+/* 22 bytes: the gamepad's 18, then the mouse's look (1/64 degree). */
+#define PAD_BYTES     22
+#define PAD_BYTES_OLD 18
+
+static void pad_to_bytes(const RecompLockstepPad *p, uint8_t b[PAD_BYTES])
 {
     int i;
     b[0] = (uint8_t)p->buttons; b[1] = (uint8_t)(p->buttons >> 8);
@@ -112,9 +117,11 @@ static void pad_to_bytes(const RecompLockstepPad *p, uint8_t b[18])
     b[12] = (uint8_t)p->thumb_ly; b[13] = (uint8_t)((uint16_t)p->thumb_ly >> 8);
     b[14] = (uint8_t)p->thumb_rx; b[15] = (uint8_t)((uint16_t)p->thumb_rx >> 8);
     b[16] = (uint8_t)p->thumb_ry; b[17] = (uint8_t)((uint16_t)p->thumb_ry >> 8);
+    b[18] = (uint8_t)p->look_x;   b[19] = (uint8_t)((uint16_t)p->look_x >> 8);
+    b[20] = (uint8_t)p->look_y;   b[21] = (uint8_t)((uint16_t)p->look_y >> 8);
 }
 
-static void pad_from_bytes(RecompLockstepPad *p, const uint8_t b[18])
+static void pad_from_bytes(RecompLockstepPad *p, const uint8_t b[PAD_BYTES])
 {
     int i;
     p->buttons = (uint16_t)(b[0] | (b[1] << 8));
@@ -124,6 +131,8 @@ static void pad_from_bytes(RecompLockstepPad *p, const uint8_t b[18])
     p->thumb_ly = (int16_t)(uint16_t)(b[12] | (b[13] << 8));
     p->thumb_rx = (int16_t)(uint16_t)(b[14] | (b[15] << 8));
     p->thumb_ry = (int16_t)(uint16_t)(b[16] | (b[17] << 8));
+    p->look_x = (int16_t)(uint16_t)(b[18] | (b[19] << 8));
+    p->look_y = (int16_t)(uint16_t)(b[20] | (b[21] << 8));
 }
 
 /* FNV-1a over 8-byte words, then a final mix: fast enough to run over two
@@ -209,19 +218,21 @@ static void replay_load(const char *path)
         if (q) {
             q += 3;
             for (port = 0; port < RECOMP_LOCKSTEP_PORTS; port++) {
-                uint8_t b[18];
+                uint8_t b[PAD_BYTES];
                 int i;
                 if (!(rt->mask & (1u << port)))
                     continue;
-                for (i = 0; i < 18; i++) {
+                memset(b, 0, sizeof b);
+                /* 18 bytes, or 22 with the mouse's look: up to the comma. */
+                for (i = 0; i < PAD_BYTES; i++) {
                     int hi = hexval(q[2 * i]), lo = hexval(q[2 * i + 1]);
                     if (hi < 0 || lo < 0)
                         break;
                     b[i] = (uint8_t)(hi << 4 | lo);
                 }
-                if (i == 18)
+                if (i == PAD_BYTES || i == PAD_BYTES_OLD)
                     pad_from_bytes(&rt->pads[port], b);
-                q += 36;
+                q += 2 * i;
                 if (*q == ',')
                     q++;
             }
@@ -863,12 +874,13 @@ void recomp_lockstep_frame(void)
     if (s_trace) {
         fprintf(s_trace, "t=%u m=%X p=", tick, s_mask);
         for (port = 0; port < RECOMP_LOCKSTEP_PORTS; port++) {
-            uint8_t b[18];
-            int k;
+            uint8_t b[PAD_BYTES];
+            int k, n;
             if (!(s_mask & (1u << port)))
                 continue;
             pad_to_bytes(&s_pads[port], b);
-            for (k = 0; k < 18; k++)
+            n = (s_pads[port].look_x || s_pads[port].look_y) ? PAD_BYTES : PAD_BYTES_OLD;
+            for (k = 0; k < n; k++)
                 fprintf(s_trace, "%02X", b[k]);
             fputc(',', s_trace);
         }

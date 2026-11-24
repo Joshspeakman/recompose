@@ -54,6 +54,11 @@ typedef struct RecompLockstepPad {
     uint16_t buttons;
     uint8_t analog[8];
     int16_t thumb_lx, thumb_ly, thumb_rx, thumb_ry;
+    /* The mouse's look this frame, for a title that turns its camera by
+     * the mouse itself (recomp_mouse_look_native): degrees in 1/64ths, x to
+     * the right and y down, sensitivity and invert already applied by the
+     * machine whose mouse it is. Zero for a pad. */
+    int16_t look_x, look_y;
 } RecompLockstepPad;
 
 /* Reads this machine's device for a port (the input layer registers it). */

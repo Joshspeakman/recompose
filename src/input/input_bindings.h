@@ -93,6 +93,18 @@ int  recomp_mouse_invert(void);
  * reads as connected with nothing pressed (recomp_bindings_sample). */
 void recomp_bindings_block(int on);
 
+/* Native mouse look: the title turns its camera by the mouse as an angle
+ * (TimeSplitters 2 adds it to the player's own yaw and pitch), and the right
+ * stick is left to the pad. The title opts in at start; then each frame it
+ * asks for the look through recomp_input_look (src/hle/hle_input.c), which
+ * under online co-op is the latched one. */
+void recomp_mouse_look_native(int on);
+int  recomp_mouse_look_is_native(void);
+/* The mouse's look since the last call, in degrees: x to the right, y down,
+ * sensitivity and invert applied; zero with mouse look off or the in-game
+ * menu open. Takes it: each movement is given once. */
+void recomp_mouse_take_look(float *dx_deg, float *dy_deg);
+
 #ifdef __cplusplus
 }
 #endif

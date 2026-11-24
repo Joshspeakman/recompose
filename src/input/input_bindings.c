@@ -704,6 +704,13 @@ static struct {
     int invert;             /* mouse_invert: forward looks down */
 } g_look;
 
+static unsigned long long now_ms(void);
+static unsigned long long g_started_ms;     /* recomp_bindings_init: RECOMP_MOUSE_FAKE's zero */
+
+/* Native mouse look (recomp_mouse_look_native): the title turns its camera
+ * by the mouse itself, as an angle, so the right stick is left alone. */
+static volatile int g_native;
+
 /* While the in-game menu is open (recomp_bindings_block), every port reads
  * as nothing pressed and nothing moved, and connected as before: the menu
  * has the keyboard and the mouse, and the game must not see them. */
@@ -747,6 +754,16 @@ void recomp_bindings_block(int on)
     g_blocked = on ? 1 : 0;
 }
 
+void recomp_mouse_look_native(int on)
+{
+    g_native = on ? 1 : 0;
+}
+
+int recomp_mouse_look_is_native(void)
+{
+    return g_native;
+}
+
 void recomp_bindings_init(void)
 {
     char *text;
@@ -755,6 +772,7 @@ void recomp_bindings_init(void)
     if (g_ready)
         return;
     g_ready = 1;
+    g_started_ms = now_ms();
     for (i = 0; i < PORTS; i++)
         defaults_for(&g_ctl[i], i);
     if (find_config(g_path, sizeof g_path) && (text = read_file(g_path)) != NULL) {
@@ -1017,6 +1035,55 @@ static int wheel_magnitude(int d)
     return 255;
 }
 
+/* RECOMP_MOUSE_FAKE=<from ms>-<to ms>:<x>,<y> -- counts added at every
+ * take between those times since start-up: native mouse look tested
+ * without a hand on a mouse (a scripted run cannot move the real one). */
+static void mouse_fake(float *x, float *y)
+{
+    static int ready;
+    static unsigned long long from, to, start;
+    static float fx, fy;
+    unsigned long long now = now_ms();
+
+    if (!ready) {
+        const char *v = getenv("RECOMP_MOUSE_FAKE");
+
+        ready = 1;
+        if (v && sscanf(v, "%llu-%llu:%f,%f", &from, &to, &fx, &fy) == 4)
+            fprintf(stderr, "[INPUT] RECOMP_MOUSE_FAKE: %g,%g counts a take from %llu to %llu ms\n",
+                    fx, fy, from, to);
+        else
+            to = 0;
+        start = g_started_ms ? g_started_ms : now;
+    }
+    if (to && now - start >= from && now - start < to) {
+        *x += fx;
+        *y += fy;
+    }
+}
+
+/* Degrees per mouse count at sensitivity s: 0.11 at the default 80, which
+ * is a common shooter's 0.022 x 5 -- 360 degrees in about 4 inches of an
+ * 800 dpi mouse. */
+#define LOOK_DEG_PER_COUNT_PER_STEP 0.001375f
+
+void recomp_mouse_take_look(float *dx_deg, float *dy_deg)
+{
+    float x = (float)MOUSE_TAKE(&g_mouse_dx) / LOOK_FIXED;
+    float y = (float)MOUSE_TAKE(&g_mouse_dy) / LOOK_FIXED;
+    float k;
+
+    look_settings();
+    mouse_fake(&x, &y);
+    if (!g_look.on || g_blocked) {
+        *dx_deg = *dy_deg = 0.0f;
+        return;
+    }
+    k = LOOK_DEG_PER_COUNT_PER_STEP * (float)g_look.sensitivity;
+    *dx_deg = x * k;
+    *dy_deg = (g_look.invert ? -y : y) * k;
+}
+
 void recomp_mouse_release(void)
 {
     MOUSE_AND(&g_mouse_held, 0);
@@ -1263,8 +1330,9 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         }
     }
     /* Mouse look goes on top of the right stick's bindings rather than in
-     * place of them: the pad's stick, or keys bound to it, still turn. */
-    if (port == 0 && g_look.on) {
+     * place of them: the pad's stick, or keys bound to it, still turn.
+     * Not when the title takes the mouse as an angle (native). */
+    if (port == 0 && g_look.on && !g_native) {
         float look[2];
 
         look_axes(look);
