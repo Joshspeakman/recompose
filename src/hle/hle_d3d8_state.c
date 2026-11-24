@@ -406,6 +406,17 @@ static const struct {
     { 112, D3DRS_AMBIENTMATERIALSOURCE,  AS_IS },
     { 113, D3DRS_EMISSIVEMATERIALSOURCE, AS_IS },
     { 115, D3DRS_AMBIENT,          AS_IS },
+    /* Point sprites: their size, its limits, the sprite and distance-scale
+     * enables and the scale's three factors, floats as their bits. The
+     * host draws a point as one pixel without them. */
+    { 116, D3DRS_POINTSIZE,        AS_IS },
+    { 117, D3DRS_POINTSIZE_MIN,    AS_IS },
+    { 118, D3DRS_POINTSPRITEENABLE, AS_IS },
+    { 119, D3DRS_POINTSCALEENABLE, AS_IS },
+    { 120, D3DRS_POINTSCALE_A,     AS_IS },
+    { 121, D3DRS_POINTSCALE_B,     AS_IS },
+    { 122, D3DRS_POINTSCALE_C,     AS_IS },
+    { 123, D3DRS_POINTSIZE_MAX,    AS_IS },
     { 138, D3DRS_FOGCOLOR,         AS_IS },
     { 139, D3DRS_FILLMODE,         FILL },
     { 142, D3DRS_NORMALIZENORMALS, AS_IS },

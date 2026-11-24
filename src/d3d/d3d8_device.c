@@ -829,6 +829,20 @@ static HRESULT create_device_and_swap_chain(
     state->swap_height = dd.height;
     d3d8_display_scene_size(state->present_width, state->present_height,
                             &state->width, &state->height);
+    /* Offscreen targets are made at the scene's own scale (d3d8_offscreen_
+     * scale): the same whole factor on both axes, or none. */
+    {
+        UINT pw = state->present_width, ph = state->present_height, s = 1;
+
+        if (pw && ph && state->width % pw == 0 && state->height % ph == 0 &&
+            state->width / pw == state->height / ph)
+            s = state->width / pw;
+        else if (state->width != pw || state->height != ph)
+            fprintf(stderr, "D3D8: the scene is %ux%u for a %ux%u device, not a whole "
+                    "factor of it; offscreen targets stay at the title's size\n",
+                    state->width, state->height, pw, ph);
+        d3d8_set_scene_scale(s);
+    }
 
     return S_OK;
 }
@@ -1444,6 +1458,39 @@ static HRESULT __stdcall dev_GetIndices(IDirect3DDevice8 *self, IDirect3DIndexBu
 
 static uint32_t map_primitive_type(D3DPRIMITIVETYPE pt, UINT count, UINT *out_count)
 {
+    /* Lines and points are one host pixel across whatever the scale, so a
+     * title that draws them comes out thinner as RECOMP_RES_SCALE rises:
+     * said once each, so a log shows whether it does. */
+    if (pt == D3DPT_LINELIST || pt == D3DPT_LINESTRIP || pt == D3DPT_POINTLIST) {
+        static int said[3];
+        int k = pt == D3DPT_POINTLIST ? 0 : pt == D3DPT_LINELIST ? 1 : 2;
+
+        if (!said[k]++)
+            fprintf(stderr, "D3D8: the title draws %s (first: %u primitives, %s target)\n",
+                    k == 0 ? "points" : k == 1 ? "line lists" : "line strips", count,
+                    g_cur_rt ? "an offscreen" : "the screen");
+        if (k == 0 && said[0] <= 4) {
+            const DWORD *rs = g_device_state.render_states;
+            float size, mn, mx, a, b, c;
+            UINT tw = 0, th = 0;
+
+            memcpy(&size, &rs[D3DRS_POINTSIZE], 4);
+            memcpy(&mn, &rs[D3DRS_POINTSIZE_MIN], 4);
+            memcpy(&mx, &rs[D3DRS_POINTSIZE_MAX], 4);
+            memcpy(&a, &rs[D3DRS_POINTSCALE_A], 4);
+            memcpy(&b, &rs[D3DRS_POINTSCALE_B], 4);
+            memcpy(&c, &rs[D3DRS_POINTSCALE_C], 4);
+            if (g_cur_textures[0])
+                d3d8_base_size(g_cur_textures[0], &tw, &th);
+            fprintf(stderr, "D3D8:   points %u: size %g (min %g max %g), sprite %lu, scale %lu "
+                    "(%g %g %g), stage 0 texture %ux%u, %s shader 0x%lX, tick %u\n", count, size,
+                    mn, mx, (unsigned long)rs[D3DRS_POINTSPRITEENABLE],
+                    (unsigned long)rs[D3DRS_POINTSCALEENABLE], a, b, c, tw, th,
+                    g_device_state.vertex_shader & 1 ? "FVF" : "vertex",
+                    (unsigned long)g_device_state.vertex_shader,
+                    g_tick_source ? g_tick_source() : 0u);
+        }
+    }
     switch (pt) {
     case D3DPT_TRIANGLELIST:  *out_count = count * 3; return RHI_TOPOLOGY_TRIANGLES;
     case D3DPT_TRIANGLESTRIP: *out_count = count + 2; return RHI_TOPOLOGY_TRIANGLE_STRIP;
@@ -2188,6 +2235,20 @@ static HRESULT __stdcall dev_SetRenderTarget(IDirect3DDevice8 *self, IDirect3DSu
                 ds->width, ds->height,
                 rt ? rt->width : g_device_state.width,
                 rt ? rt->height : g_device_state.height);
+        return E_INVALIDARG;
+    }
+    /* The same in host pixels: a target and a depth are made at the same
+     * scale for the same size (d3d8_offscreen_scale), so this is a surface
+     * made some other way, and the backend would ignore the pair. */
+    if (ds && rt && (rt->host_scale > 1 ? rt->host_scale : 1) !=
+                    (ds->host_scale > 1 ? ds->host_scale : 1)) {
+        static int said;
+
+        if (said++ < 4)
+            fprintf(stderr, "D3D8: SetRenderTarget with a %ux%u depth at %ux for a target "
+                    "at %ux; refused\n", ds->width, ds->height,
+                    ds->host_scale > 1 ? ds->host_scale : 1,
+                    rt->host_scale > 1 ? rt->host_scale : 1);
         return E_INVALIDARG;
     }
     if (rt) IDirect3DSurface8_AddRef(pRenderTarget);

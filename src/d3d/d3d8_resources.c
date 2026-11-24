@@ -7,7 +7,6 @@
  */
 
 #include "d3d8_internal.h"
-#include "recomp_config.h"   /* RECOMP_RES_SCALE */
 #include "d3d8_swizzle.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1485,34 +1484,40 @@ static HRESULT __stdcall tex_LockRect(IDirect3DTexture8 *self, UINT Level, D3DLO
     return S_OK;
 }
 
+/* The scene's scale: the device's scene target over the size the title
+ * asked for, set when the device is made (d3d8_set_scene_scale), before any
+ * render target can be. Kept here, not in d3d8_device.c, so the tests that
+ * compile this file alone still link. 1 until a device says otherwise. */
+static UINT g_scene_scale = 1;
+
+void d3d8_set_scene_scale(UINT s)
+{
+    g_scene_scale = s ? s : 1;
+}
+
 UINT d3d8_offscreen_scale(UINT w, UINT h)
 {
-    static int on = -1;
-    static UINT scene = 0;
-    UINT s, big = w > h ? w : h;
+    static int on = -1, said;
+    UINT s = g_scene_scale, big = w > h ? w : h;
 
-    /* The scene's scale, read as d3d8_display.c reads it (a whole 1..8), from
-     * the settings rather than from that file: the tests that compile this
-     * one alone link the settings and not the display. */
-    if (!scene) {
-        const char *v = recomp_config_lookup("RECOMP_RES_SCALE", "resolution_scale");
-        int n = v && *v ? atoi(v) : 1;
-
-        scene = n < 1 ? 1u : n > 8 ? 8u : (UINT)n;
-    }
-    s = scene;
-
+    /* RECOMP_RT_SCALE=0: the title's own sizes, as before this existed. */
     if (on < 0) {
         const char *v = getenv("RECOMP_RT_SCALE");
-        on = !(v && (v[0] == '0' || v[0] == '1') && v[1] == '\0');
+        on = !(v && v[0] == '0' && v[1] == '\0');
         if (!on)
-            fprintf(stderr, "D3D8 display: RECOMP_RT_SCALE=%s: offscreen targets stay at "
-                    "the title's size\n", v);
+            fprintf(stderr, "D3D8: RECOMP_RT_SCALE=0: offscreen targets stay at the "
+                    "title's size\n");
     }
     if (!on || s <= 1 || !big)
         return 1;
     while (s > 1 && big * s > 16384u)   /* every backend's largest 2D image */
         s--;
+    /* Said for the first few, so a log shows what they cost. */
+    if (said < 6) {
+        said++;
+        fprintf(stderr, "D3D8: offscreen target %ux%u made %ux%u (%ux, the scene's scale%s)\n",
+                w, h, w * s, h * s, s, s < g_scene_scale ? ", less: the backend's limit" : "");
+    }
     return s;
 }
 

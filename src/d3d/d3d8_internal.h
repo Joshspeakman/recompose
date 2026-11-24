@@ -262,6 +262,8 @@ typedef struct D3D8CubeTexture {
  * as sharp as the screen it ends up on. 1 below a scaled scene, with
  * RECOMP_RT_SCALE=0, or where the image would pass the backend's size. */
 UINT d3d8_offscreen_scale(UINT w, UINT h);
+/* The device's scene target over the title's size, when the device is made. */
+void d3d8_set_scene_scale(UINT s);
 
 /* 3D texture. The leading fields mirror D3D8CubeTexture
  * up to `srv` (layout overlay) when read through the D3D8Texture prefix.
