@@ -447,6 +447,15 @@ static void dump_presented(void)
             *(uint16_t *)(hdr + 26) = 1;
             *(uint16_t *)(hdr + 28) = 32;
             fwrite(hdr, 1, sizeof hdr, f);
+            /* The readback is RGBA (rhi_swapchain_readback) and a BMP's
+             * pixels are BGRA: written as read, every dump had red and blue
+             * swapped -- Mexican Mission's adobe came out blue. */
+            for (y = 0; y < w * h; y++) {
+                uint8_t t = px[y * 4u];
+
+                px[y * 4u] = px[y * 4u + 2];
+                px[y * 4u + 2] = t;
+            }
             for (y = h; y-- > 0; )              /* bottom-up */
                 fwrite(px + (size_t)y * w * 4u, 4, w, f);
             fclose(f);
