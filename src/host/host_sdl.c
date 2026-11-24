@@ -772,8 +772,16 @@ static void dispatch_event(const SDL_Event *e)
         break;
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
         if (e->window.windowID == w->id && w->cb.on_resize && e->window.data1 > 0 &&
-            e->window.data2 > 0)
+            e->window.data2 > 0) {
             w->cb.on_resize(w->cb.user, e->window.data1, e->window.data2);
+            /* A title held at its Swap (the in-game menu) presents only when
+             * asked: without this, the held frame stayed at the size of the
+             * last input. On a Mac, Fullscreen from the menu showed the 4:3
+             * buffer stretched over the screen, and going back to a window
+             * left the fullscreen-sized buffer squeezed into it. Only a flag;
+             * nothing reads it unless the title is held. */
+            host_request_redraw();
+        }
         break;
     case SDL_EVENT_KEY_DOWN:
         if (e->key.windowID != w->id)

@@ -108,8 +108,9 @@ ImGuiKey imgui_key(int key)
     }
 }
 
-/* Hands what arrived to ImGui. The presenting thread, before NewFrame. */
-void queue_drain(ImGuiIO &io)
+/* Hands what arrived to ImGui. The presenting thread, before NewFrame.
+ * Returns how many events it handed over. */
+int queue_drain(ImGuiIO &io)
 {
     Event local[kQueueMax];
     int n;
@@ -136,6 +137,7 @@ void queue_drain(ImGuiIO &io)
         case EV_CHAR:   io.AddInputCharacter(e.c); break;
         }
     }
+    return n;
 }
 
 } // namespace
@@ -891,7 +893,15 @@ void menu_present(void *out_view, unsigned width, unsigned height)
     float dt = std::chrono::duration<float>(now - g_last).count();
     g_last = now;
     io.DeltaTime = dt > 0.0001f ? (dt < 0.5f ? dt : 0.5f) : 0.0001f;
-    queue_drain(io);
+    /* A held title presents only when asked, and ImGui shows some results
+     * of an input a frame later: a popup opened by a click (Quit to
+     * desktop?) appears on the frame after, and the hover and active
+     * colours settle over two. So each batch of input asks for two frames
+     * more; without them, on a Mac, the confirmation only appeared at the
+     * next key or move of the pointer. */
+    static int settle;
+    if (queue_drain(io) > 0 || just_opened)
+        settle = 2;
 
     /* An auto-sized window knows its size only after a frame: laid out once
      * unseen when the menu has just opened, so it does not appear in the
@@ -909,6 +919,10 @@ void menu_present(void *out_view, unsigned width, unsigned height)
     draw_menu(width, height);
     ImGui::Render();
     render(ImGui::GetDrawData(), (RhiView *)out_view, width, height);
+    if (settle > 0) {
+        settle--;
+        host_request_redraw();
+    }
 }
 
 } // namespace
