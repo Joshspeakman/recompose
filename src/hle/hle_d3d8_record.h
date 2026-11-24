@@ -96,6 +96,9 @@ void hle_d3d8_defer_flush(void);
  * state or draws is also kept as an op (the deferred queue's format), and
  * a draw is kept with what identifies it from one frame to the next. */
 extern int hle_d3d8_interp_rec;
+/* Set while a kept list is drawn again: what it holds is not looked at again
+ * on the way in (xbox_D3D8SetConstantFilter). */
+extern int hle_d3d8_interp_replaying;
 
 typedef struct {
     uint64_t content;     /* hash of the index and vertex bytes */
@@ -108,6 +111,8 @@ typedef struct {
 } HleInterpDrawKey;
 
 void hle_d3d8_interp_op(void (*fn)(const void *arg), const void *arg, size_t size);
+/* A kept op that only sets state (no clear, draw, copy, target or release). */
+int  hle_d3d8_op_sets_state_only(void (*fn)(const void *arg));
 void hle_d3d8_interp_draw(void (*fn)(const void *arg), const void *arg, size_t size,
                           const HleInterpDrawKey *key);
 /* Run fn(arg) once the frame being kept is no longer needed: a release or a

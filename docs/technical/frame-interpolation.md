@@ -74,15 +74,43 @@ present (`xbox_D3D8InterpPresent`, which does not count a frame), and
 Unmatched draws are drawn as N drew them.
 
 **Blending.** The projection term by term, when both frames have the same kind
-(perspective or not). Each affine matrix is split by polar decomposition into
-rotation and the rest; the rotation is blended as a quaternion, the rest and
-the translation linearly, so a turning object keeps its size. Only what the
-draw's program reads is blended (`d3d8_vsh_bound_reads`): a register the
+(perspective or not). Each affine matrix is blended by its motion: D = B A^-1,
+the step from frame N-1's matrix A to N's B, split by polar decomposition into
+a rotation (slerped from the identity) and the rest (blended linearly), with
+its translation scaled, and applied to A. A static object's D is the camera's
+own step, the same for every piece of the level, so the pieces move together
+however fast the camera turns; blending A and B themselves pulled each piece
+toward the camera by its own amount part of the way through a turn. Only what
+the draw's program reads is blended (`d3d8_vsh_bound_reads`): a register the
 program never reads holds whatever was last put there. Only draws whose
 program goes through the projection are blended, so screen-space draws (HUD,
-menus) are N's to the pixel and do not shimmer. A matrix that turned more than
-45 degrees, or moved by more than half its distance, in one frame is a cut,
+menus) are N's to the pixel and do not shimmer. A motion that turns more than
+70 degrees, or moves by more than half the distance, in one frame is a cut,
 and drawn as N has it.
+
+**What only one of the two frames drew** (November 2026, TimeSplitters 2,
+whose in-between frames showed the sky through doorways on fast mouse turns).
+A title draws what its newest camera sees, and may clip what it sees through
+a doorway to the doorway's rectangle on screen (scissors). An in-between frame
+looks part of the way back, so:
+
+- the camera's step is taken from the motion most of the matched draws share,
+  by primitives (the level's);
+- every scissor rectangle inside the viewport is carried along with the
+  camera's turn since N (`d3d8_SetScissorWarp`: its corners as directions
+  from the eye, turned, projected again; a side on the viewport's edge stays
+  there);
+- N's 3D draws with no partner in N-1 are moved back with the camera;
+- N-1's 3D draws with no partner in N, to the target the level is drawn to,
+  are drawn too, after N's last 3D draw there (before its full-screen passes
+  and 2D), moved forward with the camera: N-1's whole list is run for its
+  state, nothing cleared, copied or retargeted (`hle_d3d8_op_sets_state_only`),
+  and N's state put back. For a turn the two frames' views take in every
+  view in between.
+
+`RECOMP_INTERP_ACCOUNT=<from>-<to>` prints each frame's primitives by how
+they matched and what was filled in; `RECOMP_INTERP_FILL=0` leaves the
+filling out for comparison.
 
 **Held frames.** A frame is not interpolated, and the display keeps N-1 until
 N as at 60, when it has no 3D, when less than 60% of its 3D primitives

@@ -1836,6 +1836,11 @@ void d3d8_vsh_interp_registers(int *projection, int *affine_first, int *affine_c
     *affine_count = count & ~3;
 }
 
+const float *d3d8_vsh_constant(int reg)
+{
+    return reg >= 0 && reg < NV2A_VS_MAX_CONSTANTS ? g_vsh_constants.c[reg] : NULL;
+}
+
 void d3d8_vsh_set_constant(int start_reg, const float *data, int count)
 {
     int end_reg;

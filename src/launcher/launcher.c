@@ -117,8 +117,12 @@ static const char *const *k_frame_caps = k_frame_caps_console;
 static RecompSettings g_settings;
 static int            g_frame_cap_index;   /* into k_frame_caps */
 static int            g_widescreen;        /* the row; settings_save applies it */
+/* post_soften: the file's words and what the row shows */
+static const char *const k_soften_values[] = { "sharp", "console", "off", NULL };
+static const char *const k_soften_labels[] = { "Sharp", "As the console", "Off", NULL };
+static int            g_soften_index;
 
-static Row  g_video_rows[12];
+static Row  g_video_rows[14];
 static int  g_video_count;
 
 /* ---- System Link ---- */
@@ -237,6 +241,12 @@ static void build_rows(void)
     r->label = "Texture sharpness";
     r->help  = "Sharpen textures seen at a glancing angle: floors, walls, roads.";
     r->kind  = ROW_INT; r->lo = 1; r->hi = 16; r->ival = &g_settings.anisotropy;
+    r++;
+
+    r->label = "Post-processing";
+    r->help  = "The game's soften pass. Sharp keeps it one screen pixel wide; as"
+               " the console, it smears at a higher resolution.";
+    r->kind  = ROW_CHOICE; r->choices = k_soften_labels; r->ival = &g_soften_index;
     r++;
 
     r->label = "Frame rate";
@@ -410,8 +420,10 @@ static void row_value(const Row *r, char *out, size_t n)
     case ROW_CHOICE:
         if (r->ival == &g_link_mode)
             snprintf(out, n, "%s", link_mode_label(*r->ival));
-        else
+        else if (r->ival == &g_frame_cap_index)
             snprintf(out, n, "%s", frame_cap_label(*r->ival));
+        else
+            snprintf(out, n, "%s", r->choices[*r->ival]);
         break;
     default:
         snprintf(out, n, "%s", r->text ? r->text : "");
@@ -1118,6 +1130,14 @@ static void settings_load(void)
             }
     }
 
+    g_soften_index = 0;
+    {
+        int i;
+        for (i = 0; k_soften_values[i]; i++)
+            if (strcasecmp(g_settings.post_soften, k_soften_values[i]) == 0)
+                g_soften_index = i;
+    }
+
     g_link_mode = LINK_OFF;
     {
         int i;
@@ -1179,6 +1199,8 @@ static int settings_save(void)
 #endif
     snprintf(g_settings.frame_cap, sizeof g_settings.frame_cap, "%s",
              k_frame_caps[g_frame_cap_index]);
+    snprintf(g_settings.post_soften, sizeof g_settings.post_soften, "%s",
+             k_soften_values[g_soften_index]);
     if (LINK_COOP(g_link_mode)) {
         /* Co-op and System Link are not both on: the co-op game is the
          * split screen, on every machine. */

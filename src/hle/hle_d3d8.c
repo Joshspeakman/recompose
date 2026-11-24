@@ -171,6 +171,7 @@ static unsigned long g_shadow_swaps;
 #define SHADOW_WM_DESTROY (WM_APP + 1)
 #define SHADOW_WM_FULLSCREEN (WM_APP + 2)   /* wParam: on (hle_window_set_fullscreen) */
 #define SHADOW_WM_MENU       (WM_APP + 3)   /* wParam: the menu is open (hle_window_menu_pointer) */
+#define SHADOW_WM_TITLE_MENU (WM_APP + 4)   /* wParam: the title's menu is up (hle_window_title_menu) */
 #else
 #include "host.h"
 #endif
@@ -378,8 +379,9 @@ static void shadow_mouse_clip(HWND hwnd)
 
 static void shadow_mouse_capture(HWND hwnd, int on)
 {
-    /* The menu has the pointer while it is open. */
-    if (on && (!shadow_mouse_look() || recomp_menu_is_open()))
+    /* The menu has the pointer while it is open, and so has the title's own
+     * menu (hle_window_title_menu). */
+    if (on && (!shadow_mouse_look() || recomp_menu_is_open() || recomp_mouse_title_menu_on()))
         return;
     if (on == g_mouse_captured) {
         if (on)
@@ -600,7 +602,7 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         /* The game has no pointer; over a fullscreen picture it is in the
          * way, and with mouse look the pointer is not a pointer at all. */
         if ((g_shadow_fullscreen || g_mouse_captured) && !recomp_menu_is_open() &&
-            LOWORD(lp) == HTCLIENT) {
+            !recomp_mouse_title_menu_on() && LOWORD(lp) == HTCLIENT) {
             SetCursor(NULL);
             return TRUE;
         }
@@ -629,6 +631,14 @@ static LRESULT CALLBACK shadow_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             recomp_menu_mouse_pos((float)pt.x, (float)pt.y);
             SetCursor(LoadCursor(NULL, IDC_ARROW));
         } else if (GetForegroundWindow() == hwnd) {
+            shadow_mouse_capture(hwnd, 1);
+        }
+        return 0;
+    case SHADOW_WM_TITLE_MENU:           /* hle_window_title_menu */
+        if (wp) {
+            shadow_mouse_capture(hwnd, 0);
+            SetCursor(LoadCursor(NULL, IDC_ARROW));
+        } else if (GetForegroundWindow() == hwnd && !recomp_menu_is_open()) {
             shadow_mouse_capture(hwnd, 1);
         }
         return 0;
@@ -869,6 +879,18 @@ void hle_window_menu_pointer(int menu_open)
         PostMessageA(g_shadow_hwnd, SHADOW_WM_MENU, menu_open ? 1 : 0, 0);
 }
 
+/* hle_menu.h: the title's own menu is up (1) or play is back (0). The pointer
+ * is shown and free while it is, and the mouse works the menu
+ * (recomp_mouse_title_menu); play takes the pointer again. */
+void hle_window_title_menu(int on)
+{
+    if (on == recomp_mouse_title_menu_on())
+        return;
+    recomp_mouse_title_menu(on);
+    if (g_shadow_hwnd)
+        PostMessageA(g_shadow_hwnd, SHADOW_WM_TITLE_MENU, on ? 1 : 0, 0);
+}
+
 /* The overlay's keys, read while the window is in front (overlay_frame). */
 static int shadow_key_down(int vk)
 {
@@ -990,7 +1012,19 @@ void hle_window_menu_pointer(int menu_open)
 {
     if (!g_shadow_host || host_window_background())
         return;
-    host_window_set_relative_mouse(g_shadow_host, menu_open ? 0 : recomp_mouse_look());
+    host_window_set_relative_mouse(g_shadow_host, menu_open ? 0 :
+                                   recomp_mouse_look() && !recomp_mouse_title_menu_on());
+}
+
+/* As on Windows (above): the title's own menu frees the pointer. */
+void hle_window_title_menu(int on)
+{
+    if (on == recomp_mouse_title_menu_on())
+        return;
+    recomp_mouse_title_menu(on);
+    if (!g_shadow_host || host_window_background() || recomp_menu_is_open())
+        return;
+    host_window_set_relative_mouse(g_shadow_host, on ? 0 : recomp_mouse_look());
 }
 
 /* Online co-op's status in the window's title, as the Win32 window above

@@ -51,6 +51,10 @@ void recomp_menu_char(unsigned codepoint);
 void hle_window_set_fullscreen(int on);   /* any thread */
 int  hle_window_fullscreen(void);
 void hle_window_menu_pointer(int menu_open);   /* give the pointer back, or take it */
+/* The title's own menu is up (1: the pointer shown and free, the mouse's
+ * left button A, right B, wheel up and down) or play is back (0). Any
+ * thread; a title calls it as its screens change. */
+void hle_window_title_menu(int on);
 
 #ifdef __cplusplus
 }

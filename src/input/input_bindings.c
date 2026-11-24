@@ -1287,6 +1287,38 @@ static void say_first_press(unsigned port, const char *control)
     }
 }
 
+/*
+ * The title's own menus (recomp_mouse_title_menu): while the title says a
+ * menu of its own is up -- not play -- the pointer is a pointer again (the
+ * window's side, hle_window_title_menu) and the mouse works the menu the
+ * way a pad does: the left button is A, the right B, the wheel moves up and
+ * down the list. Its buttons' bindings (fire, aim) are not used meanwhile,
+ * so a click to choose does not also fire as the next screen comes up.
+ */
+static volatile long g_title_menu;
+
+void recomp_mouse_title_menu(int on)
+{
+    g_title_menu = on ? 1 : 0;
+}
+
+int recomp_mouse_title_menu_on(void)
+{
+    return (int)g_title_menu;
+}
+
+static void title_menu_mouse(XBOX_GAMEPAD *out)
+{
+    if (g_mouse_held & (1L << RECOMP_MOUSE_LEFT))
+        out->bAnalogButtons[0] = 255;            /* A */
+    if (g_mouse_held & (1L << RECOMP_MOUSE_RIGHT))
+        out->bAnalogButtons[1] = 255;            /* B */
+    if (wheel_magnitude(0))
+        out->wButtons |= 0x0001;                 /* d-pad up */
+    if (wheel_magnitude(1))
+        out->wButtons |= 0x0002;                 /* d-pad down */
+}
+
 int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
 {
     Controller *c;
@@ -1327,8 +1359,10 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         int mag = 0, s;
 
         for (s = 0; s < c->bind[i].count; s++) {
-            int m = source_magnitude(&c->bind[i].src[s], &kc, &pad, have_pad,
-                                     c->deadzone);
+            int m;
+            if (port == 0 && g_title_menu && c->bind[i].src[s].kind == SRC_MOUSE)
+                continue;                        /* the menu's (title_menu_mouse) */
+            m = source_magnitude(&c->bind[i].src[s], &kc, &pad, have_pad, c->deadzone);
             if (m > mag)
                 mag = m;
         }
@@ -1374,6 +1408,8 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
             out->sThumbRY = add_look(out->sThumbRY, g_look.invert ? -look[1] : look[1]);
         }
     }
+    if (port == 0 && g_title_menu)
+        title_menu_mouse(out);
     /* The on-screen controls, on top of everything bound (touch_controls.h). */
     if (port == 0)
         recomp_touch_apply(out);

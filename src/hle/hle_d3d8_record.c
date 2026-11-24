@@ -45,6 +45,7 @@
 #include "d3d8_combiners.h"
 #include "d3d8_capture.h"
 #include "hle_d3d8_record.h"
+#include "recomp_lockstep.h"   /* recomp_lockstep_tick: RECOMP_LOG_PROJ */
 #include "recomp_config.h"   /* RECOMP_HLE_D3D8_DEFER / defer_draws */
 
 /* hle_d3d8.c: the shadow device, or NULL. */
@@ -1780,8 +1781,43 @@ static void op_ps_token(const void *arg)
     host_combiners_set_pixel_shader(*(const DWORD *)arg);
 }
 
+/* xbox_D3D8SetConstantFilter: the title's look at vertex constants on their
+ * way in, before anything keeps them (frame interpolation, captures), so
+ * what is kept is what is drawn. */
+static void (*g_constant_filter)(int first_reg, float *data, int count);
+
+void xbox_D3D8SetConstantFilter(void (*fn)(int first_reg, float *data, int count))
+{
+    g_constant_filter = fn;
+}
+
 void host_vsh_set_constant(int first_reg, const float *data, int count)
 {
+    float filtered[NV2A_VS_MAX_CONSTANTS * 4];
+
+    if (g_constant_filter && data && count > 0 && count <= NV2A_VS_MAX_CONSTANTS &&
+        !hle_d3d8_interp_replaying) {
+        memcpy(filtered, data, (size_t)count * 4 * sizeof(float));
+        g_constant_filter(first_reg, filtered, count);
+        data = filtered;
+    }
+    /* RECOMP_LOG_PROJ=<tick>,<reg>: every upload that covers register reg
+     * during that lockstep tick, with its first two rows. */
+    {
+        static long at = -2, reg = 60;
+        if (at == -2) {
+            const char *v = getenv("RECOMP_LOG_PROJ");
+            at = -1;
+            if (v && *v && sscanf(v, "%ld,%ld", &at, &reg) < 1)
+                at = -1;
+        }
+        if (at >= 0 && data && (long)recomp_lockstep_tick() == at && first_reg <= reg &&
+            first_reg + count > reg) {
+            const float *c = data + (reg - first_reg) * 4;
+            fprintf(stderr, "[PROJ] c%d..c%d: c%ld = %g %g %g %g | %g %g %g %g\n", first_reg,
+                    first_reg + count - 1, reg, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
+        }
+    }
     if (hle_d3d8_defer_recording() && data && count > 0) {
         dq_constants p;
         p.first = first_reg;
@@ -2088,3 +2124,13 @@ void hle_d3d8_interp_snapshot(void)
     }
 }
 
+
+/* hle_d3d8_record.h: a kept op that only sets state -- no clear, draw,
+ * copy, change of target or release -- so frame interpolation can run a
+ * list's state again without drawing any of it. */
+int hle_d3d8_op_sets_state_only(void (*fn)(const void *arg))
+{
+    return fn != op_clear && fn != op_render_target && fn != op_screen_copy &&
+           fn != op_depth_copy && fn != op_release_texture && fn != op_vsh_delete &&
+           fn != op_draw_up && fn != op_draw_indexed_up;
+}

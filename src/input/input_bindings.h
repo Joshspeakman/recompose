@@ -93,6 +93,13 @@ int  recomp_mouse_invert(void);
  * reads as connected with nothing pressed (recomp_bindings_sample). */
 void recomp_bindings_block(int on);
 
+/* The title's own menu is up, not play (1), or play again (0): the left
+ * button is A, the right B and the wheel up and down while it is, and the
+ * buttons' bindings rest. The window's side is hle_window_title_menu, which
+ * calls this. */
+void recomp_mouse_title_menu(int on);
+int  recomp_mouse_title_menu_on(void);
+
 /* Native mouse look: the title turns its camera by the mouse as an angle
  * (TimeSplitters 2 adds it to the player's own yaw and pitch), and the right
  * stick is left to the pad. The title opts in at start; then each frame it

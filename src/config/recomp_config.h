@@ -232,6 +232,7 @@ typedef struct RecompSettings {
     char widescreen_2d[16];     /* "auto" or "centre": where 2D goes in widescreen */
     char renderer[16];          /* "auto", "d3d11", "vulkan", "metal": what draws the game */
     int  anisotropy;            /* 1..16 */
+    char post_soften[12];       /* "sharp", "console", "off": the soften pass at higher resolutions */
     char frame_cap[16];         /* "adaptive", "60", "30", "0", or above 60 */
     int  fps_overlay;           /* 0 or 1 */
     int  fullscreen;            /* 0 or 1: borderless, on the window's monitor */

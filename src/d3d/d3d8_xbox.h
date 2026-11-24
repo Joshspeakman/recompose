@@ -1220,6 +1220,18 @@ BOOL xbox_D3D8GetScissors(UINT *count, BOOL *exclusive, D3DRECT *rect);
  * 0 included. */
 float xbox_D3D8ClaimHorPlus(void);
 
+/* A look at vertex shader constants on their way to the renderer, before
+ * anything keeps them (frame interpolation, captures): fn may change the
+ * values in data (count registers from first_reg, four floats each). For a
+ * title that needs one upload changed and no other: TimeSplitters 2 draws
+ * its first-person weapon with the camera's projection, and keeps it at its
+ * own field of view when the player widens the camera's. NULL removes it. */
+void xbox_D3D8SetConstantFilter(void (*fn)(int first_reg, float *data, int count));
+
+/* The soften pass (post_soften, d3d8_device.c), changed while playing:
+ * 0 as the console draws it, 1 sharp (one screen pixel), 2 off. */
+void xbox_D3D8SetPostSoften(int mode);
+
 /* Hor+ for a title that can widen its field of view but not change its
  * aspect: the engine takes a horizontal field of view and works the vertical
  * out from a 4:3 rectangle it also uses for other things. Such a title

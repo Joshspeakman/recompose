@@ -22,6 +22,7 @@
  */
 #include "input_host.h"
 #include "input_bindings.h"
+#include "recomp_lockstep.h"   /* recomp_lockstep_tick: t<tick> steps */
 
 /* <windows.h> on Windows, the POSIX shim (GetTickCount64) elsewhere. */
 #include "platform/xbox_winnt.h"
@@ -129,11 +130,16 @@ static void fake_apply(RecompInputGamepad *g, int i)
  * RECOMP_INPUT_SEQ_P2, _P3 and _P4 script controllers 2 to 4 the same way,
  * on the same clock (it starts at the title's first pad read on any port), so
  * a two-player mode can be reached and played without a second person. A
- * scripted port is reported connected for the whole run. */
-#define SEQ_MAX 1024
+ * scripted port is reported connected for the whole run.
+ *
+ * A step whose time is t<tick> (t5400:rt:200) is due at that lockstep tick
+ * (recomp_lockstep.h) instead, held for its ms in 60ths of a second: a run
+ * that slows down -- one writing a frame dump every frame -- still presses
+ * at the frame meant, which the wall clock cannot promise. Menus can keep
+ * the wall clock and the play that follows go by the frame. */
 #define SEQ_MAX 1024
 #define SEQ_PORTS 4
-struct seq_step { unsigned long at, hold; int keys[4]; int nkeys; };
+struct seq_step { unsigned long at, hold; int keys[4]; int nkeys; int by_tick; };
 static struct seq_step s_seq[SEQ_PORTS][SEQ_MAX];
 static int s_seq_count[SEQ_PORTS] = { -1, -1, -1, -1 };
 static unsigned long long s_seq_t0;
@@ -152,6 +158,11 @@ static void seq_parse(unsigned port, const char *env)
 
         memset(s, 0, sizeof *s);
         s->hold = 200;
+        if (*p == 't') {
+            s->by_tick = 1;
+            p++;
+            len--;
+        }
         s->at = strtoul(p, &end, 10);
         if (end == p || *end != ':') {
             fprintf(stderr, "  [PAD] RECOMP_INPUT_SEQ: bad step at '%.*s' (want <ms>:<button>)\n",
@@ -264,8 +275,15 @@ static void seq_input(unsigned port, RecompInputGamepad *g)
     t = GetTickCount64() - s_seq_t0;
     for (i = 0; i < s_seq_count[port]; i++) {
         const struct seq_step *s = &s_seq[port][i];
-        if (t < s->at || t >= (unsigned long long)s->at + s->hold)
+        if (s->by_tick) {
+            unsigned long long tick = recomp_lockstep_tick();
+            unsigned long long hold = (s->hold * 60ull + 999ull) / 1000ull;
+
+            if (tick < s->at || tick >= s->at + (hold ? hold : 1))
+                continue;
+        } else if (t < s->at || t >= (unsigned long long)s->at + s->hold) {
             continue;
+        }
         for (k = 0; k < s->nkeys; k++)
             fake_apply(g, s->keys[k]);
     }

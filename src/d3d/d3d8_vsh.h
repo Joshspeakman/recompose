@@ -160,6 +160,9 @@ int  d3d8_vsh_is_projection_reg(int reg);
  * the projection's first register or -1, and a run of 4-register affine
  * matrices (count a multiple of 4; first -1 and count 0 for none). */
 void d3d8_vsh_interp_registers(int *projection, int *affine_first, int *affine_count);
+/* Vertex constant register reg as the title last set it (four floats), or
+ * NULL out of range. */
+const float *d3d8_vsh_constant(int reg);
 
 /**
  * The whole constant bank, as NV2A_VS_MAX_CONSTANTS float4 registers laid out

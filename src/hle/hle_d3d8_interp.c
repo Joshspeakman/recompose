@@ -72,6 +72,7 @@
 #include "hle_d3d8_record.h"
 #include "recomp_config.h"
 #include "../kernel/xbox_memory_layout.h"
+#include "recomp_lockstep.h"   /* recomp_lockstep_tick: RECOMP_INTERP_ACCOUNT */
 
 #define INTERP_MAX_MULTIPLE  8
 #define INTERP_MAX_AFFINE    64                  /* registers */
@@ -81,7 +82,7 @@
 
 #define MIN_MATCHED          0.60                /* of the 3D primitives */
 #define MAX_CUT              0.50
-#define MAX_TURN_COS         0.92387953          /* cos(45 deg / 2) */
+#define MAX_TURN_COS         0.81915204          /* cos(70 deg / 2): a frame's turn */
 #define MAX_MOVE             0.5                 /* of the distance */
 
 typedef struct {
@@ -110,13 +111,16 @@ typedef struct {
     int        whole;                            /* began at a frame start, all kept */
 } InterpList;
 
-/* A matrix ready to blend: rotation (a quaternion each side, the second
- * turned to the same hemisphere), the rest of the 3x3, the translation. */
+/* A matrix ready to blend, as the motion from the frame before to this one
+ * (D = B A^-1, blended from the identity) and where it started (A): the
+ * motion's rotation as a quaternion (the short way round), the rest of its
+ * 3x3 and its translation. */
 typedef struct {
     int    ok;
-    double qa[4], qb[4];
-    double sa[9], sb[9];
-    double ta[3], tb[3];
+    double q[4];
+    double s[9];
+    double t[3];
+    double a[12];                                /* A: 3 rows of 4 */
 } Prepared;
 
 static int        g_multiple;                    /* frames shown a frame drawn; <2 off */
@@ -126,6 +130,13 @@ static InterpList g_list[2];
 static int        g_cur;                         /* the list being kept */
 static Prepared  *g_prep;                        /* g_groups a draw of the current list */
 static int        g_prep_cap;
+static int        g_ref_draw = -1;               /* whose motion is the camera's */
+/* The frame before's 3D draws with no partner in this one, to the target the
+ * level is drawn to, and where in this list they go (fill_pass). */
+static uint8_t   *g_orphan;
+static int        g_orphan_cap, g_orphans;
+static long long  g_inject_off = -1;
+int               hle_d3d8_interp_replaying;
 
 /* This frame, in the gate. */
 static int        g_prepared, g_frame_ok, g_slot;
@@ -495,91 +506,126 @@ static int is_affine(const float *g)
            fabsf(g[15] - 1.0f) < 1e-4f;
 }
 
-/* One side: rotation as a quaternion, S = R^T M, translation. A mirror is
- * kept in S, so the rotation is a proper one. */
-static int split(const float *g, double *q, double *s, double *t, int *mirror)
+static void mul3(const double *a, const double *b, double *out)
 {
-    double m[9], r[9];
     int i, j, k;
 
-    for (i = 0; i < 3; i++) {
-        for (j = 0; j < 3; j++)
-            m[i * 3 + j] = g[i * 4 + j];
-        t[i] = g[i * 4 + 3];
-    }
-    *mirror = det3(m) < 0.0;
-    if (*mirror)
-        for (i = 0; i < 9; i++)
-            m[i] = -m[i];
-    if (!polar_rotation(m, r))
-        return 0;
     for (i = 0; i < 3; i++)
         for (j = 0; j < 3; j++) {
             double v = 0.0;
             for (k = 0; k < 3; k++)
-                v += r[k * 3 + i] * m[k * 3 + j];
-            s[i * 3 + j] = *mirror ? -v : v;
+                v += a[i * 3 + k] * b[k * 3 + j];
+            out[i * 3 + j] = v;
         }
-    quat_from(r, q);
-    return 1;
 }
 
+/*
+ * Blended by its motion. Each matrix is the camera's view of an object, so
+ * a static object's motion from N-1 to N (D = B A^-1) is the camera's own,
+ * the same for every piece of the level. Blending D from the identity and
+ * applying it to A keeps the pieces together however fast the camera
+ * turns; blending A and B themselves, rotation by quaternion and
+ * translation linearly, pulled each piece toward the camera by its own
+ * amount part way through a turn (cos of half the turn: 1% at 15 degrees a
+ * frame), which opened cracks between neighbours.
+ *
+ * A cut (drawn as N has it): no inverse, a mirror flipping, a motion that
+ * turns more than MAX_TURN, or one that moves more than MAX_MOVE of the
+ * distance (an object teleported, a camera cut).
+ */
 static void prepare_group(Prepared *p, const float *a, const float *b, int *cut)
 {
-    int ma, mb;
-    double dot, da, db, dt;
+    double la[9], lb[9], ia[9], ld[9], r[9], d, da, db, dt;
+    int i, j;
 
     p->ok = 0;
     if (memcmp(a, b, 16 * sizeof(float)) == 0)
         return;                                  /* nothing moved: drawn as it is */
     if (!is_affine(a) || !is_affine(b))
         return;
-    if (!split(a, p->qa, p->sa, p->ta, &ma) || !split(b, p->qb, p->sb, p->tb, &mb) ||
-        ma != mb) {
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++) {
+            la[i * 3 + j] = a[i * 4 + j];
+            lb[i * 3 + j] = b[i * 4 + j];
+        }
+    d = det3(la);
+    if (fabs(d) < 1e-12) {
         *cut = 1;
         return;
     }
-    dot = p->qa[0] * p->qb[0] + p->qa[1] * p->qb[1] + p->qa[2] * p->qb[2] +
-          p->qa[3] * p->qb[3];
-    if (dot < 0.0) {
-        int i;
-        for (i = 0; i < 4; i++)
-            p->qb[i] = -p->qb[i];
-        dot = -dot;
+    ia[0] =  (la[4] * la[8] - la[5] * la[7]) / d;
+    ia[1] = -(la[1] * la[8] - la[2] * la[7]) / d;
+    ia[2] =  (la[1] * la[5] - la[2] * la[4]) / d;
+    ia[3] = -(la[3] * la[8] - la[5] * la[6]) / d;
+    ia[4] =  (la[0] * la[8] - la[2] * la[6]) / d;
+    ia[5] = -(la[0] * la[5] - la[2] * la[3]) / d;
+    ia[6] =  (la[3] * la[7] - la[4] * la[6]) / d;
+    ia[7] = -(la[0] * la[7] - la[1] * la[6]) / d;
+    ia[8] =  (la[0] * la[4] - la[1] * la[3]) / d;
+    mul3(lb, ia, ld);
+    if (det3(ld) <= 0.0 || !polar_rotation(ld, r)) {
+        *cut = 1;                                /* a mirror turning over */
+        return;
     }
-    da = sqrt(p->ta[0] * p->ta[0] + p->ta[1] * p->ta[1] + p->ta[2] * p->ta[2]);
-    db = sqrt(p->tb[0] * p->tb[0] + p->tb[1] * p->tb[1] + p->tb[2] * p->tb[2]);
-    dt = sqrt((p->tb[0] - p->ta[0]) * (p->tb[0] - p->ta[0]) +
-              (p->tb[1] - p->ta[1]) * (p->tb[1] - p->ta[1]) +
-              (p->tb[2] - p->ta[2]) * (p->tb[2] - p->ta[2]));
-    if (dot < MAX_TURN_COS || dt > MAX_MOVE * fmax(da, db) + 1e-3) {
+    /* S = R^T L_D, the rest */
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++)
+            p->s[i * 3 + j] = r[0 * 3 + i] * ld[0 * 3 + j] + r[1 * 3 + i] * ld[1 * 3 + j] +
+                              r[2 * 3 + i] * ld[2 * 3 + j];
+    quat_from(r, p->q);
+    if (p->q[0] < 0.0)
+        for (i = 0; i < 4; i++)
+            p->q[i] = -p->q[i];
+    for (i = 0; i < 3; i++)
+        p->t[i] = b[i * 4 + 3] - (ld[i * 3 + 0] * a[3] + ld[i * 3 + 1] * a[7] +
+                                  ld[i * 3 + 2] * a[11]);
+    da = sqrt((double)a[3] * a[3] + (double)a[7] * a[7] + (double)a[11] * a[11]);
+    db = sqrt((double)b[3] * b[3] + (double)b[7] * b[7] + (double)b[11] * b[11]);
+    dt = sqrt(p->t[0] * p->t[0] + p->t[1] * p->t[1] + p->t[2] * p->t[2]);
+    if (p->q[0] < MAX_TURN_COS || dt > MAX_MOVE * fmax(da, db) + 1e-3) {
         *cut = 1;                                /* a jump, not motion */
         return;
     }
+    for (i = 0; i < 12; i++)
+        p->a[i] = a[i];
     p->ok = 1;
+}
+
+/* The motion's rotation a of the way, slerped from the identity. */
+static void motion_rotation(const Prepared *p, double a, double *r)
+{
+    double half = acos(fmin(1.0, p->q[0])), q[4], sn;
+    int i;
+
+    if (half < 1e-9) {
+        quat_to(p->q, r);                        /* no turn to speak of */
+        return;
+    }
+    sn = sin(half);
+    q[0] = cos(a * half);
+    for (i = 1; i < 4; i++)
+        q[i] = p->q[i] / sn * sin(a * half);
+    quat_to(q, r);
 }
 
 static void blend_group(const Prepared *p, double a, float *out)
 {
-    double q[4], r[9], s[9], n;
-    int i, j, k;
+    double r[9], s[9], l[9], la[9];
+    int i, j;
 
-    for (i = 0; i < 4; i++)
-        q[i] = (1.0 - a) * p->qa[i] + a * p->qb[i];
-    n = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-    for (i = 0; i < 4; i++)
-        q[i] /= n;
-    quat_to(q, r);
+    motion_rotation(p, a, r);
     for (i = 0; i < 9; i++)
-        s[i] = (1.0 - a) * p->sa[i] + a * p->sb[i];
+        s[i] = (1.0 - a) * (i % 4 == 0 ? 1.0 : 0.0) + a * p->s[i];
+    mul3(r, s, l);                               /* D's 3x3 a of the way */
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++)
+            la[i * 3 + j] = p->a[i * 4 + j];
     for (i = 0; i < 3; i++) {
-        for (j = 0; j < 3; j++) {
-            double v = 0.0;
-            for (k = 0; k < 3; k++)
-                v += r[i * 3 + k] * s[k * 3 + j];
-            out[i * 4 + j] = (float)v;
-        }
-        out[i * 4 + 3] = (float)((1.0 - a) * p->ta[i] + a * p->tb[i]);
+        for (j = 0; j < 3; j++)
+            out[i * 4 + j] = (float)(l[i * 3 + 0] * la[0 * 3 + j] + l[i * 3 + 1] * la[1 * 3 + j] +
+                                     l[i * 3 + 2] * la[2 * 3 + j]);
+        out[i * 4 + 3] = (float)(l[i * 3 + 0] * p->a[3] + l[i * 3 + 1] * p->a[7] +
+                                 l[i * 3 + 2] * p->a[11] + a * p->t[i]);
     }
     out[12] = 0.0f;
     out[13] = 0.0f;
@@ -645,6 +691,141 @@ static int prepare_frame(void)
         if (d->cut)
             cut += d->key.prims;
     }
+    /* RECOMP_INTERP_ACCOUNT=<from>-<to>: for frames at those lockstep ticks,
+     * the 3D primitives by what matching made of them, and how much of the
+     * frame before found no partner in this one. */
+    {
+        static int ready;
+        static unsigned long from = 1, to;
+        if (!ready) {
+            const char *v = getenv("RECOMP_INTERP_ACCOUNT");
+            ready = 1;
+            if (v && *v && sscanf(v, "%lu-%lu", &from, &to) != 2)
+                to = from;
+        }
+        if (to && recomp_lockstep_tick() >= from && recomp_lockstep_tick() <= to) {
+            double t[4] = {0, 0, 0, 0}, cutp = 0.0, orphan = 0.0, orphan_n = 0.0;
+            int n_unm = 0, n_cut = 0, n_orph = 0;
+            static uint8_t *partnered;
+            static int pcap;
+            if (prev->ndraws > pcap) {
+                pcap = prev->ndraws * 2;
+                partnered = (uint8_t *)realloc(partnered, (size_t)pcap);
+            }
+            if (partnered)
+                memset(partnered, 0, (size_t)prev->ndraws);
+            for (i = 0; i < cur->ndraws; i++) {
+                const InterpDraw *d = &cur->draws[i];
+                if (!d->key.uses_proj)
+                    continue;
+                if (d->match < 0) {
+                    t[0] += d->key.prims;
+                    n_unm++;
+                    continue;
+                }
+                if (partnered)
+                    partnered[d->match] = 1;
+                t[d->tier] += d->key.prims;
+                if (d->cut) {
+                    cutp += d->key.prims;
+                    n_cut++;
+                }
+            }
+            for (i = 0; partnered && i < prev->ndraws; i++)
+                if (prev->draws[i].key.uses_proj && !partnered[i]) {
+                    orphan += prev->draws[i].key.prims;
+                    orphan_n += 1.0;
+                    n_orph++;
+                }
+            fprintf(stderr, "[INTERP-ACCT] tick %u: 3D %d draws %.0f prims; tier1 %.0f tier2 %.0f "
+                    "tier3 %.0f; unmatched %.0f (%d draws); cut %.0f (%d draws); frame before "
+                    "without a partner %.0f prims (%d draws)\n", recomp_lockstep_tick(),
+                    cur->ndraws, prims3d, t[1], t[2], t[3], t[0], n_unm, cutp, n_cut, orphan,
+                    n_orph);
+        }
+    }
+    /* The camera's own motion, for the scissors and what is filled in
+     * (redraw): the motion most of what was matched exactly shares, by
+     * primitives -- the level's, since it holds still. A single piece could
+     * be something moving on its own. */
+    {
+        static int *cand;
+        static int cand_cap;
+        int n = 0, a, b;
+        double most = -1.0;
+
+        g_ref_draw = -1;
+        if (cur->ndraws > cand_cap) {
+            int *c2 = (int *)realloc(cand, (size_t)cur->ndraws * 2 * sizeof *c2);
+            if (c2) {
+                cand = c2;
+                cand_cap = cur->ndraws * 2;
+            }
+        }
+        for (i = 0; g_groups && cand && i < cur->ndraws && i < cand_cap; i++) {
+            const InterpDraw *d = &cur->draws[i];
+            if (d->key.uses_proj && d->tier == 1 && !d->cut && (d->groups & 1u) &&
+                g_prep[i * g_groups].ok)
+                cand[n++] = i;
+        }
+        for (a = 0; a < n; a++) {
+            const Prepared *pa = &g_prep[cand[a] * g_groups];
+            double agree = 0.0;
+            for (b = 0; b < n; b++) {
+                const Prepared *pb = &g_prep[cand[b] * g_groups];
+                double dot = pa->q[0] * pb->q[0] + pa->q[1] * pb->q[1] + pa->q[2] * pb->q[2] +
+                             pa->q[3] * pb->q[3];
+                if (fabs(dot) > 0.99999)         /* within half a degree */
+                    agree += cur->draws[cand[b]].key.prims;
+            }
+            if (agree > most) {
+                most = agree;
+                g_ref_draw = cand[a];
+            }
+        }
+    }
+    /* What the frame before drew of the level and this one left out. The
+     * game culls to what its newer camera sees, so on a turn an in-between
+     * frame, looking part of the way back, shows places only the older
+     * camera saw: through a doorway at the edge of the screen, whole rooms
+     * missing, and the sky behind them (24 Nov 2026, TimeSplitters 2: 33
+     * pieces of the frame before had no partner at 15 degrees a frame).
+     * They are drawn too (fill_pass), moved as the camera moved; for a turn
+     * the two frames' views take in every view in between. */
+    g_orphans = 0;
+    g_inject_off = -1;
+    if (g_ref_draw >= 0 && prev->ndraws > 0) {
+        const void *target = cur->draws[g_ref_draw].key.target;
+        size_t off;
+
+        if (prev->ndraws > g_orphan_cap) {
+            uint8_t *o = (uint8_t *)realloc(g_orphan, (size_t)prev->ndraws * 2);
+            if (o) {
+                g_orphan = o;
+                g_orphan_cap = prev->ndraws * 2;
+            }
+        }
+        if (g_orphan && prev->ndraws <= g_orphan_cap) {
+            for (i = 0; i < prev->ndraws; i++)
+                g_orphan[i] = prev->draws[i].key.uses_proj &&
+                              prev->draws[i].key.target == target;
+            for (i = 0; i < cur->ndraws; i++)
+                if (cur->draws[i].match >= 0)
+                    g_orphan[cur->draws[i].match] = 0;
+            for (i = 0; i < prev->ndraws; i++)
+                g_orphans += g_orphan[i];
+            /* After this list's last 3D draw to that target: before its
+             * full-screen passes and its 2D, so those go over the filled
+             * places as over the rest. */
+            for (off = 0; off < cur->len; ) {
+                const op_header *h = (const op_header *)(cur->ops + off);
+                if (h->draw >= 0 && cur->draws[h->draw].key.uses_proj &&
+                    cur->draws[h->draw].key.target == target)
+                    g_inject_off = (long long)off;
+                off += sizeof(op_header) + INTERP_ALIGN(h->size);
+            }
+        }
+    }
     if (prims3d <= 0.0) {
         g_held_2d++;
         return 0;
@@ -681,6 +862,47 @@ static int prepare_frame(void)
     return 1;
 }
 
+/* The camera's motion from N back to the in-between frame being drawn,
+ * D(a) D^-1 of the reference piece (3 rows of 4), for N's 3D draws with no
+ * partner in the frame before: what N alone sees -- a room coming into view
+ * on a turn -- moves with the rest instead of staying where N had it. */
+static double g_cam_back[12];
+static int    g_cam_back_ok;
+
+static void camera_back(const Prepared *p, double a)
+{
+    double r[9], s[9], la[9], ld[9], il[9], x[9], d;
+    int i;
+
+    motion_rotation(p, a, r);
+    for (i = 0; i < 9; i++)
+        s[i] = (1.0 - a) * (i % 4 == 0 ? 1.0 : 0.0) + a * p->s[i];
+    mul3(r, s, la);                              /* D(a)'s 3x3 */
+    quat_to(p->q, r);
+    mul3(r, p->s, ld);                           /* D's 3x3 */
+    d = det3(ld);
+    g_cam_back_ok = fabs(d) > 1e-12;
+    if (!g_cam_back_ok)
+        return;
+    il[0] =  (ld[4] * ld[8] - ld[5] * ld[7]) / d;
+    il[1] = -(ld[1] * ld[8] - ld[2] * ld[7]) / d;
+    il[2] =  (ld[1] * ld[5] - ld[2] * ld[4]) / d;
+    il[3] = -(ld[3] * ld[8] - ld[5] * ld[6]) / d;
+    il[4] =  (ld[0] * ld[8] - ld[2] * ld[6]) / d;
+    il[5] = -(ld[0] * ld[5] - ld[2] * ld[3]) / d;
+    il[6] =  (ld[3] * ld[7] - ld[4] * ld[6]) / d;
+    il[7] = -(ld[0] * ld[7] - ld[1] * ld[6]) / d;
+    il[8] =  (ld[0] * ld[4] - ld[1] * ld[3]) / d;
+    mul3(la, il, x);                             /* D(a) D^-1 */
+    for (i = 0; i < 3; i++) {
+        g_cam_back[i * 4 + 0] = x[i * 3 + 0];
+        g_cam_back[i * 4 + 1] = x[i * 3 + 1];
+        g_cam_back[i * 4 + 2] = x[i * 3 + 2];
+        g_cam_back[i * 4 + 3] = a * p->t[i] - (x[i * 3 + 0] * p->t[0] + x[i * 3 + 1] * p->t[1] +
+                                               x[i * 3 + 2] * p->t[2]);
+    }
+}
+
 /* Draw i's registers at a: blended where it was matched and is 3D, N's
  * own otherwise -- set either way, since the draw before may have left
  * blended ones. */
@@ -694,6 +916,24 @@ static void set_draw_registers(int i, double a)
     int g, k;
 
     memcpy(out, b, (size_t)g_nregs * 4 * sizeof(float));
+    if (!blend && g_cam_back_ok && d->key.uses_proj && d->match < 0 && g_ref_draw >= 0 &&
+        d->key.target == cur->draws[g_ref_draw].key.target) {
+        float *o = out + (g_proj >= 0 ? 16 : 0);
+        for (g = 0; g < g_groups; g++) {
+            const float *m = b + (g_proj >= 0 ? 16 : 0) + g * 16;
+            float *w = o + g * 16;
+            int r;
+            if (!((d->groups >> g) & 1u) || !is_affine(m))
+                continue;
+            for (r = 0; r < 3; r++) {
+                for (k = 0; k < 4; k++)
+                    w[r * 4 + k] = (float)(g_cam_back[r * 4 + 0] * m[0 * 4 + k] +
+                                           g_cam_back[r * 4 + 1] * m[1 * 4 + k] +
+                                           g_cam_back[r * 4 + 2] * m[2 * 4 + k] +
+                                           (k == 3 ? g_cam_back[r * 4 + 3] : 0.0));
+            }
+        }
+    }
     if (blend) {
         const float *pa = regs_of(prev, d->match);
         float *o = out;
@@ -723,11 +963,112 @@ static void set_draw_registers(int i, double a)
 
 /* ---------------------------------------------------------- drawing it */
 
+/* The camera's motion from the frame before to this in-between frame (the
+ * reference piece's, a of the way), applied to a draw of the frame before. */
+static void camera_motion_apply(const Prepared *ref, double a, const float *g, float *out)
+{
+    Prepared p = *ref;
+    int i;
+
+    for (i = 0; i < 12; i++)
+        p.a[i] = g[i];
+    blend_group(&p, a, out);
+}
+
+/* The frame before's draws with no partner here (prepare_frame), drawn into
+ * this in-between frame where they would be now: its whole list run again
+ * for its state -- nothing cleared, copied or retargeted, and of its draws
+ * only those -- then this list's state put back as it was at the point they
+ * went in. Each is depth-tested against this frame's, so it shows only where
+ * this frame drew nothing nearer. turn_n: the scissor turn for this list. */
+/* RECOMP_INTERP_FILL=0: leave them out (for comparing). */
+static int fill_off(void)
+{
+    static int off = -1;
+    if (off < 0) {
+        const char *v = getenv("RECOMP_INTERP_FILL");
+        off = v && strcmp(v, "0") == 0;
+    }
+    return off;
+}
+
+static void fill_pass(double a, size_t upto, const double *turn_n, double sx, double sy)
+{
+    InterpList *cur = &g_list[g_cur], *prev = &g_list[g_cur ^ 1];
+    const Prepared *ref = &g_prep[g_ref_draw * g_groups];
+    double ra[9];
+    size_t off;
+
+    motion_rotation(ref, a, ra);                 /* the older camera to this frame */
+    d3d8_SetScissorWarp(ra, sx, sy);
+    for (off = 0; off < prev->len; ) {
+        op_header *h = (op_header *)(prev->ops + off);
+        const void *arg = h->size ? (const void *)(h + 1) : NULL;
+
+        if (h->draw >= 0) {
+            if (h->draw < g_orphan_cap && g_orphan[h->draw]) {
+                const float *b = regs_of(prev, h->draw);
+                float out[INTERP_MAX_REGS * 4];
+                const InterpDraw *d = &prev->draws[h->draw];
+                int g;
+
+                memcpy(out, b, (size_t)g_nregs * 4 * sizeof(float));
+                for (g = 0; g < g_groups; g++)
+                    if (((d->groups >> g) & 1u) && is_affine(b + (g_proj >= 0 ? 16 : 0) + g * 16))
+                        camera_motion_apply(ref, a, b + (g_proj >= 0 ? 16 : 0) + g * 16,
+                                            out + (g_proj >= 0 ? 16 : 0) + g * 16);
+                if (g_proj >= 0) {
+                    d3d8_vsh_set_constant(g_proj, out, 4);
+                    if (g_aff_count)
+                        d3d8_vsh_set_constant(g_aff_first, out + 16, g_aff_count);
+                } else if (g_aff_count) {
+                    d3d8_vsh_set_constant(g_aff_first, out, g_aff_count);
+                }
+                h->fn(arg);
+            }
+        } else if (hle_d3d8_op_sets_state_only(h->fn)) {
+            h->fn(arg);
+        }
+        off += sizeof(op_header) + INTERP_ALIGN(h->size);
+    }
+    {
+        static int ready;
+        static unsigned long from, to;
+        if (!ready) {
+            const char *v = getenv("RECOMP_INTERP_ACCOUNT");
+            ready = 1;
+            if (v && *v && sscanf(v, "%lu-%lu", &from, &to) != 2)
+                to = from;
+        }
+        if (to && recomp_lockstep_tick() >= from && recomp_lockstep_tick() <= to) {
+            int n = 0, i;
+            double prims = 0.0;
+            for (i = 0; i < prev->ndraws && i < g_orphan_cap; i++)
+                if (g_orphan[i]) {
+                    n++;
+                    prims += prev->draws[i].key.prims;
+                }
+            fprintf(stderr, "[INTERP-FILL] tick %u blend %.2f: %d draws of the frame before "
+                    "filled in (%.0f prims) after op %zu\n", recomp_lockstep_tick(), a, n,
+                    prims, upto);
+        }
+    }
+    /* This list's state, as it stood */
+    d3d8_SetScissorWarp(turn_n, sx, sy);
+    for (off = 0; off <= upto && off < cur->len; ) {
+        op_header *h = (op_header *)(cur->ops + off);
+        if (h->draw < 0 && hle_d3d8_op_sets_state_only(h->fn))
+            h->fn(h->size ? (const void *)(h + 1) : NULL);
+        off += sizeof(op_header) + INTERP_ALIGN(h->size);
+    }
+}
+
 static void redraw(double a)
 {
     InterpList *cur = &g_list[g_cur];
     const float *c = hle_d3d8_interp_constants();
-    int rec = hle_d3d8_interp_rec;
+    int rec = hle_d3d8_interp_rec, warped = 0;
+    double turn[9], sx = 0.0, sy = 0.0;
     size_t off;
 
     if (!xbox_D3D8InterpBegin()) {
@@ -741,13 +1082,40 @@ static void redraw(double a)
         return;
     }
     hle_d3d8_interp_rec = 0;                     /* what is drawn now is not kept */
+    hle_d3d8_interp_replaying = 1;
+    /* The camera's turn from N to this frame, for the scissors: the
+     * reference piece's motion a of the way, less all of it. */
+    if (g_ref_draw >= 0 && g_proj >= 0 && g_ref_draw < cur->ndraws) {
+        const Prepared *p = &g_prep[g_ref_draw * g_groups];
+        const float *pr = regs_of(cur, g_ref_draw);
+        double ra[9], rd[9];
+        int i, j;
+
+        motion_rotation(p, a, ra);
+        quat_to(p->q, rd);
+        for (i = 0; i < 3; i++)                  /* ra * rd^T */
+            for (j = 0; j < 3; j++)
+                turn[i * 3 + j] = ra[i * 3 + 0] * rd[j * 3 + 0] + ra[i * 3 + 1] * rd[j * 3 + 1] +
+                                  ra[i * 3 + 2] * rd[j * 3 + 2];
+        sx = fabs((double)pr[0]);
+        sy = fabs((double)pr[5]);
+        warped = 1;
+        d3d8_SetScissorWarp(turn, sx, sy);
+        camera_back(p, a);
+    } else {
+        g_cam_back_ok = 0;
+    }
     for (off = 0; off < cur->len; ) {
         op_header *h = (op_header *)(cur->ops + off);
         if (h->draw >= 0)
             set_draw_registers(h->draw, a);
         h->fn(h->size ? (const void *)(h + 1) : NULL);
+        if (warped && g_orphans && (long long)off == g_inject_off && !fill_off())
+            fill_pass(a, off, turn, sx, sy);
         off += sizeof(op_header) + INTERP_ALIGN(h->size);
     }
+    d3d8_SetScissorWarp(NULL, 0.0, 0.0);
+    hle_d3d8_interp_replaying = 0;
     if (g_dump_prefix && g_swaps + 1 >= g_dump_from && g_dumped < 24) {
         char path[512];
         snprintf(path, sizeof path, "%s_i%05lu_%d.bmp", g_dump_prefix, g_swaps + 1, g_slot);

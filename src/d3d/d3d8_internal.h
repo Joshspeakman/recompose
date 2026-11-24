@@ -311,6 +311,10 @@ UINT        d3d8_row_pitch(D3DFORMAT fmt, UINT width);
 BOOL d3d8_format_is_depth(D3DFORMAT fmt);
 /* d3d8_device.c: draws go to the screen, not a render-target texture. */
 BOOL d3d8_target_is_screen(void);
+/* While an in-between frame is drawn: carry each scissor rectangle inside
+ * the viewport along with the camera's turn r (3x3) since the newer frame
+ * (d3d8_device.c); NULL stops. */
+void d3d8_SetScissorWarp(const double *r, double sx, double sy);
 
 /* bpp of the data actually uploaded to D3D11 (post-conversion). */
 UINT d3d8_upload_bpp(D3DFORMAT fmt);

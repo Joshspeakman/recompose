@@ -44,6 +44,7 @@ extern "C" {
 /* d3d8_xbox.h, platform/host_main.h and kernel_bridge.c: declared here rather
  * than included, since the first is the Xbox's own types and C only. */
 void xbox_D3D8SetUiHook(void (*draw)(void *out_view, unsigned width, unsigned height));
+void xbox_D3D8SetPostSoften(int mode);
 void host_set_suspended(unsigned reason, int on);
 void host_request_redraw(void);
 int  host_exe_path(char *buf, size_t bytes);
@@ -598,6 +599,9 @@ const char *const kScaleNames[] = {"1x (640x480)", "2x (1280x960)", "3x (1920x14
                                    "4x (2560x1920)", "5x", "6x", "7x", "8x"};
 const int kAniso[] = {1, 2, 4, 8, 16};
 const char *const kAnisoNames[] = {"Off", "2x", "4x", "8x", "16x"};
+/* post_soften: in the device's order (xbox_D3D8SetPostSoften) */
+const char *const kSoften[] = {"console", "sharp", "off"};
+const char *const kSoftenNames[] = {"As the console", "Sharp", "Off"};
 
 struct Menu {
     bool           loaded;
@@ -724,6 +728,18 @@ void tab_display()
     }
     if (m.st.anisotropy != m.started.anisotropy)
         next_start_note();
+
+    /* The soften pass: at once. */
+    int so = 1;
+    for (int i = 0; i < 3; i++)
+        if (strcmp(m.st.post_soften, kSoften[i]) == 0)
+            so = i;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+    if (ImGui::Combo("Post-processing", &so, kSoftenNames, 3)) {
+        snprintf(m.st.post_soften, sizeof m.st.post_soften, "%s", kSoften[so]);
+        xbox_D3D8SetPostSoften(so);
+        settings_save();
+    }
 
     if (hle_fov_title_has()) {
         /* Vertical degrees, with how wide that is on this screen's shape. */

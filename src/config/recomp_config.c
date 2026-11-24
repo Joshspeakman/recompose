@@ -335,6 +335,7 @@ void recomp_settings_defaults(RecompSettings *s)
     s->hor_plus_register = RECOMP_REGISTER_AUTO;
     snprintf(s->widescreen_2d, sizeof s->widescreen_2d, "auto");
     s->anisotropy        = 1;
+    snprintf(s->post_soften, sizeof s->post_soften, "sharp");
     snprintf(s->renderer, sizeof s->renderer, "auto");
     s->fps_overlay       = 0;
     s->fullscreen        = 0;
@@ -410,6 +411,9 @@ static void settings_from_table(RecompSettings *s)
         snprintf(s->widescreen_2d, sizeof s->widescreen_2d, "%s", v);
     if ((v = from_table("anisotropy")) != NULL)
         s->anisotropy = clamp_int(atoi(v), 1, 16);
+    if ((v = from_table("post_soften")) != NULL)
+        snprintf(s->post_soften, sizeof s->post_soften, "%s",
+                 ieq(v, "console") ? "console" : ieq(v, "off") ? "off" : "sharp");
     if ((v = from_table("renderer")) != NULL)
         snprintf(s->renderer, sizeof s->renderer, "%s", v);
     if ((v = from_table("frame_cap")) != NULL)
@@ -511,7 +515,7 @@ static void make_parents(const char *path)
  * launcher quietly undid a title's own settings. */
 static const char *const k_written_keys[] = {
     "resolution_scale", "widescreen", "hor_plus", "hor_plus_register", "widescreen_2d",
-    "anisotropy", "renderer", "frame_cap", "fps_overlay", "fullscreen", "vrr", "frame_interp", "fov",
+    "anisotropy", "post_soften", "renderer", "frame_cap", "fps_overlay", "fullscreen", "vrr", "frame_interp", "fov",
     "mouse_look", "mouse_sensitivity", "mouse_invert", "touch_controls", "touch_opacity", "touch_scale",
     "game_dir", "syslink", "syslink_host", "syslink_port", "syslink_code", "syslink_upnp",
     "coop", "coop_port",
@@ -658,6 +662,12 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "# is left alone, which wants no filtering.              [RECOMP_ANISO]\n"
         "anisotropy = %d\n"
         "\n"
+        "# The soften pass a game blends over each frame (a copy of the screen,\n"
+        "# a pixel off) at a higher resolution: sharp keeps it one screen pixel\n"
+        "# wide, console keeps the console's pixel (a smear at 5x), off leaves\n"
+        "# it out.                                      [RECOMP_POST_SOFTEN]\n"
+        "post_soften = %s\n"
+        "\n"
         "# What draws the game: auto (Direct3D 11 on Windows, Vulkan on Linux,\n"
         "# Metal on a Mac), d3d11, vulkan or metal, where the build has it.\n"
         "#                                               [RECOMP_D3D8_BACKEND]\n"
@@ -707,7 +717,8 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "mouse_invert = %d\n",
         s->resolution_scale, s->widescreen, hor_plus, reg,
         s->widescreen_2d[0] ? s->widescreen_2d : "auto",
-        s->anisotropy, s->renderer[0] ? s->renderer : "auto",
+        s->anisotropy, s->post_soften[0] ? s->post_soften : "sharp",
+        s->renderer[0] ? s->renderer : "auto",
         s->frame_cap[0] ? s->frame_cap : "adaptive", s->fps_overlay,
         s->fullscreen, s->vrr, s->frame_interp < 1 ? 1 : s->frame_interp,
         s->fov > 0 ? s->fov : 0,

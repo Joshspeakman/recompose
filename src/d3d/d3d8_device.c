@@ -19,6 +19,8 @@
 #include "d3d8_display.h"
 #include "d3d8_fvf.h"         /* d3d8_fvf_transformed: draw_extent */
 #include "recomp_config.h"   /* RECOMP_VRR */
+#include "d3d8_vsh.h"        /* d3d8_vsh_get_slot: the soften pass */
+#include <math.h>            /* fabsf: the soften pass */
 #include <stdio.h>
 #include <string.h>
 /* malloc: without <stdlib.h> its pointer is truncated to int. */
@@ -366,12 +368,16 @@ void xbox_D3D8SetTickSource(uint32_t (*tick)(void))
  * RECOMP_PRESENT_DUMP_TICKS=<t>,<t>,...: instead, the first frame presented
  * at each of those ticks (xbox_D3D8SetTickSource), named <prefix>t<tick>.bmp
  * -- the same frames whatever the resolution or the renderer, for a replayed
- * recording. */
+ * recording. An entry <a>-<b> is every tick from a to b, <a>-<b>/<n> every
+ * n-th. */
+#define DUMP_TICKS_MAX 8192
+static BOOL g_interp_on;        /* an in-between frame is being drawn (below) */
+
 static void dump_presented(void)
 {
     static int ready = -1, count, max = 24, nticks, next_tick, frames = 1, run_left, run_index;
     static int scene = -1;
-    static uint32_t ticks[64], run_tick;
+    static uint32_t ticks[DUMP_TICKS_MAX], run_tick;
     static char prefix[512];
     static unsigned long long every = 5000, next;
     unsigned long long now;
@@ -395,8 +401,18 @@ static void dump_presented(void)
         /* RECOMP_PRESENT_DUMP_FRAMES=<n>: that many presents in a row from
          * each tick -- with frame interpolation, the in-between frames too. */
         if (n && atoi(n) > 1) frames = atoi(n);
-        while (t && *t && nticks < 64) {
-            ticks[nticks++] = (uint32_t)strtoul(t, (char **)&t, 10);
+        while (t && *t && nticks < DUMP_TICKS_MAX) {
+            uint32_t a = (uint32_t)strtoul(t, (char **)&t, 10), b = a, step = 1;
+
+            if (*t == '-') {
+                b = (uint32_t)strtoul(t + 1, (char **)&t, 10);
+                if (*t == '/')
+                    step = (uint32_t)strtoul(t + 1, (char **)&t, 10);
+                if (!step)
+                    step = 1;
+            }
+            for (; a <= b && nticks < DUMP_TICKS_MAX; a += step)
+                ticks[nticks++] = a;
             while (*t == ',' || *t == ' ')
                 t++;
         }
@@ -447,10 +463,12 @@ static void dump_presented(void)
     if (scene && d3d8_GetSceneImage()
             ? rhi_image_readback(d3d8_GetSceneImage(), 0, px, w * 4u) == 0
             : rhi_swapchain_readback(px, w * 4u, &w, &h) == 0) {
+        /* An in-between frame (frame interpolation) is named with an i. */
         if (tick && frames > 1)
-            snprintf(path, sizeof path, "%st%05u-%d.bmp", prefix, tick, index);
+            snprintf(path, sizeof path, "%st%05u-%d%s.bmp", prefix, tick, index,
+                     g_interp_on ? "i" : "");
         else if (tick)
-            snprintf(path, sizeof path, "%st%05u.bmp", prefix, tick);
+            snprintf(path, sizeof path, "%st%05u%s.bmp", prefix, tick, g_interp_on ? "i" : "");
         else
             snprintf(path, sizeof path, "%s%03d.bmp", prefix, count);
         count++;
@@ -757,6 +775,19 @@ void xbox_D3D8SetScissors(UINT count, BOOL exclusive, const D3DRECT *rects)
     if ((count > 1 || (count && exclusive)) && !said++)
         fprintf(stderr, "D3D8: SetScissors with %u rectangle(s)%s: the host applies at most "
                         "one inclusive rectangle\n", count, exclusive ? ", exclusive" : "");
+    /* RECOMP_SCISSOR_LOG=<tick>: every scissor set during that tick. */
+    {
+        static long at = -2;
+        if (at == -2) {
+            const char *v = getenv("RECOMP_SCISSOR_LOG");
+            at = v && *v ? atol(v) : -1;
+        }
+        if (at >= 0 && g_tick_source && (long)g_tick_source() == at)
+            fprintf(stderr, "[SCISSOR] tick %ld: %u rect(s)%s %ld,%ld-%ld,%ld\n", at, count,
+                    exclusive ? " exclusive" : "", count ? (long)rects[0].x1 : 0L,
+                    count ? (long)rects[0].y1 : 0L, count ? (long)rects[0].x2 : 0L,
+                    count ? (long)rects[0].y2 : 0L);
+    }
 }
 
 BOOL xbox_D3D8GetScissors(UINT *count, BOOL *exclusive, D3DRECT *rect)
@@ -767,17 +798,93 @@ BOOL xbox_D3D8GetScissors(UINT *count, BOOL *exclusive, D3DRECT *rect)
     return g_scissor_count != 0;
 }
 
+/*
+ * The scissor in a frame interpolation's in-between frame (d3d8_SetScissorWarp,
+ * hle_d3d8_interp.c). A title that draws what it sees through a doorway
+ * clipped to the doorway's rectangle on screen -- TimeSplitters 2 sets about
+ * fifty a frame, one per arch and door the view passes through -- clips the
+ * in-between frame's rooms to where the doorways were in the newer frame,
+ * while the walls around them have turned part of the way back; on a fast
+ * turn whole rooms behind the arches came out as sky. So while one is drawn,
+ * each rectangle inside the viewport is carried along with the camera's turn
+ * since the newer frame: its corners as directions from the eye, turned, and
+ * projected again; a side on the viewport's edge stays there (the doorway
+ * goes on past it). r: that turn (3x3, camera space, column vectors, the
+ * camera looking down -z); sx, sy: the projection's x and y scales.
+ */
+static int    g_scissor_warp;
+static double g_warp_r[9], g_warp_sx, g_warp_sy;
+
+void d3d8_SetScissorWarp(const double *r, double sx, double sy)
+{
+    g_scissor_warp = r && sx > 0.0 && sy > 0.0;
+    if (g_scissor_warp) {
+        memcpy(g_warp_r, r, sizeof g_warp_r);
+        g_warp_sx = sx;
+        g_warp_sy = sy;
+    }
+}
+
+static void warp_scissor(float *l, float *t, float *r, float *b)
+{
+    const D3DVIEWPORT8 *vp = &g_device_state.viewport;
+    double X = vp->X, Y = vp->Y, W = vp->Width, H = vp->Height;
+    double cx = X + W * 0.5, cy = Y + H * 0.5, nl = 1e30, nt = 1e30, nr = -1e30, nb = -1e30;
+    int at_l, at_t, at_r, at_b, i;
+
+    if (W < 2.0 || H < 2.0)
+        return;
+    at_l = *l <= X + 0.5;
+    at_t = *t <= Y + 0.5;
+    at_r = *r >= X + W - 1.5;
+    at_b = *b >= Y + H - 1.5;
+    if (at_l && at_t && at_r && at_b)
+        return;                                  /* the whole view */
+    for (i = 0; i < 4; i++) {
+        double u = (i & 1) ? *r : *l, v = (i & 2) ? *b : *t;
+        double dx = (u - cx) / (W * 0.5) / g_warp_sx, dy = (cy - v) / (H * 0.5) / g_warp_sy;
+        double ex = g_warp_r[0] * dx + g_warp_r[1] * dy - g_warp_r[2];
+        double ey = g_warp_r[3] * dx + g_warp_r[4] * dy - g_warp_r[5];
+        double ez = g_warp_r[6] * dx + g_warp_r[7] * dy - g_warp_r[8];
+        double pu, pv;
+
+        if (ez > -1e-3) {                        /* turned past the side: all of it */
+            *l = (float)X; *t = (float)Y; *r = (float)(X + W); *b = (float)(Y + H);
+            return;
+        }
+        pu = cx + g_warp_sx * ex / -ez * W * 0.5;
+        pv = cy - g_warp_sy * ey / -ez * H * 0.5;
+        nl = pu < nl ? pu : nl; nr = pu > nr ? pu : nr;
+        nt = pv < nt ? pv : nt; nb = pv > nb ? pv : nb;
+    }
+    if (at_l) nl = X;
+    if (at_t) nt = Y;
+    if (at_r) nr = X + W;
+    if (at_b) nb = Y + H;
+    nl -= 2.0; nt -= 2.0; nr += 2.0; nb += 2.0;  /* the rounding of both frames */
+    *l = (float)(nl < X ? X : nl);
+    *t = (float)(nt < Y ? Y : nt);
+    *r = (float)(nr > X + W ? X + W : nr);
+    *b = (float)(nb > Y + H ? Y + H : nb);
+}
+
 BOOL d3d8_GetScissor(RhiRect *out)
 {
     if (out) {
         float sx = rt_scale_x(), sy = rt_scale_y();
-        float left = g_scissor.left * sx, right = g_scissor.right * sx;
-        float k, cx;
+        float gl = (float)g_scissor.left, gt = (float)g_scissor.top;
+        float gr = (float)g_scissor.right, gb = (float)g_scissor.bottom;
+        float left, right, k, cx, top, bottom;
 
+        if (g_scissor_warp && g_scissor_enabled)
+            warp_scissor(&gl, &gt, &gr, &gb);
+        left = gl * sx;
+        right = gr * sx;
         /* Stored as the title gave them, converted here, so the stored
          * rectangle stays comparable with anything else in guest pixels
          * and GetScissors keeps answering in the title's own units. */
-        float top = g_scissor.top * sy, bottom = g_scissor.bottom * sy;
+        top = gt * sy;
+        bottom = gb * sy;
         float zoom, cy;
 
         if (two_d_squeeze(&k, &cx)) {
@@ -1905,6 +2012,183 @@ UINT d3d8_up_indices_read(D3DPRIMITIVETYPE type, UINT prims)
     return n;
 }
 
+/*
+ * post_soften (RECOMP_POST_SOFTEN): the soften pass titles of this era end
+ * their frames with -- a copy of the screen blended back over it shifted by
+ * a pixel or two (TimeSplitters 2: 25% of the frame, one pixel down) --
+ * made for a television, at the console's 640x480. At a higher internal
+ * resolution the shift is still a console pixel, five screen pixels at 5x,
+ * and the whole picture looked smeared.
+ *
+ *   sharp    (default) the shift scaled to one screen pixel: the same
+ *            softening, at the resolution drawn
+ *   console  as the title draws it
+ *   off      the pass left out
+ *
+ * The pass is known by what it does: a quad over the whole viewport whose
+ * texture is a copy of the screen (D3D8Texture.screen_copy), whose vertices
+ * all sit the same small shift (at most 2.5 pixels, not none) from where
+ * they sample. Only draws through a vertex program with a declaration that
+ * names a float position at the start of the vertex and one float2
+ * coordinate.
+ */
+static int g_post_soften = -1;
+
+/* d3d8_xbox.h: from the in-game menu, at once. 0 console, 1 sharp, 2 off. */
+void xbox_D3D8SetPostSoften(int mode)
+{
+    g_post_soften = mode >= 0 && mode <= 2 ? mode : 1;
+}
+
+static int post_soften_mode(void)
+{
+    int mode = g_post_soften;
+
+    if (mode < 0) {
+        const char *v = recomp_config_lookup("RECOMP_POST_SOFTEN", "post_soften");
+
+        mode = (!v || !*v || strcmp(v, "sharp") == 0) ? 1 : strcmp(v, "off") == 0 ? 2 : 0;
+        fprintf(stderr, "D3D8: post_soften = %s\n", mode == 1 ? "sharp" : mode == 2 ? "off"
+                                                     : "console");
+        g_post_soften = mode;
+    }
+    return mode;
+}
+
+/* 0: draw it as it is; 1: draw *out (a copy, its coordinates moved); 2: leave
+ * it out. */
+static int soften_pass(const void *verts, UINT stride, UINT count, void **out)
+{
+    const D3DVIEWPORT8 *vp = &g_device_state.viewport;
+    IDirect3DBaseTexture8 *tex = d3d8_GetStageTexture(0);
+    const D3D8VshInput *decl = NULL;
+    const DWORD *code;
+    DWORD handle = g_device_state.vertex_shader;
+    int length, n = 0, i, uv = -1, mode = post_soften_mode();
+    UINT w = 0, h = 0, v;
+    float ox = 0.0f, oy = 0.0f, x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    float sx = rt_scale_x(), sy = rt_scale_y();
+
+    if (!mode || !tex || IDirect3DBaseTexture8_GetType(tex) != D3DRTYPE_TEXTURE ||
+        !((D3D8Texture *)tex)->screen_copy || !d3d8_base_size(tex, &w, &h) || !w || !h ||
+        handle < 0x10000u || count < 3 || count > 64 || stride < 20)
+        return 0;
+    if (mode == 1 && sx <= 1.01f && sy <= 1.01f)
+        return 0;
+    if (!d3d8_vsh_get_slot((int)(handle - 0x10000u), NULL, &code, &length, &decl, &n) || !decl)
+        return 0;
+    for (i = 0; i < n; i++) {
+        if (decl[i].format == RHI_FORMAT_R32G32_FLOAT) {
+            if (uv >= 0)
+                return 0;                        /* two coordinates: not this */
+            uv = i;
+        }
+    }
+    for (i = 0; i < n && !(decl[i].offset == 0 && (decl[i].format == RHI_FORMAT_R32G32B32_FLOAT ||
+                                                   decl[i].format == RHI_FORMAT_R32G32B32A32_FLOAT)); i++)
+        ;
+    if (uv < 0 || i == n || decl[uv].offset + 8 > stride)
+        return 0;
+    for (v = 0; v < count; v++) {
+        const float *p = (const float *)((const uint8_t *)verts + (size_t)v * stride);
+        const float *t = (const float *)((const uint8_t *)verts + (size_t)v * stride + decl[uv].offset);
+        float dx = p[0] - t[0] * (float)w, dy = p[1] - t[1] * (float)h;
+
+        if (v == 0) {
+            ox = dx;
+            oy = dy;
+        } else if (fabsf(dx - ox) > 0.05f || fabsf(dy - oy) > 0.05f) {
+            return 0;                            /* not one shift: something else */
+        }
+        x0 = p[0] < x0 ? p[0] : x0; x1 = p[0] > x1 ? p[0] : x1;
+        y0 = p[1] < y0 ? p[1] : y0; y1 = p[1] > y1 ? p[1] : y1;
+    }
+    if (fabsf(ox) > 2.5f || fabsf(oy) > 2.5f || (fabsf(ox) < 0.25f && fabsf(oy) < 0.25f))
+        return 0;
+    if (x0 > vp->X + 2.0f || y0 > vp->Y + 2.0f || x1 < vp->X + vp->Width - 3.0f ||
+        y1 < vp->Y + vp->Height - 3.0f)
+        return 0;                                /* not over the whole view */
+    if (mode == 2)
+        return 2;
+    *out = malloc((size_t)count * stride);
+    if (!*out)
+        return 0;
+    memcpy(*out, verts, (size_t)count * stride);
+    for (v = 0; v < count; v++) {
+        float *t = (float *)((uint8_t *)*out + (size_t)v * stride + decl[uv].offset);
+        t[0] += ox * (1.0f - 1.0f / sx) / (float)w;
+        t[1] += oy * (1.0f - 1.0f / sy) / (float)h;
+    }
+    return 1;
+}
+
+/*
+ * reduce_flashes (RECOMP_REDUCE_FLASHES, on unless 0): an additive glow
+ * sprite that reaches behind the camera's near plane is left out. A glow
+ * spawned at the camera -- TimeSplitters 2's plasma bolt, on the frame it
+ * leaves the gun -- is clipped to what is in front of the eye, and that is
+ * the whole view: the screen washed white for a frame, again and again
+ * while the trigger was held, which read as the screen blinking (24 Nov
+ * 2026: draw 237 of the frame, one 64x32 glow sprite added at full
+ * strength, took the picture's mean from 82 to 138). Only draws added onto
+ * the picture (destination blend ONE) through a 3D program whose
+ * declaration has a float position first; the depth of each vertex from
+ * the title's model-view and projection registers (the ones it named for
+ * frame interpolation).
+ */
+static int reduce_flashes(void)
+{
+    static int on = -1;
+
+    if (on < 0) {
+        const char *v = recomp_config_lookup("RECOMP_REDUCE_FLASHES", "reduce_flashes");
+        on = !(v && (strcmp(v, "0") == 0 || strcmp(v, "off") == 0));
+    }
+    return on;
+}
+
+static int glow_through_camera(const void *verts, UINT stride, UINT count)
+{
+    const DWORD *rs = d3d8_GetRenderStates();
+    const D3D8VshInput *decl = NULL;
+    const DWORD *code;
+    const float *m0, *m1, *m2, *pw;
+    DWORD handle = g_device_state.vertex_shader;
+    int length, n = 0, proj, first, groups, i;
+    UINT v;
+
+    if (!reduce_flashes() || !rs || !rs[D3DRS_ALPHABLENDENABLE] ||
+        rs[D3DRS_DESTBLEND] != D3DBLEND_ONE || handle < 0x10000u || count < 3)
+        return 0;
+    d3d8_vsh_interp_registers(&proj, &first, &groups);
+    if (proj < 0 || first < 0 || groups < 4)
+        return 0;
+    if (!d3d8_vsh_get_slot((int)(handle - 0x10000u), NULL, &code, &length, &decl, &n) || !decl)
+        return 0;
+    for (i = 0; i < n && !(decl[i].offset == 0 && (decl[i].format == RHI_FORMAT_R32G32B32_FLOAT ||
+                                                   decl[i].format == RHI_FORMAT_R32G32B32A32_FLOAT)); i++)
+        ;
+    if (i == n || stride < 12)
+        return 0;
+    m0 = d3d8_vsh_constant(first);
+    m1 = d3d8_vsh_constant(first + 1);
+    m2 = d3d8_vsh_constant(first + 2);
+    pw = d3d8_vsh_constant(proj + 3);            /* the row that makes w */
+    if (!m0 || !m1 || !m2 || !pw || pw[2] == 0.0f)
+        return 0;
+    for (v = 0; v < count; v++) {
+        const float *p = (const float *)((const uint8_t *)verts + (size_t)v * stride);
+        float cx = m0[0] * p[0] + m0[1] * p[1] + m0[2] * p[2] + m0[3];
+        float cy = m1[0] * p[0] + m1[1] * p[1] + m1[2] * p[2] + m1[3];
+        float cz = m2[0] * p[0] + m2[1] * p[1] + m2[2] * p[2] + m2[3];
+        float w = pw[0] * cx + pw[1] * cy + pw[2] * cz + pw[3];
+
+        if (w < 0.05f)
+            return 1;                            /* at or behind the eye */
+    }
+    return 0;
+}
+
 static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, const void *pVertexData, UINT VertexStreamZeroStride)
 {
     (void)self;
@@ -1912,9 +2196,27 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
     uint32_t topology;
     UINT vertex_count, vb_size, ring_offset;
     const void *draw_data = pVertexData;
-    void *converted = NULL;
+    void *converted = NULL, *softened = NULL;
 
     if (!pVertexData || !VertexStreamZeroStride) return E_INVALIDARG;
+    {
+        UINT n0 = 0;
+        map_primitive_type(PrimitiveType, PrimitiveCount, &n0);
+        if (PrimitiveType == D3DPT_QUADLIST)
+            n0 = PrimitiveCount * 4;
+        else if (PrimitiveType == D3DPT_TRIANGLEFAN)
+            n0 = PrimitiveCount + 2;
+        if (glow_through_camera(pVertexData, VertexStreamZeroStride, n0))
+            return S_OK;
+        switch (soften_pass(pVertexData, VertexStreamZeroStride, n0, &softened)) {
+        case 2:
+            return S_OK;
+        case 1:
+            pVertexData = softened;
+            draw_data = softened;
+            break;
+        }
+    }
 
     topology = map_primitive_type(PrimitiveType, PrimitiveCount, &vertex_count);
     if (vertex_count == 0) return E_INVALIDARG;
@@ -1926,7 +2228,10 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
                                          &vertex_count);
         /* Without the converted copy, vertex_count is the triangle-list count
          * and would read past the caller's vertices. */
-        if (!converted) return E_OUTOFMEMORY;
+        if (!converted) {
+            free(softened);
+            return E_OUTOFMEMORY;
+        }
         draw_data = converted;
     }
 
@@ -1936,7 +2241,10 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
     ring_offset = up_ring_upload(&g_up_vertex_ring, draw_data, vb_size);
     if (converted) free(converted);
 
-    if (ring_offset == (UINT)-1) return E_OUTOFMEMORY;
+    if (ring_offset == (UINT)-1) {
+        free(softened);
+        return E_OUTOFMEMORY;
+    }
 
     /* Bind ring buffer at the right offset */
     rhi_set_vertex_buffer(0, g_up_vertex_ring.buffer, VertexStreamZeroStride, ring_offset);
@@ -1958,6 +2266,7 @@ static HRESULT __stdcall dev_DrawPrimitiveUP(IDirect3DDevice8 *self, D3DPRIMITIV
         rhi_draw(vertex_count, 0);
         feedback_end(fb);
     }
+    free(softened);
 
     /* Restore previous VB binding if any */
     if (g_cur_vb) {
@@ -3074,7 +3383,7 @@ static HRESULT __stdcall dev_Swap(IDirect3DDevice8 *self, DWORD Flags)
 static RhiImage *g_interp_image;
 static RhiView  *g_interp_rtv, *g_interp_srv;
 static UINT      g_interp_w, g_interp_h;
-static BOOL      g_interp_on;
+/* g_interp_on: declared above dump_presented, which names those frames. */
 
 static void interp_target_destroy(void)
 {
