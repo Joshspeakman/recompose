@@ -54,6 +54,16 @@ static int           g_quit;
 
 /* ------------------------------------------------------------ the host */
 
+int lhost_open_folder(const char *path)
+{
+    char url[1200];
+
+    if (!path)
+        return 0;
+    snprintf(url, sizeof url, "file://%s", path);
+    return SDL_OpenURL(url);
+}
+
 uint64_t lhost_ticks(void)
 {
     return SDL_GetTicks();

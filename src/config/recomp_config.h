@@ -230,6 +230,7 @@ typedef struct RecompSettings {
                                  * the camera alone, 0.75 is 4:3->16:9 */
     int  hor_plus_register;     /* RECOMP_REGISTER_AUTO, or an override: 0..191 */
     char widescreen_2d[16];     /* "auto" or "centre": where 2D goes in widescreen */
+    char renderer[16];          /* "auto", "d3d11", "vulkan", "metal": what draws the game */
     int  anisotropy;            /* 1..16 */
     char frame_cap[16];         /* "adaptive", "60", "30", "0", or above 60 */
     int  fps_overlay;           /* 0 or 1 */

@@ -335,6 +335,7 @@ void recomp_settings_defaults(RecompSettings *s)
     s->hor_plus_register = RECOMP_REGISTER_AUTO;
     snprintf(s->widescreen_2d, sizeof s->widescreen_2d, "auto");
     s->anisotropy        = 1;
+    snprintf(s->renderer, sizeof s->renderer, "auto");
     s->fps_overlay       = 0;
     s->fullscreen        = 0;
     s->vrr               = 1;
@@ -409,6 +410,8 @@ static void settings_from_table(RecompSettings *s)
         snprintf(s->widescreen_2d, sizeof s->widescreen_2d, "%s", v);
     if ((v = from_table("anisotropy")) != NULL)
         s->anisotropy = clamp_int(atoi(v), 1, 16);
+    if ((v = from_table("renderer")) != NULL)
+        snprintf(s->renderer, sizeof s->renderer, "%s", v);
     if ((v = from_table("frame_cap")) != NULL)
         snprintf(s->frame_cap, sizeof s->frame_cap, "%s", v);
     if ((v = from_table("fps_overlay")) != NULL)
@@ -508,7 +511,7 @@ static void make_parents(const char *path)
  * launcher quietly undid a title's own settings. */
 static const char *const k_written_keys[] = {
     "resolution_scale", "widescreen", "hor_plus", "hor_plus_register", "widescreen_2d",
-    "anisotropy", "frame_cap", "fps_overlay", "fullscreen", "vrr", "frame_interp", "fov",
+    "anisotropy", "renderer", "frame_cap", "fps_overlay", "fullscreen", "vrr", "frame_interp", "fov",
     "mouse_look", "mouse_sensitivity", "mouse_invert", "touch_controls", "touch_opacity", "touch_scale",
     "game_dir", "syslink", "syslink_host", "syslink_port", "syslink_code", "syslink_upnp",
     "coop", "coop_port",
@@ -655,6 +658,11 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "# is left alone, which wants no filtering.              [RECOMP_ANISO]\n"
         "anisotropy = %d\n"
         "\n"
+        "# What draws the game: auto (Direct3D 11 on Windows, Vulkan on Linux,\n"
+        "# Metal on a Mac), d3d11, vulkan or metal, where the build has it.\n"
+        "#                                               [RECOMP_D3D8_BACKEND]\n"
+        "renderer = %s\n"
+        "\n"
         "# Frame pacing: adaptive, 60, 30, or 0 for uncapped.  [RECOMP_FPS_CAP]\n"
         "# A game whose logic keeps time can also take more than 60, e.g. 120\n"
         "# or 144; any other game runs fast above 60, as it does uncapped.\n"
@@ -699,7 +707,8 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "mouse_invert = %d\n",
         s->resolution_scale, s->widescreen, hor_plus, reg,
         s->widescreen_2d[0] ? s->widescreen_2d : "auto",
-        s->anisotropy, s->frame_cap[0] ? s->frame_cap : "adaptive", s->fps_overlay,
+        s->anisotropy, s->renderer[0] ? s->renderer : "auto",
+        s->frame_cap[0] ? s->frame_cap : "adaptive", s->fps_overlay,
         s->fullscreen, s->vrr, s->frame_interp < 1 ? 1 : s->frame_interp,
         s->fov > 0 ? s->fov : 0,
         s->mouse_look ? 1 : 0,

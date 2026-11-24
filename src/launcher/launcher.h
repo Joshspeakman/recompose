@@ -15,8 +15,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef LAUNCHER_SHOWCASE
+/* The showcase (recomp_add_launcher SHOWCASE): the other native ports' launch
+ * window, the game's art across the top, and its settings in panels. */
+#define LAUNCHER_WINDOW_W 960
+#define LAUNCHER_WINDOW_H 660
+#else
 #define LAUNCHER_WINDOW_W 900
 #define LAUNCHER_WINDOW_H 800           /* eight Video rows, their help, the footer */
+#endif
 
 /* Keys, as the front end reports them and as launcher.c asks after them. A
  * letter or a digit is itself, upper case ('A'..'Z', '0'..'9'), as a
@@ -64,6 +71,8 @@ void launcher_dropped(const char *path);
 /* ---- the front end, for launcher.c ---- */
 
 uint64_t lhost_ticks(void);             /* milliseconds, from anywhere */
+/* Show a folder in the system's file browser (the saves). 1 if it opened. */
+int lhost_open_folder(const char *path);
 int      lhost_key_held(int key);       /* down right now */
 /* The clipboard's text, its first line or all of it, into `out`. 0 when
  * there is none. */

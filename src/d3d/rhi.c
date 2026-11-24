@@ -58,8 +58,8 @@ int rhi_select_backend(const char *name)
      * file, so an app started from the Finder can choose too. */
     if (!name || !*name)
         name = recomp_config_lookup("RECOMP_D3D8_BACKEND", "renderer");
-    if (!name || !*name)
-        return 0;
+    if (!name || !*name || strcmp(name, "auto") == 0)
+        return 0;                       /* the build's own default */
     for (i = 0; g_backends[i]; i++) {
         if (strcmp(g_backends[i]->name, name) == 0) {
             g_rhi = g_backends[i];

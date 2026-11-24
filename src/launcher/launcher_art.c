@@ -65,6 +65,7 @@ typedef struct {
 
 static Art g_art[2];
 static int g_on;
+static char g_here[ART_PATH], g_dir[ART_PATH];   /* beside the launcher; the art cache */
 
 static const char *ext_of(const char *url)
 {
@@ -217,6 +218,8 @@ void launcher_art_init(uint32_t title_id)
         host_path_dirname(here);
     if (!cache_dir(title_id, dir, sizeof dir))
         dir[0] = '\0';
+    snprintf(g_here, sizeof g_here, "%s", here);
+    snprintf(g_dir, sizeof g_dir, "%s", dir);
 
     for (i = 0; i < 2; i++) {
         Art *a = &g_art[i];
@@ -232,7 +235,20 @@ void launcher_art_init(uint32_t title_id)
                 continue;
             }
         }
-        if (!a->url || !dir[0]) {
+        if (!dir[0]) {
+            a->done = 1;
+            continue;
+        }
+        /* Then the art cache, whoever put it there (a title's own tools,
+         * from the player's disc; or an earlier fetch). */
+        snprintf(a->file, sizeof a->file, "%s/%s.jpg", dir, a->name);
+        if (!file_exists(a->file))
+            snprintf(a->file, sizeof a->file, "%s/%s.png", dir, a->name);
+        if (file_exists(a->file)) {
+            load(a);
+            continue;
+        }
+        if (!a->url) {
             a->done = 1;
             continue;
         }
@@ -241,9 +257,7 @@ void launcher_art_init(uint32_t title_id)
 #else
         snprintf(a->file, sizeof a->file, "%s/%s%s", dir, a->name, ext);
 #endif
-        if (file_exists(a->file))
-            load(a);
-        else if (may_fetch)
+        if (may_fetch)
             fetch(a);
         else
             a->done = 1;
@@ -280,4 +294,44 @@ const uint32_t *launcher_art_logo(int *w, int *h)
     *w = g_art[1].w;
     *h = g_art[1].h;
     return g_art[1].px;
+}
+
+/* Any other picture by name (the showcase's glow and its cards): looked for
+ * as <name>.jpg or .png beside the launcher (art/), then in the art cache,
+ * the first time it is asked for, and kept. */
+const uint32_t *launcher_art_image(const char *name, int *w, int *h)
+{
+    static struct { char name[32]; uint32_t *px; int w, h, tried; } kept[12];
+    char path[ART_PATH + 64];
+    int i, j;
+
+    *w = *h = 0;
+    if (!g_on || !name)
+        return NULL;
+    if (!strcmp(name, "backdrop"))
+        return launcher_art_backdrop(w, h);
+    if (!strcmp(name, "logo"))
+        return launcher_art_logo(w, h);
+    for (i = 0; i < 12 && kept[i].tried; i++)
+        if (!strcmp(kept[i].name, name)) {
+            *w = kept[i].w;
+            *h = kept[i].h;
+            return kept[i].px;
+        }
+    if (i == 12)
+        return NULL;
+    snprintf(kept[i].name, sizeof kept[i].name, "%s", name);
+    kept[i].tried = 1;
+    for (j = 0; j < 4 && !kept[i].px; j++) {
+        const char *base = j < 2 ? g_here : g_dir, *ext = (j & 1) ? "png" : "jpg";
+
+        if (!base[0])
+            continue;
+        snprintf(path, sizeof path, j < 2 ? "%s/art/%s.%s" : "%s/%s.%s", base, name, ext);
+        if (file_exists(path))
+            kept[i].px = launcher_image_load(path, &kept[i].w, &kept[i].h);
+    }
+    *w = kept[i].w;
+    *h = kept[i].h;
+    return kept[i].px;
 }

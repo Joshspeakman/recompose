@@ -234,6 +234,415 @@ static int backdrop_draw(void)
     return 1;
 }
 
+/* ----------------------------------------------------- showcase pieces */
+
+static void px_rect(ThemeRect r, int *x0, int *y0, int *x1, int *y1)
+{
+    const double s = theme_scale;
+
+    *x0 = (int)floor(r.x * s);
+    *y0 = (int)floor(r.y * s);
+    *x1 = (int)ceil((r.x + r.w) * s);
+    *y1 = (int)ceil((r.y + r.h) * s);
+    if (*x0 < 0) *x0 = 0;
+    if (*y0 < 0) *y0 = 0;
+    if (*x1 > theme_w) *x1 = theme_w;
+    if (*y1 > theme_h) *y1 = theme_h;
+}
+
+#define RGB_R(v) (int)(((v) >> 16) & 0xFF)
+#define RGB_G(v) (int)(((v) >> 8) & 0xFF)
+#define RGB_B(v) (int)((v) & 0xFF)
+
+void theme_fill(ThemeRect r, uint32_t rgb, double alpha)
+{
+    int x0, y0, x1, y1, x, y;
+
+    if (!theme_px || alpha <= 0)
+        return;
+    px_rect(r, &x0, &y0, &x1, &y1);
+    for (y = y0; y < y1; y++)
+        for (x = x0; x < x1; x++)
+            blend(x, y, RGB_R(rgb), RGB_G(rgb), RGB_B(rgb), alpha);
+}
+
+void theme_vgrad(ThemeRect r, int n, const double *at, const uint32_t *rgb, const double *alpha)
+{
+    int x0, y0, x1, y1, x, y, k;
+
+    if (!theme_px || n < 1)
+        return;
+    px_rect(r, &x0, &y0, &x1, &y1);
+    for (y = y0; y < y1; y++) {
+        double t = r.h > 0 ? ((y + 0.5) / theme_scale - r.y) / r.h : 0, u, a;
+        int cr, cg, cb;
+
+        for (k = 0; k + 1 < n && t > at[k + 1]; k++)
+            ;
+        if (k + 1 >= n || t <= at[0]) {
+            k = t <= at[0] ? 0 : n - 1;
+            cr = RGB_R(rgb[k]); cg = RGB_G(rgb[k]); cb = RGB_B(rgb[k]); a = alpha[k];
+        } else {
+            u = (t - at[k]) / (at[k + 1] - at[k] > 1e-9 ? at[k + 1] - at[k] : 1e-9);
+            cr = (int)(RGB_R(rgb[k]) + (RGB_R(rgb[k + 1]) - RGB_R(rgb[k])) * u);
+            cg = (int)(RGB_G(rgb[k]) + (RGB_G(rgb[k + 1]) - RGB_G(rgb[k])) * u);
+            cb = (int)(RGB_B(rgb[k]) + (RGB_B(rgb[k + 1]) - RGB_B(rgb[k])) * u);
+            a = alpha[k] + (alpha[k + 1] - alpha[k]) * u;
+        }
+        if (a <= 0)
+            continue;
+        for (x = x0; x < x1; x++)
+            blend(x, y, cr, cg, cb, a);
+    }
+}
+
+void theme_outline(ThemeRect r, uint32_t rgb, double alpha, int width)
+{
+    ThemeRect e;
+
+    e = r; e.h = width; theme_fill(e, rgb, alpha);
+    e = r; e.y = r.y + r.h - width; e.h = width; theme_fill(e, rgb, alpha);
+    e = r; e.y += width; e.h -= 2 * width; e.w = width; theme_fill(e, rgb, alpha);
+    e.x = r.x + r.w - width; theme_fill(e, rgb, alpha);
+}
+
+void theme_brackets(ThemeRect r, int len, int width, uint32_t rgb, double alpha)
+{
+    ThemeRect e;
+    int x1 = r.x + r.w, y1 = r.y + r.h;
+
+    e.w = len; e.h = width;
+    e.x = r.x; e.y = r.y; theme_fill(e, rgb, alpha);
+    e.x = x1 - len; theme_fill(e, rgb, alpha);
+    e.y = y1 - width; theme_fill(e, rgb, alpha);
+    e.x = r.x; theme_fill(e, rgb, alpha);
+    e.w = width; e.h = len - width;
+    e.x = r.x; e.y = r.y + width; theme_fill(e, rgb, alpha);
+    e.x = x1 - width; theme_fill(e, rgb, alpha);
+    e.y = y1 - len; theme_fill(e, rgb, alpha);
+    e.x = r.x; theme_fill(e, rgb, alpha);
+}
+
+void theme_glow_rect(ThemeRect r, uint32_t rgb, double alpha, double radius)
+{
+    const double s = theme_scale;
+    ThemeRect big = r;
+    int x0, y0, x1, y1, x, y, pad = (int)ceil(radius * 2.5);
+
+    if (!theme_px || alpha <= 0 || radius <= 0)
+        return;
+    big.x -= pad; big.y -= pad; big.w += 2 * pad; big.h += 2 * pad;
+    px_rect(big, &x0, &y0, &x1, &y1);
+    for (y = y0; y < y1; y++) {
+        double py = (y + 0.5) / s, dy = py < r.y ? r.y - py : py > r.y + r.h ? py - (r.y + r.h) : 0;
+
+        for (x = x0; x < x1; x++) {
+            double px = (x + 0.5) / s, dx = px < r.x ? r.x - px : px > r.x + r.w ? px - (r.x + r.w) : 0;
+            double d2 = dx * dx + dy * dy;
+
+            if (d2 <= 0)
+                continue;                       /* the inside is the caller's */
+            blend(x, y, RGB_R(rgb), RGB_G(rgb), RGB_B(rgb), alpha * exp(-d2 / (radius * radius * 0.5)));
+        }
+    }
+}
+
+static float *g_vig;
+static int    g_vig_w, g_vig_h;
+static double g_vig_key[3];
+
+void theme_vignette(double strength, double cx, double cy)
+{
+    size_t i, n = (size_t)theme_w * theme_h;
+    int x, y;
+
+    if (!theme_px || strength <= 0)
+        return;
+    if (!g_vig || g_vig_w != theme_w || g_vig_h != theme_h || g_vig_key[0] != strength ||
+        g_vig_key[1] != cx || g_vig_key[2] != cy) {
+        free(g_vig);
+        g_vig = malloc(n * sizeof *g_vig);
+        if (!g_vig)
+            return;
+        for (y = 0; y < theme_h; y++)
+            for (x = 0; x < theme_w; x++) {
+                double nx = (double)x / theme_w - cx, ny = (double)y / theme_h - cy;
+                double d = sqrt(nx * nx + ny * ny) / 0.8;
+
+                g_vig[(size_t)y * theme_w + x] = (float)(strength * (d > 1 ? 1 : d * d));
+            }
+        g_vig_w = theme_w; g_vig_h = theme_h;
+        g_vig_key[0] = strength; g_vig_key[1] = cx; g_vig_key[2] = cy;
+    }
+    for (i = 0; i < n; i++) {
+        uint32_t p = theme_px[i];
+        double k = 1.0 - g_vig[i];
+
+        theme_px[i] = ((uint32_t)(((p >> 16) & 0xFF) * k) << 16) |
+                      ((uint32_t)(((p >> 8) & 0xFF) * k) << 8) | (uint32_t)((p & 0xFF) * k);
+    }
+}
+
+/* Scaled copies kept between frames: a picture re-filtered from 4x every
+ * 16 ms would crawl. Premultiplied, so drawing one is a blend a pixel. */
+typedef struct {
+    const uint32_t *src;
+    int sw, sh, pw, ph;
+    double key[6];
+    uint32_t *px;           /* 0xAARRGGBB, premultiplied */
+} Kept;
+static Kept g_kept[8];
+
+static uint32_t *scale_box(const uint32_t *src, int sw, int sh, double sx0, double sy0,
+                           double sx1, double sy1, int pw, int ph)
+{
+    uint32_t *out = malloc((size_t)pw * ph * sizeof *out);
+    double kx = (sx1 - sx0) / pw, ky = (sy1 - sy0) / ph;
+    int x, y;
+
+    if (!out)
+        return NULL;
+    for (y = 0; y < ph; y++) {
+        int y0 = (int)(sy0 + y * ky), y1 = (int)(sy0 + (y + 1) * ky);
+
+        if (y1 <= y0) y1 = y0 + 1;
+        if (y0 < 0) y0 = 0;
+        if (y1 > sh) y1 = sh;
+        for (x = 0; x < pw; x++) {
+            int x0 = (int)(sx0 + x * kx), x1 = (int)(sx0 + (x + 1) * kx), xx, yy;
+            double r = 0, g = 0, b = 0, a = 0, c = 0;
+
+            if (x1 <= x0) x1 = x0 + 1;
+            if (x0 < 0) x0 = 0;
+            if (x1 > sw) x1 = sw;
+            for (yy = y0; yy < y1; yy++)
+                for (xx = x0; xx < x1; xx++) {
+                    uint32_t p = src[(size_t)yy * sw + xx];
+                    double pa = ((p >> 24) & 0xFF) / 255.0;
+
+                    r += ((p >> 16) & 0xFF) * pa;
+                    g += ((p >> 8) & 0xFF) * pa;
+                    b += (p & 0xFF) * pa;
+                    a += pa;
+                    c++;
+                }
+            if (c < 1) c = 1;
+            out[(size_t)y * pw + x] = ((uint32_t)(a / c * 255.0 + 0.5) << 24) |
+                                      ((uint32_t)(r / c + 0.5) << 16) |
+                                      ((uint32_t)(g / c + 0.5) << 8) | (uint32_t)(b / c + 0.5);
+        }
+    }
+    return out;
+}
+
+static void draw_kept(const uint32_t *px, int pw, int ph, int ox, int oy, double alpha)
+{
+    int x, y;
+
+    for (y = 0; y < ph; y++) {
+        int ty = oy + y;
+
+        if (ty < 0 || ty >= theme_h)
+            continue;
+        for (x = 0; x < pw; x++) {
+            int tx = ox + x;
+            uint32_t p = px[(size_t)y * pw + x], *d;
+            double a = ((p >> 24) & 0xFF) / 255.0 * alpha, k = 1 - a;
+
+            if (tx < 0 || tx >= theme_w || a <= 0)
+                continue;
+            d = &theme_px[(size_t)ty * theme_w + tx];
+            *d = ((uint32_t)(((*d >> 16) & 0xFF) * k + ((p >> 16) & 0xFF) * alpha) << 16) |
+                 ((uint32_t)(((*d >> 8) & 0xFF) * k + ((p >> 8) & 0xFF) * alpha) << 8) |
+                 (uint32_t)((*d & 0xFF) * k + (p & 0xFF) * alpha);
+        }
+    }
+}
+
+static Kept *kept_for(int slot, const uint32_t *src, int sw, int sh, const double key[6], int pw, int ph)
+{
+    Kept *k;
+
+    if (slot < 0 || slot >= 8)
+        return NULL;
+    k = &g_kept[slot];
+    if (k->px && k->src == src && k->sw == sw && k->sh == sh && k->pw == pw && k->ph == ph &&
+        !memcmp(k->key, key, sizeof k->key))
+        return k;
+    free(k->px);
+    memset(k, 0, sizeof *k);
+    k->src = src; k->sw = sw; k->sh = sh; k->pw = pw; k->ph = ph;
+    memcpy(k->key, key, sizeof k->key);
+    return k;
+}
+
+void theme_cover(ThemeRect r, const uint32_t *argb, int w, int h, double keep,
+                 double fx, double fy, double alpha, int slot)
+{
+    const double s = theme_scale;
+    int pw = (int)ceil(r.w * s), ph = (int)ceil(r.h * s);
+    double ih = h * (keep > 0 && keep <= 1 ? keep : 1), sc, cw, ch, sx0, sy0;
+    double key[6] = { keep, fx, fy, r.w, r.h, s };
+    Kept *k;
+    uint32_t *px;
+
+    if (!theme_px || !argb || w <= 0 || h <= 0 || pw <= 0 || ph <= 0)
+        return;
+    sc = (double)pw / w > (double)ph / ih ? (double)pw / w : (double)ph / ih;
+    cw = pw / sc; ch = ph / sc;
+    sx0 = (w - cw) * fx;
+    sy0 = (ih - ch) * fy;
+    k = kept_for(slot, argb, w, h, key, pw, ph);
+    if (k && k->px) {
+        draw_kept(k->px, pw, ph, (int)floor(r.x * s), (int)floor(r.y * s), alpha);
+        return;
+    }
+    px = scale_box(argb, w, h, sx0, sy0, sx0 + cw, sy0 + ch, pw, ph);
+    if (!px)
+        return;
+    draw_kept(px, pw, ph, (int)floor(r.x * s), (int)floor(r.y * s), alpha);
+    if (k) k->px = px; else free(px);
+}
+
+void theme_picture_ex(ThemeRect r, const uint32_t *argb, int w, int h, ThemeAlign align,
+                      double alpha, int slot, ThemeRect *drawn)
+{
+    const double s = theme_scale;
+    double fit, dw, dh, x0, y0;
+    double key[6] = { (double)align, r.w, r.h, s, 0, 0 };
+    int pw, ph;
+    Kept *k;
+    uint32_t *px;
+
+    if (!theme_px || !argb || w <= 0 || h <= 0 || r.w <= 0 || r.h <= 0)
+        return;
+    fit = (double)r.w / w < (double)r.h / h ? (double)r.w / w : (double)r.h / h;
+    dw = w * fit; dh = h * fit;
+    x0 = align == THEME_LEFT ? r.x : align == THEME_RIGHT ? r.x + r.w - dw : r.x + (r.w - dw) * 0.5;
+    y0 = r.y + (r.h - dh) * 0.5;
+    if (drawn) {
+        drawn->x = (int)x0; drawn->y = (int)y0; drawn->w = (int)dw; drawn->h = (int)dh;
+    }
+    pw = (int)(dw * s + 0.5); ph = (int)(dh * s + 0.5);
+    if (pw <= 0 || ph <= 0)
+        return;
+    k = kept_for(slot, argb, w, h, key, pw, ph);
+    if (k && k->px) {
+        draw_kept(k->px, pw, ph, (int)(x0 * s), (int)(y0 * s), alpha);
+        return;
+    }
+    px = scale_box(argb, w, h, 0, 0, w, h, pw, ph);
+    if (!px)
+        return;
+    draw_kept(px, pw, ph, (int)(x0 * s), (int)(y0 * s), alpha);
+    if (k) k->px = px; else free(px);
+}
+
+void theme_line(double x0, double y0, double x1, double y1, double width, uint32_t rgb, double alpha)
+{
+    const double s = theme_scale;
+    double dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy, hw = width * 0.5;
+    int px0 = (int)floor(((x0 < x1 ? x0 : x1) - width) * s), px1 = (int)ceil(((x0 > x1 ? x0 : x1) + width) * s);
+    int py0 = (int)floor(((y0 < y1 ? y0 : y1) - width) * s), py1 = (int)ceil(((y0 > y1 ? y0 : y1) + width) * s);
+    int x, y;
+
+    if (!theme_px || alpha <= 0)
+        return;
+    for (y = py0 < 0 ? 0 : py0; y < py1 && y < theme_h; y++)
+        for (x = px0 < 0 ? 0 : px0; x < px1 && x < theme_w; x++) {
+            double px = (x + 0.5) / s, py = (y + 0.5) / s, t, ex, ey, d;
+
+            t = len2 > 0 ? ((px - x0) * dx + (py - y0) * dy) / len2 : 0;
+            if (t < 0) t = 0;
+            if (t > 1) t = 1;
+            ex = px - (x0 + t * dx); ey = py - (y0 + t * dy);
+            d = sqrt(ex * ex + ey * ey) - hw;           /* < 0 inside */
+            if (d < 1.0 / s)
+                blend(x, y, RGB_R(rgb), RGB_G(rgb), RGB_B(rgb), alpha * clamp01(0.5 - d * s));
+        }
+}
+
+void theme_chevron(double cx, double cy, int right, double w, double h, uint32_t rgb, double alpha)
+{
+    double tip = right ? cx + w / 2 : cx - w / 2, back = right ? cx - w / 2 : cx + w / 2;
+
+    theme_line(back, cy - h / 2, tip, cy, 2, rgb, alpha);
+    theme_line(tip, cy, back, cy + h / 2, 2, rgb, alpha);
+}
+
+/* A softened copy of a picture's alpha, tinted: kept per slot as the others. */
+void theme_picture_glow(ThemeRect r, const uint32_t *argb, int w, int h, ThemeAlign align,
+                        uint32_t rgb, double alpha, int blur, int slot)
+{
+    const double s = theme_scale;
+    double fit, dw, dh, x0, y0;
+    double key[6] = { (double)align, r.w, r.h, s, (double)blur, (double)rgb };
+    int pw, ph, pad = (int)ceil(blur * s * 2), gw, gh, x, y, pass;
+    Kept *k;
+    uint32_t *sc, *px;
+    float *m, *t;
+
+    if (!theme_px || !argb || w <= 0 || h <= 0 || r.w <= 0 || r.h <= 0)
+        return;
+    fit = (double)r.w / w < (double)r.h / h ? (double)r.w / w : (double)r.h / h;
+    dw = w * fit; dh = h * fit;
+    x0 = align == THEME_LEFT ? r.x : align == THEME_RIGHT ? r.x + r.w - dw : r.x + (r.w - dw) * 0.5;
+    y0 = r.y + (r.h - dh) * 0.5;
+    pw = (int)(dw * s + 0.5); ph = (int)(dh * s + 0.5);
+    gw = pw + 2 * pad; gh = ph + 2 * pad;
+    if (pw <= 0 || ph <= 0)
+        return;
+    k = kept_for(slot, argb, w, h, key, gw, gh);
+    if (k && k->px) {
+        draw_kept(k->px, gw, gh, (int)(x0 * s) - pad, (int)(y0 * s) - pad, alpha);
+        return;
+    }
+    sc = scale_box(argb, w, h, 0, 0, w, h, pw, ph);
+    m = calloc((size_t)gw * gh, sizeof *m);
+    t = calloc((size_t)(gw > gh ? gw : gh), sizeof *t);
+    px = malloc((size_t)gw * gh * sizeof *px);
+    if (!sc || !m || !t || !px) {
+        free(sc); free(m); free(t); free(px);
+        return;
+    }
+    for (y = 0; y < ph; y++)
+        for (x = 0; x < pw; x++)
+            m[(size_t)(y + pad) * gw + x + pad] = ((sc[(size_t)y * pw + x] >> 24) & 0xFF) / 255.0f;
+    for (pass = 0; pass < 3; pass++) {                /* three box passes: close to a Gaussian */
+        int rad = (int)(blur * s / 2) > 0 ? (int)(blur * s / 2) : 1, i;
+
+        for (y = 0; y < gh; y++) {                    /* rows */
+            double sum = 0;
+            for (x = 0; x < gw; x++) t[x] = m[(size_t)y * gw + x];
+            for (i = -rad; i <= rad; i++) sum += t[i < 0 ? 0 : i >= gw ? gw - 1 : i];
+            for (x = 0; x < gw; x++) {
+                m[(size_t)y * gw + x] = (float)(sum / (2 * rad + 1));
+                sum += t[x + rad + 1 >= gw ? gw - 1 : x + rad + 1] - t[x - rad < 0 ? 0 : x - rad];
+            }
+        }
+        for (x = 0; x < gw; x++) {                    /* columns */
+            double sum = 0;
+            for (y = 0; y < gh; y++) t[y] = m[(size_t)y * gw + x];
+            for (i = -rad; i <= rad; i++) sum += t[i < 0 ? 0 : i >= gh ? gh - 1 : i];
+            for (y = 0; y < gh; y++) {
+                m[(size_t)y * gw + x] = (float)(sum / (2 * rad + 1));
+                sum += t[y + rad + 1 >= gh ? gh - 1 : y + rad + 1] - t[y - rad < 0 ? 0 : y - rad];
+            }
+        }
+    }
+    for (y = 0; y < gh; y++)
+        for (x = 0; x < gw; x++) {
+            double a = m[(size_t)y * gw + x];
+
+            px[(size_t)y * gw + x] = ((uint32_t)(a * 255.0) << 24) |
+                                     ((uint32_t)(RGB_R(rgb) * a) << 16) |
+                                     ((uint32_t)(RGB_G(rgb) * a) << 8) | (uint32_t)(RGB_B(rgb) * a);
+        }
+    free(sc); free(m); free(t);
+    draw_kept(px, gw, gh, (int)(x0 * s) - pad, (int)(y0 * s) - pad, alpha);
+    if (k) k->px = px; else free(px);
+}
+
 /* A picture fitted into r, sampled with a box filter, its alpha honoured. */
 void theme_picture(ThemeRect r, const uint32_t *argb, int w, int h, ThemeAlign align)
 {
@@ -337,6 +746,24 @@ static double rrect_distance(double px, double py, ThemeRect r, double radius)
 
 void theme_panel(ThemeRect r, double lit)
 {
+#ifdef THEME_FLAT_PANELS
+    /* The showcase's: a flat dark slab, a hairline edge that lights, and the
+     * lit one tinted with a bar down its left side. */
+    if (theme_px) {
+        ThemeRect bar = r;
+
+        theme_fill(r, THEME_SLAB_RGB, 0.86 + 0.10 * lit);
+        if (lit > 0.01)
+            theme_fill(r, THEME_ACCENT_RGB, 0.10 * lit);
+        theme_outline(r, lit > 0.5 ? THEME_ACCENT_RGB : THEME_ACCENT_DIM_RGB,
+                      0.55 + 0.45 * lit, 1);
+        if (lit > 0.5) {
+            bar.w = 3;
+            theme_fill(bar, THEME_ACCENT_RGB, lit);
+        }
+    }
+    return;
+#endif
     const double radius = 10.0, s = theme_scale;
     double falloff, strength, reach;
     int pad, x0, y0, x1, y1, x, y;

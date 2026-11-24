@@ -14,5 +14,7 @@ int  launcher_art_tick(void);
 /* 0xAARRGGBB rows, or NULL while there is none. Owned here. */
 const uint32_t *launcher_art_backdrop(int *w, int *h);
 const uint32_t *launcher_art_logo(int *w, int *h);
+/* Any other picture of the title's by name (art/<name>.jpg or .png). */
+const uint32_t *launcher_art_image(const char *name, int *w, int *h);
 
 #endif /* XBOXRECOMP_LAUNCHER_ART_H */

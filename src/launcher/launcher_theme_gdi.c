@@ -101,6 +101,64 @@ void theme_text(ThemeRect r, const char *text, int size, int weight,
     DeleteObject(font);
 }
 
+/* The showcase's text: Segoe UI for reading, Bahnschrift (Windows 10's DIN)
+ * for the spaced capitals and the big names. Placed by hand rather than by
+ * DrawText, which lines text up as if SetTextCharacterExtra's spacing were
+ * not there: measured with it (less the trailing space after the last
+ * letter), cut to fit with an ellipsis, centred on the box. The shadow, on
+ * large text only, is the window's ink rather than black. */
+void theme_text_ex(ThemeRect r, const char *text, int size, int weight, COLORREF colour,
+                   ThemeAlign align, int tracking, int face, int shadow)
+{
+    static const char *const faces[] = { "Segoe UI", "Bahnschrift", "Bahnschrift" };
+    WCHAR wide[512];
+    HFONT font, old;
+    TEXTMETRICW tm;
+    SIZE sz;
+    int len, x, y, pass, vis;
+
+    if (!g_dc || !text)
+        return;
+    if (face < 0 || face > 2)
+        face = 0;
+    len = MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, 510);
+    if (len <= 1)
+        return;
+    len--;                                         /* without the terminator */
+    font = CreateFontA(-MulDiv(size, 96, 72), 0, 0, 0, face == 2 ? 700 : weight, FALSE, FALSE,
+                       FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, faces[face]);
+    if (!font)
+        return;
+    old = (HFONT)SelectObject(g_dc, font);
+    SetTextCharacterExtra(g_dc, tracking);
+    GetTextMetricsW(g_dc, &tm);
+    GetTextExtentPoint32W(g_dc, wide, len, &sz);
+    vis = sz.cx - tracking;
+    if (vis > r.w && len > 1) {                    /* too long: cut, with an ellipsis */
+        while (len > 1 && vis > r.w) {
+            len--;
+            while (len > 1 && wide[len - 1] == L' ')
+                len--;
+            wide[len] = 0x2026;
+            GetTextExtentPoint32W(g_dc, wide, len + 1, &sz);
+            vis = sz.cx - tracking;
+        }
+        len++;
+    }
+    x = align == THEME_LEFT ? r.x : align == THEME_RIGHT ? r.x + r.w - vis : r.x + (r.w - vis) / 2;
+    y = r.y + (r.h - tm.tmHeight) / 2;
+    for (pass = (shadow && size >= 12) ? 0 : 1; pass < 2; pass++) {
+        int off = pass == 0 ? 1 : 0;
+
+        SetTextColor(g_dc, pass == 0 ? THEME_RGB_(THEME_INK_SHADOW_RGB) : colour);
+        ExtTextOutW(g_dc, x + off, y + off, 0, NULL, wide, (UINT)len, NULL);
+    }
+    SetTextCharacterExtra(g_dc, 0);
+    SelectObject(g_dc, old);
+    DeleteObject(font);
+}
+
 void theme_text_wrapped(ThemeRect r, const char *text, int size, COLORREF colour)
 {
     HFONT font, old;

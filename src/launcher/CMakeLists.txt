@@ -26,7 +26,7 @@
 # title's CMakeLists need not ask which host it is on.
 
 function(recomp_add_launcher TARGET GAME_EXE)
-    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "DEFAULTS;BRAND;ICON;THEME;LOGO" "" ${ARGN})
+    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP;SHOWCASE" "DEFAULTS;BRAND;ICON;THEME;LOGO" "" ${ARGN})
     set(_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
 
     if(WIN32)
@@ -155,6 +155,11 @@ function(recomp_add_launcher TARGET GAME_EXE)
     # fighters cannot reach.
     if(_launcher_NO_WIDESCREEN)
         target_compile_definitions(${TARGET} PRIVATE LAUNCHER_NO_WIDESCREEN=1)
+    endif()
+    # SHOWCASE: the other native ports' launch window (launcher_showcase.inc):
+    # the game's art and logo, renderer cards, tiles that open the settings.
+    if(_launcher_SHOWCASE)
+        target_compile_definitions(${TARGET} PRIVATE LAUNCHER_SHOWCASE=1)
     endif()
     # BRAND <name>: what the window is called -- the project's name rather
     # than the toolkit's. Without it, "Recompose - <the game's name>".

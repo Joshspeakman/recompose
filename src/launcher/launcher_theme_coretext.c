@@ -251,3 +251,18 @@ void theme_text_wrapped(ThemeRect r, const char *text, int size, COLORREF colour
     CGPathRelease(path);
     CFRelease(fs);
 }
+
+/* The showcase's text call (launcher_theme.h). This host has one face: the
+ * shadow is drawn, the face and the letter spacing are left to it. */
+void theme_text_ex(ThemeRect r, const char *text, int size, int weight, COLORREF colour,
+                   ThemeAlign align, int tracking, int face, int shadow)
+{
+    (void)tracking; (void)face;
+    if (shadow) {
+        ThemeRect d = r;
+
+        d.x += 1; d.y += 1;
+        theme_text(d, text, size, weight, RGB(0, 0, 0), align);
+    }
+    theme_text(r, text, size, weight, colour, align);
+}

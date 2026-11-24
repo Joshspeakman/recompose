@@ -24,6 +24,11 @@ static HWND g_hwnd;
 
 /* ------------------------------------------------------------ the host */
 
+int lhost_open_folder(const char *path)
+{
+    return path && (INT_PTR)ShellExecuteA(NULL, "open", path, NULL, NULL, SW_SHOWNORMAL) > 32;
+}
+
 uint64_t lhost_ticks(void)
 {
     return GetTickCount64();
@@ -547,6 +552,23 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     }
     if (!g_hwnd)
         return 1;
+    {
+        /* The title bar dark, in the window's own ink (Windows 11 colours
+         * it; Windows 10 takes only the dark mode). dwmapi is loaded here
+         * rather than linked, so an older Windows simply skips it. */
+        typedef HRESULT (WINAPI *SetAttr)(HWND, DWORD, LPCVOID, DWORD);
+        HMODULE dwm = LoadLibraryA("dwmapi.dll");
+        SetAttr set = dwm ? (SetAttr)(void *)GetProcAddress(dwm, "DwmSetWindowAttribute") : NULL;
+
+        if (set) {
+            BOOL dark = TRUE;
+            COLORREF caption = THEME_RGB_(THEME_INK_RGB_OR_BG), text = THEME_RGB_(THEME_TEXT_DIM_RGB);
+
+            set(g_hwnd, 20, &dark, sizeof dark);              /* DWMWA_USE_IMMERSIVE_DARK_MODE */
+            set(g_hwnd, 35, &caption, sizeof caption);        /* DWMWA_CAPTION_COLOR */
+            set(g_hwnd, 36, &text, sizeof text);              /* DWMWA_TEXT_COLOR */
+        }
+    }
     if (!theme_begin(LAUNCHER_WINDOW_W, LAUNCHER_WINDOW_H))
         return 1;
 

@@ -78,6 +78,15 @@
  * against the true size is the difference between a crisp launcher and
  * one stretched up from a smaller drawing. */
 static int g_cw = LAUNCHER_WINDOW_W, g_ch = LAUNCHER_WINDOW_H;
+/* Where the rows of a tab go: the plain launcher's numbers, which the
+ * showcase layout moves into its panels (launcher_showcase.inc). */
+static int g_row_x = 60, g_row_y = 168, g_row_w = LAUNCHER_WINDOW_W - 120;
+static int g_row_pitch = 62, g_row_h = 52;
+static int g_row_gap, g_row_gap_at;     /* extra space over row g_row_gap_at and on (showcase) */
+static int g_content_bottom = LAUNCHER_WINDOW_H - 96;
+#ifdef LAUNCHER_SHOWCASE
+static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta);   /* launcher_showcase.inc */
+#endif
 
 /* ------------------------------------------------------------- settings */
 
@@ -383,8 +392,14 @@ static void row_value(const Row *r, char *out, size_t n)
         break;
     case ROW_INT:
         if (r->ival == &g_settings.resolution_scale)
+#ifdef LAUNCHER_SHOWCASE
+            snprintf(out, n, *r->ival == 1 ? "Console  \xc2\xb7  640 \xc3\x97 480"
+                                           : "%dx  \xc2\xb7  %d \xc3\x97 %d",
+                     *r->ival, 640 * *r->ival, 480 * *r->ival);
+#else
             snprintf(out, n, *r->ival == 1 ? "Console (640x480)" : "%dx (%dx%d)",
                      *r->ival, 640 * *r->ival, 480 * *r->ival);
+#endif
         else if (*r->ival == 1)
             snprintf(out, n, "Off");
         else if (r->ival == &g_settings.frame_interp)
@@ -1374,10 +1389,10 @@ static ThemeRect tab_rect(int i)
 static ThemeRect row_rect(int i)
 {
     ThemeRect r;
-    r.x = 60;
-    r.y = 168 + i * 62;
-    r.w = g_cw - 120;
-    r.h = 52;
+    r.x = g_row_x;
+    r.y = g_row_y + i * g_row_pitch + (g_row_gap && i >= g_row_gap_at ? g_row_gap : 0);
+    r.w = g_row_w;
+    r.h = g_row_h;
     return r;
 }
 
@@ -1403,6 +1418,15 @@ static int hit_arrow(ThemeRect row, int mx)
 {
     ThemeRect a = arrows_rect(row);
     int mid = a.x + a.w / 2;
+
+#ifdef LAUNCHER_SHOWCASE
+    /* The showcase's chevrons: the value sits between them (sc_row_arrows). */
+    if (mx >= row.x + row.w - 340 && mx < row.x + row.w - 290)
+        return -1;
+    if (mx >= row.x + row.w - 44 && mx < row.x + row.w + 10)
+        return 1;
+    return 0;
+#endif
 
     if (mx >= row.x + row.w - 60 && mx < mid)
         return -1;
@@ -1462,6 +1486,10 @@ static void nav(int dx, int dy, int accept, int cancel, int tabdelta)
         setup_nav(dx, dy, accept, cancel);
         return;
     }
+#ifdef LAUNCHER_SHOWCASE
+    if (sc_nav(dx, dy, accept, cancel, tabdelta))
+        return;
+#endif
     if (g_capturing) {
         /* While waiting for a press, nothing else means anything: the
          * press is the answer. Cancel is handled in capture_tick, which
@@ -1573,11 +1601,21 @@ static void nav(int dx, int dy, int accept, int cancel, int tabdelta)
 /* A list of settings rows and the selected one's explanation under it, as
  * the Video and System Link tabs both show them: on one line, or wrapped
  * for the System Link tab's longer ones. Returns the y below. */
+#ifdef LAUNCHER_SHOWCASE
+static int sc_draw_rows(const Row *rows, int count, int wrap_help);   /* launcher_showcase.inc */
+static void sc_draw_input(void);
+static void sc_link_heading(ThemeRect r, const char *text);
+#endif
+
 static int draw_rows(const Row *rows, int count, int wrap_help)
 {
     ThemeRect r;
     char value[160];
     int i;
+
+#ifdef LAUNCHER_SHOWCASE
+    return sc_draw_rows(rows, count, wrap_help);
+#endif
 
     for (i = 0; i < count; i++) {
         const Row *row = &rows[i];
@@ -1612,8 +1650,8 @@ static int draw_rows(const Row *rows, int count, int wrap_help)
             theme_arrows(ar, row_can(row, -1), row_can(row, 1), lit);
     }
 
-    r.x = 62; r.y = 168 + count * 62 + 10;
-    r.w = g_cw - 124; r.h = 46;
+    r.x = g_row_x + 2; r.y = g_row_y + count * g_row_pitch + 10;
+    r.w = g_row_w - 4; r.h = 46;
     if (g_sel < count) {
         if (wrap_help)
             theme_text_wrapped(r, row_help(&rows[g_sel]), 11, THEME_TEXT_DIM);
@@ -1625,26 +1663,52 @@ static int draw_rows(const Row *rows, int count, int wrap_help)
 
 static ThemeRect g_link_panel;          /* where the addresses are: a click copies */
 
+/* How tall the box under the System Link rows is: a host's says more. */
+static int link_box_h(void)
+{
+#ifdef LAUNCHER_SHOWCASE
+    return LINK_HOSTS(g_link_mode) ? 196 : 128;
+#else
+    return 230;
+#endif
+}
+
+#ifdef LAUNCHER_SHOWCASE
+#define LINK_HEADING(r, t) sc_link_heading(r, t)
+#define LINK_PT 11
+#define LINK_OFF_HEADING "PLAY OVER A NETWORK"     /* the row over it says System Link */
+#else
+#define LINK_HEADING(r, t) theme_text(r, t, 10, 700, THEME_GREEN, THEME_LEFT)
+#define LINK_PT 12
+#define LINK_OFF_HEADING "SYSTEM LINK"
+#endif
+
 static void draw_link(void)
 {
     ThemeRect p, line;
     char text[320], share[96];
     int y = draw_rows(g_link_rows, g_link_count, 1) + 8;
 
-    p.x = 60; p.y = y; p.w = g_cw - 120;
-    p.h = (g_ch - 96) - y;
-    if (p.h > 230) p.h = 230;
+    p.x = g_row_x; p.y = y; p.w = g_row_w;
+    p.h = g_content_bottom - y;
+    if (p.h > link_box_h()) p.h = link_box_h();
+#ifdef LAUNCHER_SHOWCASE
+    p.x -= 10; p.w += 20;                  /* as wide as a focused row's tint */
+#endif
     g_link_panel = p;
     theme_panel(p, 0.25);
     line = p; line.x += 24; line.w -= 48; line.y += 16; line.h = 22;
+#ifdef LAUNCHER_SHOWCASE
+    line.x = p.x + 16; line.w = p.w - 32;
+#endif
 
     if (LINK_HOSTS(g_link_mode)) {
         int asked = g_settings.syslink_upnp;
 
-        theme_text(line, "TELL YOUR FRIENDS", 10, 700, THEME_GREEN, THEME_LEFT);
+        LINK_HEADING(line, "TELL YOUR FRIENDS");
         line.y += 30;
         snprintf(text, sizeof text, "On your network      %s:%d", g_lan_addr, link_port());
-        theme_text(line, text, 12, 400, THEME_TEXT, THEME_LEFT);
+        theme_text(line, text, LINK_PT, 400, THEME_TEXT, THEME_LEFT);
         line.y += 26;
 
         if (!asked) {
@@ -1659,7 +1723,7 @@ static void draw_link(void)
             snprintf(text, sizeof text, "On the internet      %s", g_probe.detail);
         }
         line.h = 40;
-        theme_text_wrapped(line, text, 12,
+        theme_text_wrapped(line, text, LINK_PT,
                            (asked && lhost_read(&g_probe_state) == 2 &&
                             g_probe.state == NET_UPNP_FOUND)
                                ? THEME_TEXT : THEME_TEXT_DIM);
@@ -1679,7 +1743,7 @@ static void draw_link(void)
                                                 : LAUNCHER_COPY_KEY " or a click here copies it.");
         theme_text_wrapped(line, text, 11, THEME_TEXT_DIM);
     } else if (g_link_mode == LINK_COOP_JOIN) {
-        theme_text(line, "JOINING CO-OP", 10, 700, THEME_GREEN, THEME_LEFT);
+        LINK_HEADING(line, "JOINING CO-OP");
         line.y += 30; line.h = 120;
         theme_text_wrapped(line,
             "Ask the host for their address. Nothing needs opening on your router."
@@ -1687,18 +1751,18 @@ static void draw_link(void)
             " their game, with your own controller 1. Both copies must be the same"
             " build with the same Widescreen setting; the log beside the game says"
             " why if the host turns you away.",
-            12, THEME_TEXT_DIM);
+            LINK_PT, THEME_TEXT_DIM);
     } else if (g_link_mode == LINK_JOIN) {
-        theme_text(line, "JOINING", 10, 700, THEME_GREEN, THEME_LEFT);
+        LINK_HEADING(line, "JOINING");
         line.y += 30; line.h = 120;
         theme_text_wrapped(line,
             "Ask the host for their address, and the join code if they set one."
             " Nothing needs opening on your router. Start the game and open its"
             " System Link menu: games anyone in the session hosts appear there."
             " If none does, the log beside the game says whether the host answered.",
-            12, THEME_TEXT_DIM);
+            LINK_PT, THEME_TEXT_DIM);
     } else {
-        theme_text(line, "SYSTEM LINK", 10, 700, THEME_GREEN, THEME_LEFT);
+        LINK_HEADING(line, LINK_OFF_HEADING);
         line.y += 30; line.h = 120;
         theme_text_wrapped(line, g_link_mode == LINK_BY_HAND
             ? "The settings file sets up a pair by hand (syslink = udp, with"
@@ -1707,11 +1771,21 @@ static void draw_link(void)
               " or a network switch. One player hosts the session, up to 15 more"
               " join it, from the same network or over the internet. Each needs"
               " their own copy of the game.",
-            12, THEME_TEXT_DIM);
+            LINK_PT, THEME_TEXT_DIM);
     }
 }
 
 /* ------------------------------------------- a release's first-run screens */
+
+/* Where they sit: under the plain launcher's title, or under the showcase's
+ * header in its smaller window. */
+#ifdef LAUNCHER_SHOWCASE
+enum { SETUP_DESC_Y = 176, SETUP_DESC_H = 96, SETUP_PATH_Y = 284, SETUP_BTN_Y = 350,
+       SETUP_LOW_Y = 420, SETUP_LOW_H = 128, SETUP_PANEL_Y = 182 };
+#else
+enum { SETUP_DESC_Y = 104, SETUP_DESC_H = 140, SETUP_PATH_Y = 270, SETUP_BTN_Y = 342,
+       SETUP_LOW_Y = 416, SETUP_LOW_H = 290, SETUP_PANEL_Y = 130 };
+#endif
 
 static int hit_play(int mx, int my);
 
@@ -1721,12 +1795,23 @@ static ThemeRect setup_rect(int i)
     ThemeRect r;
 
     if (i == 0) {
-        r.x = 60; r.y = 270; r.w = g_cw - 120; r.h = 52;
+        r.x = 60; r.y = SETUP_PATH_Y; r.w = g_cw - 120; r.h = 52;
         return r;
     }
+#ifdef LAUNCHER_SHOWCASE
+    /* The two choosers side by side; Build is the window's main button,
+     * where Play is on the main screen. */
+    if (i == 3) {
+        r.x = g_cw - 60 - 200; r.y = g_ch - 68; r.w = 200; r.h = 46;
+        return r;
+    }
+    r.w = (g_cw - 120 - 20) / 2; r.h = 46; r.y = SETUP_BTN_Y;
+    r.x = 60 + (i - 1) * (r.w + 20);
+    return r;
+#endif
     r.w = (g_cw - 120 - 2 * 20) / 3;
     r.h = 46;
-    r.y = 342;
+    r.y = SETUP_BTN_Y;
     r.x = 60 + (i - 1) * (r.w + 20);
     return r;
 }
@@ -1842,7 +1927,7 @@ static void draw_setup(void)
     ThemeRect p, r;
     int i;
 
-    p.x = 60; p.y = 104; p.w = g_cw - 120; p.h = 140;
+    p.x = 60; p.y = SETUP_DESC_Y; p.w = g_cw - 120; p.h = SETUP_DESC_H;
     theme_panel(p, 0.2);
     r.x = p.x + 24; r.y = p.y + 18; r.w = p.w - 48; r.h = 26;
     theme_text(r, g_rel_moved ? "The game's files have moved"
@@ -1885,7 +1970,7 @@ static void draw_setup(void)
                    (i == 3 && !g_source[0]) ? THEME_TEXT_DIM : THEME_TEXT, THEME_CENTRE);
     }
 
-    r.x = 60; r.y = 416; r.w = g_cw - 120; r.h = 290;
+    r.x = 60; r.y = SETUP_LOW_Y; r.w = g_cw - 120; r.h = SETUP_LOW_H;
     if (g_rel_error[0]) {
         theme_panel(r, 0.15);
         r.x += 24; r.y += 16; r.w -= 48; r.h = 24;
@@ -1927,7 +2012,7 @@ static void draw_building(void)
     ThemeRect p, r, b;
     char pct[16];
 
-    p.x = 60; p.y = 130; p.w = g_cw - 120; p.h = 300;
+    p.x = 60; p.y = SETUP_PANEL_Y; p.w = g_cw - 120; p.h = 300;
     theme_panel(p, 0.3);
     r.x = p.x + 30; r.y = p.y + 26; r.w = p.w - 60; r.h = 28;
     theme_text(r, g_rel_relinking ? "Finding the game's files" : "Building the game",
@@ -1973,7 +2058,7 @@ static void draw_done(void)
                  "Next time, the launcher opens straight to the settings and Play.",
                  g_title_name, secs);
 
-    p.x = 60; p.y = 130; p.w = g_cw - 120; p.h = 300;
+    p.x = 60; p.y = SETUP_PANEL_Y; p.w = g_cw - 120; p.h = 300;
     theme_panel(p, 0.3);
     r.x = p.x + 30; r.y = p.y + 26; r.w = p.w - 60; r.h = 28;
     theme_text(r, "The game is ready", 16, 700, THEME_GREEN, THEME_LEFT);
@@ -2054,6 +2139,13 @@ static void setup_click(int mx, int my)
         }
         return;
     }
+#ifdef LAUNCHER_SHOWCASE
+    if (mx >= g_cw - 60 - 200 - 20 - 150 && mx < g_cw - 60 - 200 - 20 &&
+        my >= g_ch - 68 && my < g_ch - 22) {      /* Quit, beside Build */
+        lhost_close();
+        return;
+    }
+#endif
     for (i = 0; i <= 3; i++)
         if (in_rect(setup_rect(i), mx, my)) {
             g_setup_sel = i;
@@ -2105,60 +2197,12 @@ void launcher_dropped(const char *path)
     launcher_picked(path);
 }
 
-static void draw(void)
+/* The rows of the tab that is open: the Video and System Link settings, the
+ * Input bindings, or About. The plain launcher draws them under its tabs;
+ * the showcase inside a panel. */
+static void draw_tab_body(void)
 {
     ThemeRect r;
-    int i;
-
-    {
-        /* The title's artwork behind it all, once it is there (launcher_art.c). */
-        int w = 0, h = 0;
-        const uint32_t *bd = launcher_art_backdrop(&w, &h);
-
-        theme_backdrop(bd, w, h);
-    }
-    theme_background(g_pulse);
-
-    /* Title: the game's clear logo when there is one, else its own name,
-     * from its certificate. */
-    r.x = 60; r.y = 30; r.w = g_cw - 120; r.h = 46;
-    {
-        int w = 0, h = 0;
-        const uint32_t *logo = launcher_art_logo(&w, &h);
-
-        if (logo) {
-            ThemeRect lr = r;
-
-            lr.y = 14; lr.h = 74; lr.w = 340;
-            theme_picture(lr, logo, w, h, THEME_LEFT);
-        } else {
-            theme_text(r, g_title_name, 26, 700, THEME_TEXT, THEME_LEFT);
-        }
-    }
-
-    /* A release without its game yet: the disc, or the build. */
-    if (g_release && g_rel != REL_READY) {
-        if (g_rel == REL_BUILDING)
-            draw_building();
-        else if (g_rel == REL_DONE)
-            draw_done();
-        else
-            draw_setup();
-        return;
-    }
-
-    for (i = 0; i < TAB_COUNT; i++) {
-        ThemeRect t = tab_rect(i);
-
-        theme_text(t, k_tab_names[i], 12, 700,
-                   i == g_tab ? THEME_GREEN : THEME_TEXT_DIM, THEME_CENTRE);
-    }
-    {
-        ThemeRect a = tab_rect(g_tab_from), b = tab_rect(g_tab);
-
-        a.y += 34; b.y += 34;
-        theme_tab_underline(a, b, g_tab_t);
-    }
 
     if (g_tab == TAB_VIDEO) {
         draw_rows(g_video_rows, g_video_count, 0);
@@ -2168,6 +2212,12 @@ static void draw(void)
         BindPort *bp = &g_bind.port[g_bind_port];
         char line[160];
         int i;
+
+#ifdef LAUNCHER_SHOWCASE
+        sc_draw_input();
+        (void)bp; (void)line; (void)i; (void)r;
+        return;
+#endif
 
         /* Column headings, so the two sides are not a guess. */
         {
@@ -2191,7 +2241,7 @@ static void draw(void)
             if (k >= BIND_TOTAL_ROWS)
                 break;
             rr = row_rect(i);
-            rr.h = 46;
+            rr.h = g_row_pitch - 4 < 46 ? g_row_pitch - 4 : 46;
             lit = (i == g_sel) ? 1.0 : 0.0;
             theme_panel(rr, lit);
 
@@ -2284,17 +2334,17 @@ static void draw(void)
         {
             ThemeRect sb;
 
-            sb.x = g_cw - 48;
+            sb.x = g_row_x + g_row_w + 12;
             sb.w = 4;
-            sb.h = (BIND_ROWS_VISIBLE * 62) * BIND_ROWS_VISIBLE / BIND_TOTAL_ROWS;
+            sb.h = (BIND_ROWS_VISIBLE * g_row_pitch) * BIND_ROWS_VISIBLE / BIND_TOTAL_ROWS;
             sb.y = row_rect(0).y +
-                   (BIND_ROWS_VISIBLE * 62 - sb.h) * g_bind_top /
+                   (BIND_ROWS_VISIBLE * g_row_pitch - sb.h) * g_bind_top /
                    (BIND_TOTAL_ROWS - BIND_ROWS_VISIBLE);
             theme_panel(sb, 0.5);
         }
 
-        r.x = 62; r.y = row_rect(0).y + BIND_ROWS_VISIBLE * 62 + 2;
-        r.w = g_cw - 124; r.h = 40;
+        r.x = g_row_x + 2; r.y = row_rect(0).y + BIND_ROWS_VISIBLE * g_row_pitch + 2;
+        r.w = g_row_w - 4; r.h = 40;
         {
             int k = g_bind_top + g_sel;
 
@@ -2364,6 +2414,73 @@ static void draw(void)
             "chosen here are written to a file the game reads when it starts.",
             11, THEME_TEXT_DIM);
     }
+    (void)r;
+}
+
+#ifdef LAUNCHER_SHOWCASE
+#include "launcher_showcase.inc"
+#endif
+
+static void draw(void)
+{
+    ThemeRect r;
+    int i;
+
+#ifdef LAUNCHER_SHOWCASE
+    if (sc_draw())
+        return;
+#endif
+    {
+        /* The title's artwork behind it all, once it is there (launcher_art.c). */
+        int w = 0, h = 0;
+        const uint32_t *bd = launcher_art_backdrop(&w, &h);
+
+        theme_backdrop(bd, w, h);
+    }
+    theme_background(g_pulse);
+
+    /* Title: the game's clear logo when there is one, else its own name,
+     * from its certificate. */
+    r.x = 60; r.y = 30; r.w = g_cw - 120; r.h = 46;
+    {
+        int w = 0, h = 0;
+        const uint32_t *logo = launcher_art_logo(&w, &h);
+
+        if (logo) {
+            ThemeRect lr = r;
+
+            lr.y = 14; lr.h = 74; lr.w = 340;
+            theme_picture(lr, logo, w, h, THEME_LEFT);
+        } else {
+            theme_text(r, g_title_name, 26, 700, THEME_TEXT, THEME_LEFT);
+        }
+    }
+
+    /* A release without its game yet: the disc, or the build. */
+    if (g_release && g_rel != REL_READY) {
+        if (g_rel == REL_BUILDING)
+            draw_building();
+        else if (g_rel == REL_DONE)
+            draw_done();
+        else
+            draw_setup();
+        return;
+    }
+
+    for (i = 0; i < TAB_COUNT; i++) {
+        ThemeRect t = tab_rect(i);
+
+        theme_text(t, k_tab_names[i], 12, 700,
+                   i == g_tab ? THEME_GREEN : THEME_TEXT_DIM, THEME_CENTRE);
+    }
+    {
+        ThemeRect a = tab_rect(g_tab_from), b = tab_rect(g_tab);
+
+        a.y += 34; b.y += 34;
+        theme_tab_underline(a, b, g_tab_t);
+    }
+
+    draw_tab_body();
 
     /* The footer says how to drive it, and changes with what is plugged in. */
     r.x = 60; r.y = g_ch - 44; r.w = g_cw - 260; r.h = 24;
@@ -2411,7 +2528,7 @@ static int hit_bind_row(int mx, int my)
     for (j = 0; j < BIND_ROWS_VISIBLE && g_bind_top + j < BIND_TOTAL_ROWS; j++) {
         ThemeRect r = row_rect(j);
 
-        r.h = 46;
+        r.h = g_row_pitch - 4 < 46 ? g_row_pitch - 4 : 46;
         if (mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h)
             return j;
     }
@@ -2420,8 +2537,13 @@ static int hit_bind_row(int mx, int my)
 
 static int hit_play(int mx, int my)
 {
+#ifdef LAUNCHER_SHOWCASE
+    return mx >= g_cw - 60 - 200 && mx < g_cw - 60 &&
+           my >= g_ch - 68 && my < g_ch - 22;
+#else
     return mx >= g_cw - 60 - 150 && mx < g_cw - 60 &&
            my >= g_ch - 74 && my < g_ch - 32;
+#endif
 }
 
 /* ---------------------------------------------------- the front end's calls */
@@ -2535,19 +2657,34 @@ void launcher_click(int mx, int my)
         setup_click(mx, my);
         return;
     }
+#ifdef LAUNCHER_SHOWCASE
+    {
+        /* A second click on the same thing within 450 ms is a double one:
+         * on a renderer's card, play with it. */
+        static uint64_t last_at;
+        static int last_x = -100, last_y = -100;
+        uint64_t now = lhost_ticks();
+        int dbl = now - last_at < 450 && abs(mx - last_x) < 6 && abs(my - last_y) < 6;
+
+        last_at = now; last_x = mx; last_y = my;
+        if (sc_click(mx, my, dbl))
+            return;
+    }
+#else
     for (i = 0; i < TAB_COUNT; i++) {
         ThemeRect t = tab_rect(i);
 
         if (mx >= t.x && mx < t.x + t.w && my >= t.y && my < t.y + t.h)
             set_tab((Tab)i);
     }
+#endif
     if (g_tab == TAB_INPUT) {
         int j;
 
         for (j = 0; j < BIND_ROWS_VISIBLE; j++) {
             ThemeRect rr = row_rect(j);
 
-            rr.h = 46;
+            rr.h = g_row_pitch - 4 < 46 ? g_row_pitch - 4 : 46;
             if (my >= rr.y && my < rr.y + rr.h && mx >= rr.x &&
                 mx < rr.x + rr.w && g_bind_top + j < BIND_TOTAL_ROWS) {
                 int k = g_bind_top + j;
@@ -2562,7 +2699,11 @@ void launcher_click(int mx, int my)
 
                     nav(dir ? dir : 1, 0, k == BIND_ROW_RESET, 0, 0);
                 } else {
+#ifdef LAUNCHER_SHOWCASE
+                    g_bind_col = (mx >= sc_bind_col_x(rr, 1)) ? 1 : 0;
+#else
                     g_bind_col = (mx >= rr.x + 510) ? 1 : 0;
+#endif
                     g_capturing = 1;
                     g_capture_armed = 0;
                 }
@@ -2598,7 +2739,14 @@ void launcher_click(int mx, int my)
 
 void launcher_hover(int mx, int my)
 {
-    int i = hit_row(mx, my);
+    int i;
+
+#ifdef LAUNCHER_SHOWCASE
+    sc_hover_at(mx, my);
+    if (g_sc_open < 0)
+        return;
+#endif
+    i = hit_row(mx, my);
 
     /* The highlight follows the mouse on both lists -- but not away from
      * a row waiting for the key to bind to it. */
@@ -2618,6 +2766,10 @@ void launcher_wheel(int rows, int mx, int my)
 
     if (!rows || g_tab != TAB_INPUT || g_capturing)
         return;
+#ifdef LAUNCHER_SHOWCASE
+    if (g_sc_open < 0)
+        return;
+#endif
     if (last < 0)
         last = 0;
     k = g_bind_top + g_sel;

@@ -70,6 +70,14 @@ typedef enum { THEME_LEFT, THEME_CENTRE, THEME_RIGHT } ThemeAlign;
 #ifndef THEME_TEXT_DIM_RGB
 #define THEME_TEXT_DIM_RGB    0x8A977C
 #endif
+#ifdef THEME_INK_RGB
+#define THEME_INK_RGB_OR_BG THEME_INK_RGB
+#else
+#define THEME_INK_RGB_OR_BG THEME_BG_RGB
+#endif
+#ifndef THEME_INK_SHADOW_RGB
+#define THEME_INK_SHADOW_RGB  0x000000   /* under large text */
+#endif
 #define THEME_RGB_(v) RGB(((v) >> 16) & 0xFF, ((v) >> 8) & 0xFF, (v) & 0xFF)
 
 /* The accent (the Xbox green unless a title says otherwise), and the rest. */
@@ -142,5 +150,41 @@ void theme_arrows(ThemeRect r, int can_left, int can_right, double lit);
  * stage that sits on one percentage still shows the build is alive; a
  * negative phase draws it still. */
 void theme_bar(ThemeRect r, double fraction, double phase);
+
+/* ---- the showcase layout's pieces (recomp_add_launcher SHOWCASE) ----
+ * Colours here are 0xRRGGBB and alphas 0..1, so a title's palette (the
+ * THEME_*_RGB macros) goes straight in. Rectangles are in window units. */
+void theme_fill(ThemeRect r, uint32_t rgb, double alpha);
+/* A vertical gradient through n stops, `at` from 0 (top) to 1 (bottom). */
+void theme_vgrad(ThemeRect r, int n, const double *at, const uint32_t *rgb, const double *alpha);
+void theme_outline(ThemeRect r, uint32_t rgb, double alpha, int width);
+/* Corner marks: an L of `len` units at each corner of r. */
+void theme_brackets(ThemeRect r, int len, int width, uint32_t rgb, double alpha);
+/* Soft light around a rectangle, falling off over about `radius` units. */
+void theme_glow_rect(ThemeRect r, uint32_t rgb, double alpha, double radius);
+/* The edges darkened, the centre at (cx, cy) in 0..1 of the window. */
+void theme_vignette(double strength, double cx, double cy);
+/* A picture filling r, cropped to its shape: `keep` of its height from the
+ * top is used, (fx, fy) in 0..1 says where the crop sits. `slot` (0..7)
+ * keeps the scaled copy between frames; -1 scales it every time. */
+void theme_cover(ThemeRect r, const uint32_t *argb, int w, int h, double keep,
+                 double fx, double fy, double alpha, int slot);
+/* theme_picture with an alpha and a kept copy (slot as above); `drawn`, if
+ * not NULL, gets where it landed. */
+void theme_picture_ex(ThemeRect r, const uint32_t *argb, int w, int h, ThemeAlign align,
+                      double alpha, int slot, ThemeRect *drawn);
+/* An antialiased line `width` units wide, and a chevron (an open arrowhead,
+ * `w` by `h`, pointing right or left) centred on (cx, cy). */
+void theme_line(double x0, double y0, double x1, double y1, double width, uint32_t rgb, double alpha);
+void theme_chevron(double cx, double cy, int right, double w, double h, uint32_t rgb, double alpha);
+/* A glow in the shape of a picture: its alpha softened by `blur` units and
+ * tinted, under where theme_picture_ex(r, ...) puts it. */
+void theme_picture_glow(ThemeRect r, const uint32_t *argb, int w, int h, ThemeAlign align,
+                        uint32_t rgb, double alpha, int blur, int slot);
+/* Text in one of three faces, with letter spacing (window units) and a dark
+ * shadow under it. */
+enum { THEME_FACE_BODY, THEME_FACE_DISPLAY, THEME_FACE_HEAVY };
+void theme_text_ex(ThemeRect r, const char *text, int size, int weight, COLORREF colour,
+                   ThemeAlign align, int tracking, int face, int shadow);
 
 #endif /* XBOXRECOMP_LAUNCHER_THEME_H */
