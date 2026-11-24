@@ -89,9 +89,16 @@ enough to keep in a repository as a regression test (TS2:
 (`syslink_host`); the launcher's System Link tab writes them for a title
 built with `recomp_add_launcher(... COOP)`. The host plays controller 1 and
 the joiner controller 2, each with its own machine's controller 1. A
-controller lands `RECOMP_LOCKSTEP_DELAY` frames after it is read (default
-4), on every machine; every message repeats what the other side has not
-acknowledged, so a lost packet costs a resend. A frame starts only when both
+controller lands some frames after it is read, on every machine: the joiner
+pings the host as it joins and starts the session with the delay that covers
+half the round trip plus two frames (3 on a LAN, 9 at 100 ms each way), and
+the host's first frame waits for that; `coop_delay` / `RECOMP_LOCKSTEP_DELAY`
+fixes it instead. Every message repeats what the other side has not
+acknowledged, so a lost packet costs a resend.
+`RECOMP_LOCKSTEP_SIM_DELAY_MS` and `_LOSS` try a slow, lossy line on one
+machine. The window's title says what the session is doing
+(`recomp_lockstep_set_status_sink`): a game waiting on the network draws
+nothing. A frame starts only when both
 controllers for it are in. The host asks the router for its port (UPnP)
 unless `syslink_upnp = 0`; a joiner needs nothing opened.
 
@@ -115,5 +122,6 @@ both players moving and firing, 8,000 frames:
 
 - A desync is reported, not repaired: there is no state transfer.
 - More than two players.
-- Each machine still shows the whole split screen.
-- The input delay is fixed, not measured from the round trip.
+- Each machine shows its own player's part of a split-screen frame only by
+  cropping what reaches the window (`xbox_D3D8SetPresentCrop`, which the title
+  sets): the view keeps the shape the game drew it at.
