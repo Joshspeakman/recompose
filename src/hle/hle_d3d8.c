@@ -72,6 +72,7 @@
 #include "recomp_lockstep.h"
 
 static void held_redraw(void);   /* with the overlay's switches, below */
+static int draw_kept(void);      /* xbox_D3D8SetDrawFilter, beside the draws */
 #include "hle.h"
 #include "recomp_config.h"
 
@@ -2743,7 +2744,7 @@ HLE_EXPORT(D3DDevice_Clear)
         HLE_RETURN(0x80004005u);
     HLE_CALL_ORIGINAL(D3DDevice_Clear);
     hle_d3d8_push_skip();   /* its own clear methods: cleared here, not by the walk */
-    if (g_shadow) {
+    if (g_shadow && draw_kept()) {
         float z;
 
         memcpy(&z, &z_bits, sizeof z);
@@ -2809,7 +2810,7 @@ void hle_d3d8_pb_clear(uint32_t surface, uint32_t color, uint32_t zstencil,
     uint32_t stencil = 0;
     int whole;
 
-    if (!g_shadow || !(surface & 0xF3u))
+    if (!g_shadow || !(surface & 0xF3u) || !draw_kept())
         return;
     if (g_z_scale == 65535.0f) {
         z = (float)(zstencil & 0xFFFFu) / 65535.0f;
@@ -6401,6 +6402,25 @@ static uint8_t *shadow_expand_vertices(const void *verts, UINT vertices, UINT *s
     return out;
 }
 
+/* What reaches the host's GPU, as the title filters it
+ * (xbox_D3D8SetDrawFilter): online co-op in a split-screen game runs every
+ * player's pass on every machine, as the game itself needs, and each machine
+ * draws only its own player's. The title's own D3D code still runs for every
+ * draw; only the host's drawing of it is left out, so nothing the game sees
+ * changes. Every draw and clear passes here: the two below, D3DDevice_Clear
+ * and the push buffer's clears. */
+static int (*g_draw_filter)(void);
+
+void xbox_D3D8SetDrawFilter(int (*keep)(void))
+{
+    g_draw_filter = keep;
+}
+
+static int draw_kept(void)
+{
+    return !g_draw_filter || g_draw_filter();
+}
+
 /* The host half of every non-indexed draw: the UP draw below and the vertex
  * buffer draws in hle_d3d8_vertex.c. `verts` is already a host pointer to the
  * first vertex; from_buffer only picks the counter the draw lands in. */
@@ -6413,7 +6433,7 @@ void hle_d3d8_shadow_draw(uint32_t xpt, uint32_t count, const void *verts,
     int failed;
     HRESULT hr;
 
-    if (!g_shadow || !verts || !stride || !count)
+    if (!g_shadow || !verts || !stride || !count || !draw_kept())
         return;
     hle_d3d8_push_constants_sync();    /* hle_d3d8_vertex.c */
     if (!hle_d3d8_pb_walking()) {
@@ -6475,7 +6495,7 @@ void hle_d3d8_shadow_draw_indexed(uint32_t xpt, uint32_t count, const uint16_t *
     int failed;
     HRESULT hr;
 
-    if (!g_shadow || !idx || !verts || !stride || !count)
+    if (!g_shadow || !idx || !verts || !stride || !count || !draw_kept())
         return;
     hle_d3d8_push_constants_sync();    /* hle_d3d8_vertex.c */
     if (!hle_d3d8_pb_walking()) {

@@ -1255,6 +1255,13 @@ void xbox_D3D8SetWideFramesAuto(BOOL on);
  * presents after. */
 void xbox_D3D8SetPresentCrop(float x, float y, float w, float h);
 
+/* Leave out of the host's drawing every draw and clear made while keep()
+ * answers 0 (NULL: draw everything). For online co-op in a split-screen game
+ * laid out as every player's own screen: each machine runs every player's
+ * pass, and draws only its own player's. The title's D3D code runs for every
+ * draw regardless, so the game sees nothing different. */
+void xbox_D3D8SetDrawFilter(int (*keep)(void));
+
 /* The window now fills its screen (borderless fullscreen), or no longer
  * does. While it does, and the vrr setting allows (RECOMP_VRR, on by
  * default), frames are presented for a variable-refresh display

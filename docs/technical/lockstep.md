@@ -36,6 +36,16 @@ or the title's settings file says `coop = host|join`.
   a joiner whose build or settings differ is refused, told which.
 - **The start.** `recomp_lockstep_start()` after the kernel and paths are up,
   before the entry point: a joiner meets its host there.
+- **Each player's own screen** (optional, as GoldenEye's online co-op does
+  it). Every machine runs every player's pass, so the layout must change the
+  same way on all of them: the title lays every player's view out as the
+  whole screen (TS2: its viewport-rectangle function, given the whole frame
+  when a player's view is laid out), and makes it a session setting. Then
+  `xbox_D3D8SetDrawFilter(keep)` leaves out of the host's drawing every draw
+  and clear made while `keep()` answers 0, that is during another player's
+  pass; the game's own D3D code still runs, so nothing it sees changes.
+  `xbox_D3D8SetPresentCrop` is the cheaper fallback: it shows one part of a
+  split-screen frame, at the shape the game drew it.
 
 ## What the toolkit pins down
 
@@ -122,6 +132,3 @@ both players moving and firing, 8,000 frames:
 
 - A desync is reported, not repaired: there is no state transfer.
 - More than two players.
-- Each machine shows its own player's part of a split-screen frame only by
-  cropping what reaches the window (`xbox_D3D8SetPresentCrop`, which the title
-  sets): the view keeps the shape the game drew it at.
