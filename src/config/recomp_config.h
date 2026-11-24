@@ -254,7 +254,17 @@ typedef struct RecompSettings {
     int  syslink_port;          /* the port a host listens on, and joins use */
     char syslink_code[64];      /* the session's join code; empty for none */
     int  syslink_upnp;          /* host: ask the router to forward the port */
+
+    /* Online co-op (src/kernel/recomp_lockstep_net.c): the whole game on
+     * every machine, the controllers between them. Joins at syslink_host,
+     * the address the System Link tab already asks for; the router is
+     * opened as syslink_upnp says. */
+    char coop[8];               /* "off", "host", "join" */
+    int  coop_port;             /* the UDP port a co-op host listens on */
 } RecompSettings;
+
+/* The port an online co-op host listens on when nobody chooses one. */
+#define RECOMP_COOP_DEFAULT_PORT 27620
 
 /* The port a System Link host listens on when nobody chooses one. The same
  * number as XBOX_NET_DEFAULT_PORT, which the runtime falls back to. */

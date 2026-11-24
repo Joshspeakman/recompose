@@ -27,6 +27,7 @@
 #include "recomp_lockstep.h"
 #include "xbox_memory_layout.h"   /* the guest lock, dropped while waiting on a turn */
 #include "recomp_lockstep_net.h"
+#include "recomp_config.h"
 
 extern ptrdiff_t g_xbox_mem_offset;
 
@@ -353,10 +354,29 @@ static int s_started;
 
 void recomp_lockstep_start(void)
 {
-    const char *net = getenv("RECOMP_LOCKSTEP_NET");
+    /* The launcher's Online Co-op tab writes coop = host|join to the
+     * title's settings file; the environment still wins. Read here, not at
+     * the first clock read, which can come before the title's settings
+     * file is known. */
+    const char *net = recomp_config_lookup("RECOMP_LOCKSTEP_NET", "coop");
 
-    if (!recomp_lockstep_active() || s_started)
+    if (s_started)
         return;
+    if (!recomp_lockstep_active()) {
+        if (!net || !*net || (strcmp(net, "host") != 0 && strcmp(net, "join") != 0))
+            return;
+        /* On from the settings file: the session starts here, before the
+         * game, so nothing the guest can see came before it. */
+        s_active = 1;
+        {
+            FILETIME ft;
+            GetSystemTimeAsFileTime(&ft);
+            s_epoch = (int64_t)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime);
+            s_epoch -= s_epoch % 10000000;
+        }
+        fprintf(stderr, "[LOCKSTEP] on (coop = %s in the settings file): one step per frame, "
+                        "controllers latched per frame\n", net);
+    }
     s_started = 1;
     if (net && *net && strcmp(net, "0") != 0 && strcmp(net, "off") != 0) {
         s_net = lsnet_init(&s_epoch);
@@ -364,6 +384,11 @@ void recomp_lockstep_start(void)
             fprintf(stderr, "[LOCKSTEP] no online session; this copy plays alone\n");
         fflush(stderr);
     }
+}
+
+int recomp_lockstep_local_guest_port(void)
+{
+    return s_net ? (int)lsnet_local_port() : -1;
 }
 
 const char *recomp_lockstep_hdd_dir(void)

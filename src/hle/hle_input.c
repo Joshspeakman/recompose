@@ -423,8 +423,16 @@ HLE_EXPORT(XInputSetState)
         unlock();
         /* And to the pad itself, which recomp_pad drives through SDL3 or
          * XInput -- so a DualSense rumbles as an Xbox pad would. */
-        if (result == ERR_SUCCESS && recomp_input_port_for_handle(handle, &port))
-            recomp_bindings_rumble(port, left, right);
+        if (result == ERR_SUCCESS && recomp_input_port_for_handle(handle, &port)) {
+            /* Online co-op: this machine's player is one controller of the
+             * game's, played with this machine's controller 1; the others'
+             * rumble is theirs. */
+            int own = recomp_lockstep_local_guest_port();
+            if (own < 0)
+                recomp_bindings_rumble(port, left, right);
+            else if (port == (uint32_t)own)
+                recomp_bindings_rumble(0u, left, right);
+        }
         HLE_MEM32(fb) = result;
     }
     HLE_RETURN(result);

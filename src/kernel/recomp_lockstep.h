@@ -66,6 +66,9 @@ int recomp_lockstep_active(void);
  * point; without that call it happens at the first frame. */
 void recomp_lockstep_start(void);
 void recomp_lockstep_frame(void);
+/* Online, the game's controller this machine plays (0 for the host, 1 for
+ * the joiner), with this machine's controller 1; -1 otherwise. */
+int recomp_lockstep_local_guest_port(void);
 uint32_t recomp_lockstep_tick(void);
 /* Ports connected now: none until the console's USB would have found them
  * (half a second of ticks), then the session's. */

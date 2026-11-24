@@ -26,7 +26,7 @@
 # title's CMakeLists need not ask which host it is on.
 
 function(recomp_add_launcher TARGET GAME_EXE)
-    cmake_parse_arguments(_launcher "NO_WIDESCREEN" "" "" ${ARGN})
+    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP" "" "" ${ARGN})
     set(_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
 
     if(WIN32)
@@ -142,6 +142,12 @@ function(recomp_add_launcher TARGET GAME_EXE)
     # fighters cannot reach.
     if(_launcher_NO_WIDESCREEN)
         target_compile_definitions(${TARGET} PRIVATE LAUNCHER_NO_WIDESCREEN=1)
+    endif()
+    # COOP: the title's build supports online co-op (it hooks its frame for
+    # src/kernel/recomp_lockstep.h), so the System Link tab offers hosting
+    # and joining one, which saves coop = host|join.
+    if(_launcher_COOP)
+        target_compile_definitions(${TARGET} PRIVATE LAUNCHER_COOP=1)
     endif()
     if(MSVC)
         target_compile_options(${TARGET} PRIVATE

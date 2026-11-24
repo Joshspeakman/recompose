@@ -115,11 +115,24 @@ static int  g_video_count;
 
 /* The rows depend on the mode: a host is not asked for an address, and a
  * joining copy is not asked about its router. */
+/* A title whose build supports online co-op (recomp_add_launcher ... COOP)
+ * gets two more: the whole game on both machines, only the controllers
+ * between them (src/kernel/recomp_lockstep_net.c). They share the address
+ * row, and the router row, with System Link; they save coop = host|join. */
+#ifdef LAUNCHER_COOP
+static const char *const k_link_modes[] = { "off", "host", "join", "coop-host", "coop-join", NULL };
+#else
 static const char *const k_link_modes[] = { "off", "host", "join", NULL };
+#endif
 #define LINK_OFF   0
 #define LINK_HOST  1
 #define LINK_JOIN  2
+#define LINK_COOP_HOST 3
+#define LINK_COOP_JOIN 4
 #define LINK_BY_HAND (-1)               /* "udp", set in the file; kept as it is */
+#define LINK_HOSTS(m) ((m) == LINK_HOST || (m) == LINK_COOP_HOST)
+#define LINK_JOINS(m) ((m) == LINK_JOIN || (m) == LINK_COOP_JOIN)
+#define LINK_COOP(m)  ((m) == LINK_COOP_HOST || (m) == LINK_COOP_JOIN)
 
 static int           g_link_mode;
 static char          g_port_text[8];
@@ -254,6 +267,8 @@ static const char *link_mode_label(int i)
     switch (i) {
     case LINK_HOST: return "Host a session";
     case LINK_JOIN: return "Join a session";
+    case LINK_COOP_HOST: return "Host online co-op";
+    case LINK_COOP_JOIN: return "Join online co-op";
     case LINK_BY_HAND: return "udp (set in the settings file)";
     default: return "Off";
     }
@@ -271,7 +286,7 @@ static void build_link_rows(void)
     r->kind  = ROW_CHOICE; r->choices = k_link_modes; r->ival = &g_link_mode;
     r++;
 
-    if (g_link_mode == LINK_JOIN) {
+    if (LINK_JOINS(g_link_mode)) {
         r->label = "Host's address";
         r->help  = "What the host gave you, like 81.2.3.4 or a name, with :port if"
                    " theirs is not the port below. Type it, or " LAUNCHER_PASTE_KEY " to paste.";
@@ -279,16 +294,17 @@ static void build_link_rows(void)
         r->text_len = sizeof g_settings.syslink_host; r->empty = "type the host's address";
         r++;
     }
-    if (g_link_mode == LINK_HOST || g_link_mode == LINK_JOIN) {
+    if (LINK_HOSTS(g_link_mode) || LINK_JOINS(g_link_mode)) {
         r->label = "Port";
-        r->help  = g_link_mode == LINK_HOST
+        r->help  = LINK_HOSTS(g_link_mode)
                    ? "The UDP port friends join on. Change it only if something else"
                      " on this PC or your router already uses it."
                    : "The host's port, when their address does not end in one.";
         r->kind  = ROW_TEXT; r->text = g_port_text; r->text_len = sizeof g_port_text;
-        r->digits = 1; r->empty = "27610";
+        r->digits = 1; r->empty = LINK_COOP(g_link_mode) ? "27620" : "27610";
         r++;
-
+    }
+    if (g_link_mode == LINK_HOST || g_link_mode == LINK_JOIN) {
         r->label = "Join code";
         r->help  = "Optional. Only consoles with the same code get in; empty lets in"
                    " anyone who has the address. Not case-sensitive.";
@@ -296,7 +312,7 @@ static void build_link_rows(void)
         r->text_len = sizeof g_settings.syslink_code; r->empty = "none";
         r++;
     }
-    if (g_link_mode == LINK_HOST) {
+    if (LINK_HOSTS(g_link_mode)) {
         r->label = "Open the router";
         r->help  = "Ask the router to forward the port to this PC (UPnP) while you"
                    " host, so friends on the internet can join. Friends on your own"
@@ -313,7 +329,8 @@ static int link_port(void)
 {
     int p = atoi(g_port_text);
 
-    return (p >= 1 && p <= 65535) ? p : RECOMP_SYSLINK_DEFAULT_PORT;
+    return (p >= 1 && p <= 65535) ? p
+         : LINK_COOP(g_link_mode) ? RECOMP_COOP_DEFAULT_PORT : RECOMP_SYSLINK_DEFAULT_PORT;
 }
 
 #ifndef LAUNCHER_NO_WIDESCREEN
@@ -1080,6 +1097,12 @@ static void settings_load(void)
     if (strcasecmp(g_settings.syslink, "udp") == 0)
         g_link_mode = LINK_BY_HAND;
     snprintf(g_port_text, sizeof g_port_text, "%d", g_settings.syslink_port);
+#ifdef LAUNCHER_COOP
+    if (strcasecmp(g_settings.coop, "host") == 0 || strcasecmp(g_settings.coop, "join") == 0) {
+        g_link_mode = strcasecmp(g_settings.coop, "host") == 0 ? LINK_COOP_HOST : LINK_COOP_JOIN;
+        snprintf(g_port_text, sizeof g_port_text, "%d", g_settings.coop_port);
+    }
+#endif
     build_link_rows();
 }
 
@@ -1123,10 +1146,20 @@ static int settings_save(void)
 #endif
     snprintf(g_settings.frame_cap, sizeof g_settings.frame_cap, "%s",
              k_frame_caps[g_frame_cap_index]);
-    if (g_link_mode != LINK_BY_HAND)
-        snprintf(g_settings.syslink, sizeof g_settings.syslink, "%s",
-                 k_link_modes[g_link_mode]);
-    g_settings.syslink_port = link_port();
+    if (LINK_COOP(g_link_mode)) {
+        /* Co-op and System Link are not both on: the co-op game is the
+         * split screen, on every machine. */
+        snprintf(g_settings.syslink, sizeof g_settings.syslink, "off");
+        snprintf(g_settings.coop, sizeof g_settings.coop, "%s",
+                 g_link_mode == LINK_COOP_HOST ? "host" : "join");
+        g_settings.coop_port = link_port();
+    } else {
+        snprintf(g_settings.coop, sizeof g_settings.coop, "off");
+        if (g_link_mode != LINK_BY_HAND)
+            snprintf(g_settings.syslink, sizeof g_settings.syslink, "%s",
+                     k_link_modes[g_link_mode]);
+        g_settings.syslink_port = link_port();
+    }
 
     if (!recomp_settings_path(g_title_id, path, sizeof path))
         return 0;
@@ -1277,7 +1310,7 @@ static void link_tab_tick(void)
     if (!g_lan_addr[0] && !net_local_address(g_lan_addr, sizeof g_lan_addr))
         snprintf(g_lan_addr, sizeof g_lan_addr, "?");
     /* Only this thread moves it off 0, so asking and starting are one. */
-    if (g_link_mode == LINK_HOST && g_settings.syslink_upnp &&
+    if (LINK_HOSTS(g_link_mode) && g_settings.syslink_upnp &&
         lhost_read(&g_probe_state) == 0) {
         lhost_publish(&g_probe_state, 1);
         if (!lhost_thread(probe_thread))
@@ -1587,7 +1620,7 @@ static void draw_link(void)
     theme_panel(p, 0.25);
     line = p; line.x += 24; line.w -= 48; line.y += 16; line.h = 22;
 
-    if (g_link_mode == LINK_HOST) {
+    if (LINK_HOSTS(g_link_mode)) {
         int asked = g_settings.syslink_upnp;
 
         theme_text(line, "TELL YOUR FRIENDS", 10, 700, THEME_GREEN, THEME_LEFT);
@@ -1616,12 +1649,27 @@ static void draw_link(void)
         line.h = 60;
         link_share_address(share, sizeof share);
         snprintf(text, sizeof text,
-                 "%s  " LAUNCHER_FIREWALL " may ask to let the game through its"
-                 " firewall the first time: allow it. Then host or join a game in"
-                 " the game's own System Link menu.",
+                 g_link_mode == LINK_COOP_HOST
+                 ? "%s  " LAUNCHER_FIREWALL " may ask to let the game through its"
+                   " firewall the first time: allow it. You are controller 1 and your"
+                   " friend controller 2, in one game on both screens: pick its"
+                   " two-player mode together, as on one console."
+                 : "%s  " LAUNCHER_FIREWALL " may ask to let the game through its"
+                   " firewall the first time: allow it. Then host or join a game in"
+                   " the game's own System Link menu.",
                  lhost_ticks() < g_copied_until ? "Copied."
                                                 : LAUNCHER_COPY_KEY " or a click here copies it.");
         theme_text_wrapped(line, text, 11, THEME_TEXT_DIM);
+    } else if (g_link_mode == LINK_COOP_JOIN) {
+        theme_text(line, "JOINING CO-OP", 10, 700, THEME_GREEN, THEME_LEFT);
+        line.y += 30; line.h = 120;
+        theme_text_wrapped(line,
+            "Ask the host for their address. Nothing needs opening on your router."
+            " Your game starts from the host's saves and you are controller 2 in"
+            " their game, with your own controller 1. Both copies must be the same"
+            " build with the same Widescreen setting; the log beside the game says"
+            " why if the host turns you away.",
+            12, THEME_TEXT_DIM);
     } else if (g_link_mode == LINK_JOIN) {
         theme_text(line, "JOINING", 10, 700, THEME_GREEN, THEME_LEFT);
         line.y += 30; line.h = 120;
@@ -2388,7 +2436,7 @@ void launcher_char(unsigned ch)
     if (g_tab == TAB_LINK && g_sel < g_link_count && !g_capturing) {
         Row *row = &g_link_rows[g_sel];
 
-        if (ch == 3 && g_link_mode == LINK_HOST) {
+        if (ch == 3 && LINK_HOSTS(g_link_mode)) {
             char share[96];
 
             link_share_address(share, sizeof share);
@@ -2458,7 +2506,7 @@ void launcher_click(int mx, int my)
         row_move(&rows[i], dir ? dir : 1);
         if (g_tab == TAB_LINK)
             link_rows_changed();
-    } else if (g_tab == TAB_LINK && g_link_mode == LINK_HOST &&
+    } else if (g_tab == TAB_LINK && LINK_HOSTS(g_link_mode) &&
                mx >= g_link_panel.x && mx < g_link_panel.x + g_link_panel.w &&
                my >= g_link_panel.y && my < g_link_panel.y + g_link_panel.h) {
         char share[96];

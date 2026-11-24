@@ -80,9 +80,11 @@ typedef int ls_socket;
 #include "recomp_lockstep.h"
 #include "recomp_lockstep_net.h"
 #include "recomp_config.h"
+#include "net_upnp.h"
 
 /* kernel_path.c / kernel_xbox.c: E:'s folder, the console's disk key. */
 int xbox_path_hdd_dir_utf8(char *out, size_t n);
+int xbox_path_save_dir_utf8(char *out, size_t n);
 extern unsigned char xbox_HDKey[16];
 
 #define LS_VERSION      2u
@@ -469,7 +471,9 @@ static int write_saves(void)
     const uint8_t *table, *data;
     uint32_t count, i;
 
-    if (!recomp_data_dir(base, sizeof base))
+    /* Beside this copy's own saves (RECOMP_SAVE_DIR when a test names one,
+     * else the data folder), never in place of them. */
+    if (!xbox_path_save_dir_utf8(base, sizeof base) && !recomp_data_dir(base, sizeof base))
         return 0;
     snprintf(g.session_dir, sizeof g.session_dir, "%s%ccoop-session%c%08x", base, PATH_SEP,
              PATH_SEP, (unsigned)recomp_config_title_id());
@@ -986,15 +990,21 @@ static void join(const char *peer, int port)
 
 int lsnet_init(int64_t *epoch)
 {
-    const char *mode = getenv("RECOMP_LOCKSTEP_NET");
-    const char *peer = getenv("RECOMP_LOCKSTEP_PEER");
-    const char *ports = getenv("RECOMP_LOCKSTEP_PORT");
-    const char *delay = getenv("RECOMP_LOCKSTEP_DELAY");
+    /* The environment, else the title's settings file (the launcher's
+     * Online Co-op tab): coop = host|join, coop_host, coop_port, coop_delay. */
+    const char *mode = recomp_config_lookup("RECOMP_LOCKSTEP_NET", "coop");
+    const char *peer = recomp_config_lookup("RECOMP_LOCKSTEP_PEER", "coop_host");
+    /* The launcher asks for one address, the System Link tab's. */
+    const char *peer_link = recomp_config_lookup("RECOMP_SYSLINK_HOST", "syslink_host");
+    const char *ports = recomp_config_lookup("RECOMP_LOCKSTEP_PORT", "coop_port");
+    const char *delay = recomp_config_lookup("RECOMP_LOCKSTEP_DELAY", "coop_delay");
     int port = ports && *ports ? atoi(ports) : DEFAULT_PORT;
     struct sockaddr_in bind_addr;
 
     if (!mode || (strcmp(mode, "host") != 0 && strcmp(mode, "join") != 0))
         return 0;
+    if (!peer || !*peer)
+        peer = peer_link;
 #ifdef _WIN32
     {
         WSADATA wsa;
@@ -1073,6 +1083,11 @@ int lsnet_init(int64_t *epoch)
     if (g.host) {
         say("hosting on UDP port %d as controller 1; input delay %u frames; build %s; "
             "settings %s", port, g.delay, g.build, g.settings);
+        /* Friends on the internet need the port open on this side's router:
+         * asked for as System Link's host asks (net_upnp.c), unless
+         * syslink_upnp = 0. A joiner needs nothing opened. */
+        if (recomp_config_bool("RECOMP_LOCKSTEP_UPNP", "syslink_upnp", 1))
+            net_upnp_open_async(port);
         return 1;
     }
     join(peer, port);

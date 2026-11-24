@@ -314,6 +314,8 @@ void recomp_settings_defaults(RecompSettings *s)
     snprintf(s->syslink, sizeof s->syslink, "off");
     s->syslink_port      = RECOMP_SYSLINK_DEFAULT_PORT;
     s->syslink_upnp      = 1;
+    snprintf(s->coop, sizeof s->coop, "off");
+    s->coop_port         = RECOMP_COOP_DEFAULT_PORT;
 }
 
 static int clamp_int(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -403,6 +405,10 @@ int recomp_settings_read(const char *path, RecompSettings *s)
             snprintf(s->syslink_code, sizeof s->syslink_code, "%s", v);
         if ((v = from_table("syslink_upnp")) != NULL)
             s->syslink_upnp = !off_word(v);
+        if ((v = from_table("coop")) != NULL)
+            snprintf(s->coop, sizeof s->coop, "%s", v);
+        if ((v = from_table("coop_port")) != NULL)
+            s->coop_port = clamp_int(atoi(v), 1, 65535);
     }
 
     memcpy(g_entries, saved, sizeof saved);
@@ -610,6 +616,21 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "# on the internet can join. 0 leaves the router alone. [RECOMP_SYSLINK_UPNP]\n"
         "syslink_upnp = %d\n",
         s->syslink_upnp ? 1 : 0);
+    fprintf(f,
+        "\n"
+        "# Online co-op: two machines play one game -- a story mode's split\n"
+        "# screen, say -- each running all of it and sending only its\n"
+        "# controller. off; host, this machine plays controller 1 and the other\n"
+        "# joins; or join, at syslink_host above, as controller 2. Only games\n"
+        "# whose build supports it use it.                  [RECOMP_LOCKSTEP_NET]\n"
+        "coop = %s\n"
+        "#\n"
+        "# The UDP port a co-op host listens on, and joins use when the address\n"
+        "# names none. The router is opened as syslink_upnp says.\n"
+        "#                                               [RECOMP_LOCKSTEP_PORT]\n"
+        "coop_port = %d\n",
+        s->coop[0] ? s->coop : "off",
+        s->coop_port > 0 ? s->coop_port : RECOMP_COOP_DEFAULT_PORT);
 
     fclose(f);
     return 1;
