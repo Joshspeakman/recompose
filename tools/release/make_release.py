@@ -19,7 +19,8 @@ it with what the release brings (docs/technical/self-build-release.md):
     recipe/                the title's project: its CMakeLists, src/ (main.c,
                            recomp_manual.c, any other sources) and config/
     dxc/                   the shader compiler the renderer loads
-    icon.png               the toolkit's icon, for a desktop entry or Steam
+    icon.png               the title's icon (the recipe's icon_dir) or the
+                           toolkit's, for a desktop entry or Steam
     LICENSE NOTICE.txt README.txt
 
 On a Mac the release is an application, <Title>.app: the launcher is
@@ -278,11 +279,11 @@ def macos_runtime(rel, sdk, sdl, cache):
         shutil.copy2(f, rel / folder / f.name)
 
 
-def macos_icon(dst):
-    """The toolkit's icon as an .icns, from its PNGs."""
+def macos_icon(dst, png):
+    """An icon as an .icns, from a folder of <size>.png (assets/icon/png's
+    layout: the toolkit's, or a title's icon_dir)."""
     iconset = dst.parent / "icon.iconset"
     iconset.mkdir()
-    png = ROOT / "assets/icon/png"
     for size in (16, 32, 128, 256, 512):
         shutil.copy2(png / f"{size}.png", iconset / f"icon_{size}x{size}.png")
         if (png / f"{size * 2}.png").is_file():
@@ -519,11 +520,16 @@ def main():
         start=start, shortcut=shortcut, userdir=userdir,
         hashes="".join(f"  {i['sha1']}  {i.get('name', '')}\n" for i in images))
     (rel / "README.txt").write_text(readme)
-    # The toolkit's icon, for a desktop entry or a Steam shortcut; on a Mac,
-    # the application's.
-    shutil.copy2(ROOT / "assets/icon/png/256.png", rel / "icon.png")
+    # The icon, for a desktop entry or a Steam shortcut; on a Mac, the
+    # application's. The title's own when its recipe names a folder of sizes
+    # (icon_dir, relative to its project, laid out as assets/icon/png),
+    # else the toolkit's.
+    icon_png = ROOT / "assets/icon/png"
+    if recipe.get("icon_dir") and (project / recipe["icon_dir"] / "256.png").is_file():
+        icon_png = project / recipe["icon_dir"]
+    shutil.copy2(icon_png / "256.png", rel / "icon.png")
     if MACOS:
-        macos_icon(rel / "icon.icns")
+        macos_icon(rel / "icon.icns", icon_png)
         with open(app / "Contents/Info.plist", "wb") as f:
             plistlib.dump({
                 "CFBundleDevelopmentRegion": "en",
