@@ -1866,9 +1866,11 @@ static unsigned long g_draws_off_thread;
  * after the title's own body ran: the return addresses are still there. */
 static void trace_draw_callers(void)
 {
+    /* <handle>[@<from swap>][:<chains, up to 64>] */
     static long want = -2;
-    static int shown;
-    static uint32_t seen[16];
+    static unsigned long from_swap;
+    static int shown, most = 16;
+    static uint32_t seen[64];
     extern uint32_t g_xbox_code_lo, g_xbox_code_hi;
     uint32_t chain[6], sum = 0, v;
     int i, n = 0;
@@ -1876,8 +1878,44 @@ static void trace_draw_callers(void)
     if (want == -2) {
         const char *e = getenv("RECOMP_HLE_D3D8_TRACE_DRAW");
         want = e && *e ? (long)strtoul(e, NULL, 0) : -1;
+        if (e && strchr(e, '@'))
+            from_swap = strtoul(strchr(e, '@') + 1, NULL, 0);
+        if (e && strchr(e, ':')) {
+            most = atoi(strchr(e, ':') + 1);
+            if (most < 1 || most > 64)
+                most = 64;
+        }
     }
-    if (want < 0 || (uint32_t)want != g_shadow_vs || shown >= 16)
+    /* RECOMP_HLE_D3D8_TRACE_DRAW_FRAME=<swap>: every draw of that one frame,
+     * numbered from the frame's first as d3d8_replay --list-draws numbers a
+     * capture of it, with its chain of guest return addresses. */
+    {
+        static long frame = -2;
+        static unsigned long cur_swap = (unsigned long)-1;
+        static int index;
+
+        if (frame == -2) {
+            const char *f = getenv("RECOMP_HLE_D3D8_TRACE_DRAW_FRAME");
+            frame = f && *f ? (long)strtoul(f, NULL, 0) : -1;
+        }
+        if (frame >= 0 && g_shadow_swaps == (unsigned long)frame) {
+            if (cur_swap != g_shadow_swaps) {
+                cur_swap = g_shadow_swaps;
+                index = 0;
+            }
+            fprintf(stderr, "[DRAW-FRAME] swap %lu draw %d:", g_shadow_swaps, index++);
+            for (i = -8; i < 160 && n < 8; i++) {
+                v = HLE_MEM32(g_esp + 4u * (uint32_t)i);
+                if (v > g_xbox_code_lo && v < g_xbox_code_hi) {
+                    fprintf(stderr, " %s0x%08X", n ? "<- " : "", v);
+                    n++;
+                }
+            }
+            fprintf(stderr, "\n");
+            n = 0;
+        }
+    }
+    if (want < 0 || (uint32_t)want != g_shadow_vs || shown >= most || g_shadow_swaps < from_swap)
         return;
     for (i = -8; i < 120 && n < 6; i++) {
         v = HLE_MEM32(g_esp + 4u * (uint32_t)i);
