@@ -6446,6 +6446,41 @@ static void packed_current(const struct shadow_program *p, int k, uint8_t *dst)
  * (Cxbx-Reloaded's vertex buffer conversion). Returns NULL with *failed clear
  * when the current program packs nothing, and NULL with *failed set when the
  * copy cannot be made; otherwise the copy, and *stride grows to match. */
+/* Where a draw's vertices are expanded: one buffer per thread, grown as needed and kept,
+ * cleared for each draw as calloc would. It was a calloc per draw, freed after it: for a
+ * large vertex range that is a large allocation, which macOS maps from the kernel and gives
+ * back every time (madvise, page faults). With its twin for pushed vertices
+ * (hle_d3d8_vertex.c, gather_buffer) that was most of each frame in Future Perfect's
+ * cutscenes on a Mac: 3 to 9 fps, now 60. The draw copies the vertices before it returns
+ * (DrawPrimitiveUP), so the next draw may reuse the buffer. */
+#if defined(_MSC_VER)
+#define EXPAND_TLS __declspec(thread)
+#else
+#define EXPAND_TLS _Thread_local
+#endif
+static uint8_t *expand_buffer(size_t count, size_t size)
+{
+    static EXPAND_TLS uint8_t *buf;
+    static EXPAND_TLS size_t cap;
+    size_t need = count * size;
+
+    if (size && need / size != count)
+        return NULL;
+    if (need > cap) {
+        size_t n = cap ? cap : (size_t)64 * 1024;
+        uint8_t *grown;
+        while (n < need)
+            n *= 2;
+        grown = (uint8_t *)realloc(buf, n);
+        if (!grown)
+            return NULL;
+        buf = grown;
+        cap = n;
+    }
+    memset(buf, 0, need ? need : 1);
+    return buf;
+}
+
 static uint8_t *shadow_expand_vertices(const void *verts, UINT vertices, UINT *stride,
                                        uint32_t first, int *failed)
 {
@@ -6478,7 +6513,7 @@ static uint8_t *shadow_expand_vertices(const void *verts, UINT vertices, UINT *s
             }
         }
         out_stride = g_ff.out_stride;
-        out = calloc((size_t)vertices, out_stride);
+        out = expand_buffer((size_t)vertices, out_stride);
         if (!out) {
             *failed = 1;
             return NULL;
@@ -6524,7 +6559,7 @@ static uint8_t *shadow_expand_vertices(const void *verts, UINT vertices, UINT *s
         UINT span = g_draw_overread;
 
         out_stride = (span + 3u) & ~3u;
-        out = calloc((size_t)vertices, out_stride);
+        out = expand_buffer((size_t)vertices, out_stride);
         if (!out) {
             *failed = 1;
             return NULL;
@@ -6567,7 +6602,7 @@ static uint8_t *shadow_expand_vertices(const void *verts, UINT vertices, UINT *s
         UINT span = g_draw_overread > in_stride ? g_draw_overread : in_stride;
         out_stride = shift + ((span + 3u) & ~3u);
     }
-    out = calloc((size_t)vertices, out_stride);
+    out = expand_buffer((size_t)vertices, out_stride);
     if (!out) {
         *failed = 1;
         return NULL;
@@ -6689,7 +6724,6 @@ void hle_d3d8_shadow_draw(uint32_t xpt, uint32_t count, const void *verts,
     if (xpt == XPT_LINELOOP) {           /* close the loop: repeat vertex 0 */
         loop = malloc((size_t)(count + 1) * host_stride);
         if (!loop) {
-            free(expanded);
             g_draws_failed++;
             return;
         }
@@ -6698,8 +6732,7 @@ void hle_d3d8_shadow_draw(uint32_t xpt, uint32_t count, const void *verts,
         verts = loop;
     }
     hr = host_DrawPrimitiveUP(g_shadow, pt, prims, verts, host_stride);
-    free(loop);
-    free(expanded);
+    free(loop);                              /* expanded is the thread's (expand_buffer) */
     if (FAILED(hr))
         g_draws_failed++;
     else if (from_buffer)
@@ -6812,8 +6845,7 @@ void hle_d3d8_shadow_draw_indexed(uint32_t xpt, uint32_t count, const uint16_t *
     hr = host_DrawIndexedPrimitiveUP(
         g_shadow, pt, 0, vertices, prims, list ? list : idx, D3DFMT_INDEX16,
         expanded ? expanded : verts, host_stride);
-    free(list);
-    free(expanded);
+    free(list);                              /* expanded is the thread's (expand_buffer) */
     if (FAILED(hr))
         g_draws_failed++;
     else if (from_buffer)

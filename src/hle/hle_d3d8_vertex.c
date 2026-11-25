@@ -215,6 +215,38 @@ static uint8_t *push_gather(uint32_t first, uint32_t vertices, uint32_t *stride)
     return push_gather_from(g_push_off, g_push_fmt, g_push_known, first, vertices, stride);
 }
 
+/* Where pushed vertices are gathered: one buffer per thread, grown as needed and kept,
+ * cleared for each draw as calloc would (hle_d3d8.c's expand_buffer says why: a calloc
+ * and free per draw is a trip to the kernel per draw on macOS). The draw that reads it
+ * finishes with it before the next gather. */
+#if defined(_MSC_VER)
+#define GATHER_TLS __declspec(thread)
+#else
+#define GATHER_TLS _Thread_local
+#endif
+static uint8_t *gather_buffer(size_t count, size_t size)
+{
+    static GATHER_TLS uint8_t *buf;
+    static GATHER_TLS size_t cap;
+    size_t need = count * size;
+
+    if (size && need / size != count)
+        return NULL;
+    if (need > cap) {
+        size_t n = cap ? cap : (size_t)64 * 1024;
+        uint8_t *grown;
+        while (n < need)
+            n *= 2;
+        grown = (uint8_t *)realloc(buf, n);
+        if (!grown)
+            return NULL;
+        buf = grown;
+        cap = n;
+    }
+    memset(buf, 0, need ? need : 1);
+    return buf;
+}
+
 static uint8_t *push_gather_from(const uint32_t off[16], const uint32_t fmt[16],
                                  uint32_t known, uint32_t first, uint32_t vertices,
                                  uint32_t *stride)
@@ -248,7 +280,7 @@ static uint8_t *push_gather_from(const uint32_t off[16], const uint32_t fmt[16],
         if (!inl_size || (uint64_t)(first + vertices) * inl_size > g_gather_inline_bytes)
             return NULL;
     }
-    out = calloc((size_t)vertices, extent);
+    out = gather_buffer((size_t)vertices, extent);
     if (!out)
         return NULL;
     for (i = 0; i < 16u; i++) {
@@ -759,7 +791,7 @@ static void w_group_end(void)
         } else {
             g_w_failed++;
         }
-        free(gathered);
+        /* gathered is the thread's (gather_buffer) */
         free(rebased);
     } else if (g_w_ninl) {
         uint32_t packed = 0;
@@ -788,7 +820,7 @@ static void w_group_end(void)
         g_gather_inline = NULL;
         if (gathered) {
             hle_d3d8_shadow_draw(g_w_prim, g_w_ninl * 4u / packed, gathered, stride, 0);
-            free(gathered);
+            /* gathered is the thread's (gather_buffer) */
             g_w_draws++;
         } else {
             g_w_failed++;
@@ -1384,7 +1416,7 @@ HLE_EXPORT(D3DDevice_DrawVertices)
         uint8_t *gathered = push_gather(start, count, &stride);
         if (gathered) {
             hle_d3d8_shadow_draw(xpt, count, gathered, stride, 0);
-            free(gathered);
+            /* gathered is the thread's (gather_buffer) */
             g_push_draws++;
         } else {
             g_push_failed++;
@@ -1447,7 +1479,7 @@ HLE_EXPORT(D3DDevice_DrawIndexedVertices)
             } else {
                 g_push_failed++;
             }
-            free(gathered);
+            /* gathered is the thread's (gather_buffer) */
             free(rebased);
             report();
             return;
