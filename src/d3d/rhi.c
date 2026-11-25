@@ -75,7 +75,12 @@ int rhi_select_backend(const char *name)
 #if defined(RHI_METAL_ONLY)
     /* A Mac draws with Metal whatever was asked: an old settings file's
      * `renderer = vulkan` included. */
-    if (name && *name && strcmp(name, "auto") != 0 && strcmp(name, "metal") != 0) {
+    /* Said only when someone asked: not for the title's own default
+     * (`renderer` in its defaults, which names the PC's renderer). */
+    const char *title_default = recomp_title_setting_default("renderer");
+    if (name && *name && strcmp(name, "auto") != 0 && strcmp(name, "metal") != 0 &&
+        !(title_default && strcmp(name, title_default) == 0 &&
+          !getenv("RECOMP_D3D8_BACKEND"))) {
         fprintf(stderr, "[RHI] renderer \"%s\" asked for; a Mac draws with metal\n", name);
         fflush(stderr);
     }
