@@ -782,6 +782,19 @@ static RhiView *m_view_create(RhiImage *img, uint32_t kind, const RhiViewDesc *d
                                                   MTLTextureSwizzleAlpha, MTLTextureSwizzleRed);
             if (tt == MTLTextureType2D && layers > 1)
                 layers = 1;
+            /* A cube view spans whole cubes: Metal aborts the process on one
+             * whose slice count is not a multiple of six (Future Perfect's
+             * Arcade, a cube map sampled ~6,600 frames into a match, asked
+             * for one slice). The six faces from a cube's first, when the
+             * texture has them there; otherwise the one face, as a 2D view. */
+            if (tt == MTLTextureTypeCube && layers % 6u) {
+                if (d.base_layer % 6u == 0 && d.base_layer + 6u <= layers_total) {
+                    layers = 6;
+                } else {
+                    tt = MTLTextureType2D;
+                    layers = 1;
+                }
+            }
             v->sampled = [img->tex newTextureViewWithPixelFormat:pf textureType:tt
                                     levels:NSMakeRange(d.base_mip, d.mip_count)
                                     slices:NSMakeRange(d.base_layer, layers)
