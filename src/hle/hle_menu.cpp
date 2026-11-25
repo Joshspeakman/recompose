@@ -630,9 +630,21 @@ void settings_save()
         fprintf(stderr, "[MENU] could not save %s\n", m.path);
 }
 
+/* The renderer a settings value means: "auto" (or none) is the title's own
+ * if it names one, else Direct3D 11 -- as rhi_select_backend reads it. */
+const char *renderer_meant(const char *r)
+{
+    if (!r[0] || !strcmp(r, "auto")) {
+        const char *t = recomp_title_setting_default("renderer");
+        return t && *t && strcmp(t, "auto") ? t : "d3d11";
+    }
+    return r;
+}
+
 bool restart_pending()
 {
-    return m.st.resolution_scale != m.started.resolution_scale ||
+    return strcmp(renderer_meant(m.st.renderer), renderer_meant(m.started.renderer)) != 0 ||
+           m.st.resolution_scale != m.started.resolution_scale ||
            m.st.widescreen != m.started.widescreen ||
            m.st.anisotropy != m.started.anisotropy ||
            m.st.frame_interp != m.started.frame_interp ||
@@ -706,6 +718,29 @@ namespace {
 
 void tab_display()
 {
+#if defined(_WIN32)
+    /* The renderer: Vulkan or Direct3D 11, from the next start. Which one
+     * is the default is the title's (Timeslip: Vulkan). */
+    {
+        const bool vk_default = !strcmp(renderer_meant(""), "vulkan");
+        const char *names[2] = {vk_default ? "Vulkan (default)" : "Vulkan",
+                                vk_default ? "Direct3D 11" : "Direct3D 11 (default)"};
+        int r = !strcmp(renderer_meant(m.st.renderer), "vulkan") ? 0 : 1;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        if (ImGui::Combo("Renderer", &r, names, 2)) {
+            snprintf(m.st.renderer, sizeof m.st.renderer, "%s", r == 0 ? "vulkan" : "d3d11");
+            settings_save();
+        }
+        if (strcmp(renderer_meant(m.st.renderer), renderer_meant(m.started.renderer)) != 0)
+            next_start_note();
+        else {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(drawing with %s)",
+                                !strcmp(rhi_backend_name(), "vulkan") ? "Vulkan" :
+                                !strcmp(rhi_backend_name(), "d3d11") ? "Direct3D 11" : rhi_backend_name());
+        }
+    }
+#endif
     bool fs = hle_window_fullscreen() != 0;
     if (ImGui::Checkbox("Fullscreen", &fs)) {
         hle_window_set_fullscreen(fs);

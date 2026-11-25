@@ -13,10 +13,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The default: Direct3D 11 on Windows (Vulkan there is asked for with
- * RECOMP_D3D8_BACKEND=vulkan), Metal alone on a Mac that has it, Vulkan
- * everywhere else, and nothing in a build that has none -- then
- * rhi_device_create fails and says why. */
+/* The build's default: Direct3D 11 on Windows, Metal alone on a Mac that has
+ * it, Vulkan everywhere else, and nothing in a build that has none -- then
+ * rhi_device_create fails and says why. A title may name its own (its
+ * `renderer` default, recomp_title_defaults_install): Timeslip draws with
+ * Vulkan on Windows unless the player picks Direct3D 11. The build's default
+ * is also where a renderer that cannot start falls back to. */
 #if defined(__APPLE__) && defined(RHI_HAVE_METAL)
 #define RHI_METAL_ONLY 1
 #endif
@@ -70,18 +72,31 @@ int rhi_select_backend(const char *name)
      * file, so an app started from the Finder can choose too. */
     if (!name || !*name)
         name = recomp_config_lookup("RECOMP_D3D8_BACKEND", "renderer");
-    if (!name || !*name || strcmp(name, "auto") == 0)
-        return 0;                       /* the build's own default */
 #if defined(RHI_METAL_ONLY)
     /* A Mac draws with Metal whatever was asked: an old settings file's
      * `renderer = vulkan` included. */
-    if (strcmp(name, "metal") != 0) {
+    if (name && *name && strcmp(name, "auto") != 0 && strcmp(name, "metal") != 0) {
         fprintf(stderr, "[RHI] renderer \"%s\" asked for; a Mac draws with metal\n", name);
         fflush(stderr);
     }
     g_rhi = &rhi_metal_backend;
     return 0;
 #endif
+    if (!name || !*name || strcmp(name, "auto") == 0) {
+        /* "auto" (what a settings file says until the player picks): the
+         * title's own renderer if it names one this build has, else the
+         * build's. */
+        const char *title = recomp_title_setting_default("renderer");
+        if (!title || !*title || strcmp(title, "auto") == 0)
+            return 0;
+        for (i = 0; g_backends[i]; i++) {
+            if (strcmp(g_backends[i]->name, title) == 0) {
+                g_rhi = g_backends[i];
+                return 0;
+            }
+        }
+        return 0;
+    }
     for (i = 0; g_backends[i]; i++) {
         if (strcmp(g_backends[i]->name, name) == 0) {
             g_rhi = g_backends[i];

@@ -104,9 +104,22 @@ static int sc_card_ok(int i)
 #endif
 }
 
+#if defined(_WIN32)
+/* The card a game plays with when the player has not picked (`renderer =
+ * auto`): the title's own renderer if it names Vulkan (Timeslip does), else
+ * Direct3D 11, as rhi_select_backend chooses. */
+static int sc_default_card(void)
+{
+    const char *t = recomp_title_setting_default("renderer");
+    return t && !strcmp(t, "vulkan") ? 1 : 0;
+}
+#endif
+
 static int sc_card(void)
 {
 #if defined(_WIN32)
+    if (!g_settings.renderer[0] || !strcmp(g_settings.renderer, "auto"))
+        return sc_default_card();
     return !strcmp(g_settings.renderer, "vulkan") ? 1 : 0;
 #else
     return 0;
@@ -497,8 +510,10 @@ static void sc_card_draw(int i)
 #if defined(_WIN32)
     static const char *const kicker[] = { "NATIVE RENDERER", "CROSS-PLATFORM RENDERER" };
     static const char *const name[] = { "DIRECT3D 11", "VULKAN" };
-    static const char *const line[] = { "Windows' own graphics API, the default",
-                                        "The renderer Linux and the Steam Deck use" };
+    const char *const line[] = {
+        sc_default_card() == 0 ? "Windows' own graphics API, the default" : "Windows' own graphics API",
+        sc_default_card() == 1 ? "The default: the renderer Linux uses too"
+                               : "The renderer Linux and the Steam Deck use" };
 #else
     static const char *const kicker[] = { "NATIVE RENDERER", "WINDOWS ONLY" };
     static const char *const name[] = { "VULKAN", "DIRECT3D 11" };
@@ -648,9 +663,13 @@ static const char *sc_hint(void)
         return sc_tile_note(k);
 #if defined(_WIN32)
     if (g_sc_hover == SC_CARD)
-        return "Direct3D 11: Windows' own renderer, the default. Double-click to play.";
+        return sc_default_card() == 0
+            ? "Direct3D 11: Windows' own renderer, the default. Double-click to play."
+            : "Direct3D 11: Windows' own renderer. Double-click to play.";
     if (g_sc_hover == SC_CARD + 1)
-        return "Vulkan: the renderer the Linux and Mac builds use. Double-click to play.";
+        return sc_default_card() == 1
+            ? "Vulkan: the default, the renderer the Linux build uses too. Double-click to play."
+            : "Vulkan: the renderer the Linux build uses. Double-click to play.";
 #endif
     return g_pad_seen ? "D-pad chooses" SC_DOT "A plays" SC_DOT "B quits"
                       : "\xe2\x86\x90/\xe2\x86\x92 choose" SC_DOT "\xe2\x86\x91/\xe2\x86\x93 settings" SC_DOT "Enter plays" SC_DOT "Esc quits";
