@@ -887,8 +887,12 @@ static void warp_scissor(float *l, float *t, float *r, float *b)
  *    with the turn (d3d8_SetScissorWarp) cannot follow a walk: near
  *    doorways move more than far ones.
  * A title that says so is drawn without them, in the in-between frames only
- * or in its own frames too; set only while it holds (TS2's menus need
- * theirs: its list boxes and character select are clipped by them).
+ * or in its own frames too -- but for a band the viewport's whole width and
+ * not its height, a letterbox or a split screen's half (TS2's end of a match
+ * letterboxes with one; dropped, its 3D streaks went over the bars). Set
+ * only while it holds: TS2's split screen keeps each half to its rectangle
+ * with a scissor (dropped, a player's sky was drawn over the other half),
+ * and its menus' list boxes and character select need theirs.
  */
 static int g_scissors_off;                 /* XBOX_D3D8_SCISSORS_* */
 static int g_interp_redraw;
@@ -925,8 +929,20 @@ static int scissor_ignored(void)
     }
     if (test)
         return test == 1;
-    return mode == XBOX_D3D8_SCISSORS_OFF ||
-           (mode == XBOX_D3D8_SCISSORS_OFF_INBETWEEN && g_interp_redraw);
+    if (!(mode == XBOX_D3D8_SCISSORS_OFF ||
+          (mode == XBOX_D3D8_SCISSORS_OFF_INBETWEEN && g_interp_redraw)))
+        return 0;
+    /* A band the viewport's whole width but not its height is a letterbox
+     * or a split screen's half, which the title keeps its view to (TS2's
+     * end of a match: its 3D streaks went over the bars): kept. */
+    {
+        const D3DVIEWPORT8 *vp = &g_device_state.viewport;
+        double X = vp->X, Y = vp->Y, W = vp->Width, H = vp->Height;
+        if (W >= 2.0 && H >= 2.0 && g_scissor.left <= X + 0.5 && g_scissor.right >= X + W - 1.5 &&
+            (g_scissor.top > Y + 0.5 || g_scissor.bottom < Y + H - 1.5))
+            return 0;
+    }
+    return 1;
 }
 
 BOOL d3d8_GetScissor(RhiRect *out)

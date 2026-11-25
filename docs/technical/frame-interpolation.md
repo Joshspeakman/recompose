@@ -109,8 +109,16 @@ the rectangles are where the newer frame had them, and carrying them along
 with the turn (`d3d8_SetScissorWarp`, still used for a title that keeps its
 scissors) cannot follow a walk. Its frames in play are the same without
 them, HUD and all, but for flickering hairlines of sky and sand the
-whole-pixel rectangles left at higher resolutions; its menus need theirs, so
-it asks only in play.
+whole-pixel rectangles left at higher resolutions; its menus need theirs, and
+so does a split screen's halves, which it keeps to their rectangles with a
+scissor too, so it asks only for a frame of play with every player's view
+the whole frame. A band the viewport's whole width and not its height is
+kept even then: a letterbox (its end of a match draws 3D streaks inside
+one).
+
+A frame is held as a cut when what was cut, weighed as the camera's vote is,
+is more than half: with a bare wall in view TimeSplitters 2's pistols
+outweighed a level that turned past the limit by primitives alone.
 
 **Matching, tier 3** is for blended draws only: an opaque piece of the
 level matched by program and layout alone could take the place of the one

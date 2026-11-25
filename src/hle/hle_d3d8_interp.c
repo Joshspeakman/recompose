@@ -936,6 +936,54 @@ static int prepare_frame(void)
         g_held_match++;
         return 0;
     }
+    /* How much is a cut, weighed as the camera's vote is: what is carried in
+     * view space holds still while the camera turns past the limit, and with
+     * a bare wall in view TS2's pistols were more than half the primitives,
+     * so a flick cut the whole level and the frame was still interpolated --
+     * the camera taken to stand still, a slab of sky at the screen's edge. */
+    {
+        static double *wd, *ws;
+        static int wcap;
+        double medw = 0.0, wcut = 0.0, wall = 0.0;
+        int nn = 0, a2, b2;
+        if (cur->ndraws > wcap) {
+            double *n1 = (double *)realloc(wd, (size_t)cur->ndraws * 2 * sizeof *n1);
+            double *n2 = (double *)realloc(ws, (size_t)cur->ndraws * 2 * sizeof *n2);
+            if (n1) wd = n1;
+            if (n2) ws = n2;
+            if (n1 && n2) wcap = cur->ndraws * 2;
+        }
+        for (i = 0; i < cur->ndraws && i < wcap; i++) {
+            const InterpDraw *d = &cur->draws[i];
+            const float *m;
+            wd[i] = -1.0;
+            if (!d->key.uses_proj || !g_groups || !(d->groups & 1u))
+                continue;
+            m = regs_of(cur, i) + (g_proj >= 0 ? 16 : 0);
+            wd[i] = sqrt((double)m[3] * m[3] + (double)m[7] * m[7] + (double)m[11] * m[11]);
+            ws[nn++] = wd[i];
+        }
+        for (a2 = 1; a2 < nn; a2++) {
+            double v = ws[a2];
+            for (b2 = a2 - 1; b2 >= 0 && ws[b2] > v; b2--)
+                ws[b2 + 1] = ws[b2];
+            ws[b2 + 1] = v;
+        }
+        if (nn)
+            medw = ws[nn / 2];
+        for (i = 0; nn && i < cur->ndraws && i < wcap; i++) {
+            const InterpDraw *d = &cur->draws[i];
+            double w;
+            if (wd[i] < 0.0)
+                continue;
+            w = d->key.prims * (medw > 0.0 && wd[i] < medw ? wd[i] / medw : 1.0);
+            wall += w;
+            if (d->cut)
+                wcut += w;
+        }
+        if (wall > 0.0 && wcut / wall > MAX_CUT)
+            cut = prims3d;                       /* held as a cut, below */
+    }
     if (cut / prims3d > MAX_CUT) {
         static int debug = -1, said;
         if (debug < 0)
