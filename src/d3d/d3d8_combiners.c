@@ -973,7 +973,15 @@ int d3d8_combiners_generate_hlsl(const NV2ACombinerState *state,
      * distance, and Gladius's skinned characters (oFog = -32 or so, table
      * fog from 25 to 325) came out the flat fog colour when it was read as
      * the factor. */
-    EMIT("    float4 r_fog  = float4(fog_color.rgb, fog_factor(input));\n");
+    /* With fog off the NV2A's FOG register reads zero, colour and factor
+     * alike (xemu, psh get_input_var). Future Perfect's combiners mix fog in
+     * as A = fog alpha, B = fog colour, C = r0 -- the factor is how much fog
+     * -- and keep the same combiners for its unfogged draws: a muzzle flash
+     * (additive, fog off, a program that never writes oFog, so a factor of 1)
+     * came out as each quad filled with the fog colour, stacked hard-edged
+     * squares where the console shows a soft cloud of fire. */
+    EMIT("    float4 r_fog  = fog_enable ? float4(fog_color.rgb, fog_factor(input))\n"
+         "                               : float4(0, 0, 0, 0);\n");
 
     /* Vertex colors: Xbox D3DCOLOR is BGRA in memory, the vertex shader
      * should have already swizzled to RGBA. */
