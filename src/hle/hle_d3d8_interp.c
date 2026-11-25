@@ -835,6 +835,24 @@ static int prepare_frame(void)
             }
         }
     }
+    /* RECOMP_INTERP_DRAWS=<tick>: every draw of that frame, how it matched. */
+    {
+        static long at = -2;
+        if (at == -2) {
+            const char *v = getenv("RECOMP_INTERP_DRAWS");
+            at = v && *v ? atol(v) : -1;
+        }
+        if (at >= 0 && (long)recomp_lockstep_tick() == at) {
+            for (i = 0; i < cur->ndraws; i++) {
+                const InterpDraw *d = &cur->draws[i];
+                const InterpDraw *pd = d->match >= 0 ? &prev->draws[d->match] : NULL;
+                fprintf(stderr, "[INTERP-DRAW] %d: prims %u stride %u vs %lX tex %p blended %d proj %d "
+                        "-> tier %d match %d (prims %u tex %p) cut %d\n", i, d->key.prims, d->key.stride,
+                        (unsigned long)d->key.vs, d->key.tex[0], d->key.blended, d->key.uses_proj,
+                        d->tier, d->match, pd ? pd->key.prims : 0u, pd ? pd->key.tex[0] : NULL, d->cut);
+            }
+        }
+    }
     /* RECOMP_INTERP_ACCOUNT also lists the matched pieces whose motion is not
      * the camera's (moving things -- or a piece paired with the wrong copy). */
     {
@@ -1261,6 +1279,23 @@ static void redraw(double a)
     }
     for (off = 0; off < cur->len; ) {
         op_header *h = (op_header *)(cur->ops + off);
+        /* RECOMP_INTERP_SKIP=<a>-<b> (diagnostic): those draws of the list
+         * left out of the in-between frames. */
+        static long skip_a = -2, skip_b = -1, only_a = -1, only_b = -1;
+        if (skip_a == -2) {
+            const char *v = getenv("RECOMP_INTERP_SKIP");
+            const char *o = getenv("RECOMP_INTERP_ONLY");   /* the opposite */
+            skip_a = -1;
+            if (v && *v && sscanf(v, "%ld-%ld", &skip_a, &skip_b) != 2)
+                skip_b = skip_a;
+            if (o && *o && sscanf(o, "%ld-%ld", &only_a, &only_b) != 2)
+                only_b = only_a;
+        }
+        if (h->draw >= 0 && ((h->draw >= skip_a && h->draw <= skip_b) ||
+                             (only_a >= 0 && (h->draw < only_a || h->draw > only_b)))) {
+            off += sizeof(op_header) + INTERP_ALIGN(h->size);
+            continue;
+        }
         if (h->draw >= 0)
             set_draw_registers(h->draw, a);
         h->fn(h->size ? (const void *)(h + 1) : NULL);

@@ -1905,6 +1905,21 @@ HRESULT d3d8_vsh_set_declaration(DWORD handle, const D3D8VshInput *inputs, int c
     return S_OK;
 }
 
+int d3d8_vsh_get_declaration(DWORD handle, D3D8VshInput *inputs)
+{
+    int slot;
+
+    if (!d3d8_vsh_is_programmable(handle))
+        return -1;
+    slot = (int)(handle - 0x10000);
+    if (slot < 0 || slot >= NV2A_VS_MAX_SLOTS || !g_vsh_slots[slot].in_use)
+        return -1;
+    if (g_vsh_slots[slot].decl_count > 0)
+        memcpy(inputs, g_vsh_slots[slot].decl,
+               (size_t)g_vsh_slots[slot].decl_count * sizeof(*inputs));
+    return g_vsh_slots[slot].decl_count;
+}
+
 void d3d8_vsh_set_screenspace(const float scale[4], const float offset[4])
 {
     if (!scale || !offset)

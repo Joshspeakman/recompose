@@ -205,6 +205,13 @@ BOOL d3d8_vsh_is_programmable(DWORD handle);
 HRESULT d3d8_vsh_set_declaration(DWORD handle, const D3D8VshInput *inputs, int count);
 
 /**
+ * What d3d8_vsh_set_declaration last gave handle: the number of entries,
+ * copied to inputs (room for NV2A_VS_MAX_INPUTS), or -1 for no such
+ * program. The frame interpolation's opening snapshot reads it.
+ */
+int d3d8_vsh_get_declaration(DWORD handle, D3D8VshInput *inputs);
+
+/**
  * Xbox vertex programs write oPos in render-target pixels. With a scale and
  * offset set, every program undoes that before the rasteriser:
  *   oPos = (oPos - offset) / scale;  if (w == 0) w = 1;  xyz *= w

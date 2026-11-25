@@ -1526,6 +1526,21 @@ HRESULT host_SetPalette(IDirect3DDevice8 *dev, DWORD stage, const DWORD *entries
         hle_d3d8_defer_op(op_set_palette, &p, sizeof p);
         return S_OK;
     }
+    /* Kept for the in-between frames as any other state, or a paletted
+     * texture would be drawn again there with the frame's last palette
+     * instead of its own. Found missing beside the vertex layouts (below),
+     * 25 Nov 2026; nothing seen to go wrong from it yet. */
+    if (hle_d3d8_interp_rec) {
+        dq_set_palette p;
+
+        p.stage = stage;
+        p.null_entries = entries == NULL;
+        if (entries)
+            memcpy(p.entries, entries, sizeof p.entries);
+        else
+            memset(p.entries, 0, sizeof p.entries);
+        hle_d3d8_interp_op(op_set_palette, &p, sizeof p);
+    }
     hr = dev->lpVtbl->SetPalette(dev, stage, entries);
     /* What the device holds now -- its grey ramp for NULL -- rather than the
      * argument, so replay needs no knowledge of the default. */
@@ -1848,8 +1863,42 @@ void host_vsh_set_constant(int first_reg, const float *data, int count)
     d3d8_vsh_set_constant(first_reg, data, count);
 }
 
+typedef struct { DWORD handle; int count; D3D8VshInput inputs[NV2A_VS_MAX_INPUTS]; } dq_declaration;
+
+static void op_vsh_declaration(const void *arg)
+{
+    const dq_declaration *p = (const dq_declaration *)arg;
+    host_vsh_set_declaration(p->handle, p->count ? p->inputs : NULL, p->count);
+}
+
+/* Kept for the in-between frames: a program from a vertex shader slot has
+ * its layout set again every time it is selected (hle_d3d8.c), so one host
+ * program runs with several layouts in a frame. Drawn again with the frame's
+ * last one, TS2's frosted windows lost their frost there and showed the dark
+ * glass under it -- a flicker at every in-between frame (25 Nov 2026). */
+static void interp_declaration(DWORD handle, const D3D8VshInput *inputs, int count)
+{
+    static int off = -1;                    /* RECOMP_INTERP_DECL=0: not kept (for comparing) */
+    dq_declaration p;
+
+    if (off < 0) {
+        const char *v = getenv("RECOMP_INTERP_DECL");
+        off = v && strcmp(v, "0") == 0;
+    }
+    if (off || count < 0 || count > NV2A_VS_MAX_INPUTS)
+        return;
+    memset(&p, 0, sizeof p);
+    p.handle = handle;
+    p.count = count;
+    if (count)
+        memcpy(p.inputs, inputs, (size_t)count * sizeof *inputs);
+    hle_d3d8_interp_op(op_vsh_declaration, &p, sizeof p);
+}
+
 HRESULT host_vsh_set_declaration(DWORD handle, const D3D8VshInput *inputs, int count)
 {
+    if (hle_d3d8_interp_rec)
+        interp_declaration(handle, inputs, count);
     if (g_cap)
         rec_vs_declaration(handle, inputs, count);
     return d3d8_vsh_set_declaration(handle, inputs, count);
@@ -2057,7 +2106,13 @@ void hle_d3d8_interp_snapshot(void)
     }
     {
         DWORD vs = 0;
+        D3D8VshInput in[NV2A_VS_MAX_INPUTS];
+        int n;
         dev->lpVtbl->GetVertexShader(dev, &vs);
+        /* Its layout as it is now, before it: the frame may draw with it
+         * before selecting it again. */
+        if ((n = d3d8_vsh_get_declaration(vs, in)) >= 0)
+            interp_declaration(vs, in, n);
         hle_d3d8_interp_op(op_vertex_shader, &vs, sizeof vs);
     }
     for (s = 0; s < CAPTURE_STAGES; s++) {
@@ -2065,6 +2120,16 @@ void hle_d3d8_interp_snapshot(void)
         p.stage = s;
         p.texture = d3d8_GetStageTexture(s);
         hle_d3d8_interp_op(op_host_set_texture, &p, sizeof p);
+    }
+    for (s = 0; s < CAPTURE_STAGES; s++) {
+        const DWORD *pal = d3d8_GetPalette(s);
+        dq_set_palette p;
+        if (!pal)
+            continue;
+        p.stage = s;
+        p.null_entries = 0;
+        memcpy(p.entries, pal, sizeof p.entries);
+        hle_d3d8_interp_op(op_set_palette, &p, sizeof p);
     }
     {
         dq_render_target p;
