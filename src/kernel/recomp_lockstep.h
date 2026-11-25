@@ -59,6 +59,10 @@ typedef struct RecompLockstepPad {
      * the right and y down, sensitivity and invert already applied by the
      * machine whose mouse it is. Zero for a pad. */
     int16_t look_x, look_y;
+    /* A number key, 1..9, pressed on this machine's keyboard this frame, or
+     * 0 (recomp_input_number_key): what a PC shooter picks its weapons
+     * with, which a title acts on itself. Controller 1 only. */
+    uint8_t number_key;
 } RecompLockstepPad;
 
 /* Reads this machine's device for a port (the input layer registers it). */

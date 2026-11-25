@@ -345,6 +345,7 @@ void recomp_settings_defaults(RecompSettings *s)
     s->mouse_look        = 0;
     s->mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_DEFAULT;
     s->mouse_invert      = 0;
+    s->crosshair         = 1;
 #if defined(__ANDROID__)
     snprintf(s->touch_controls, sizeof s->touch_controls, "auto");
 #else
@@ -432,6 +433,8 @@ static void settings_from_table(RecompSettings *s)
         s->mouse_look = !off_word(v);
     if ((v = from_table("mouse_invert")) != NULL)
         s->mouse_invert = !off_word(v);
+    if ((v = from_table("crosshair")) != NULL)
+        s->crosshair = !off_word(v);
     if ((v = from_table("mouse_sensitivity")) != NULL)
         s->mouse_sensitivity = clamp_int(atoi(v), RECOMP_MOUSE_SENSITIVITY_MIN,
                                          RECOMP_MOUSE_SENSITIVITY_MAX);
@@ -516,7 +519,7 @@ static void make_parents(const char *path)
 static const char *const k_written_keys[] = {
     "resolution_scale", "widescreen", "hor_plus", "hor_plus_register", "widescreen_2d",
     "anisotropy", "post_soften", "renderer", "frame_cap", "fps_overlay", "fullscreen", "vrr", "frame_interp", "fov",
-    "mouse_look", "mouse_sensitivity", "mouse_invert", "touch_controls", "touch_opacity", "touch_scale",
+    "mouse_look", "mouse_sensitivity", "mouse_invert", "crosshair", "touch_controls", "touch_opacity", "touch_scale",
     "game_dir", "syslink", "syslink_host", "syslink_port", "syslink_code", "syslink_upnp",
     "coop", "coop_port",
 };
@@ -714,7 +717,11 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "#\n"
         "# 1: moving the mouse forward looks down, as a flight stick does.\n"
         "#                                               [RECOMP_MOUSE_INVERT]\n"
-        "mouse_invert = %d\n",
+        "mouse_invert = %d\n"
+        "#\n"
+        "# 1: the aiming crosshair stays on screen for a mouse player, as in a\n"
+        "# PC shooter; 0: only while aiming, as the game does.  [RECOMP_CROSSHAIR]\n"
+        "crosshair = %d\n",
         s->resolution_scale, s->widescreen, hor_plus, reg,
         s->widescreen_2d[0] ? s->widescreen_2d : "auto",
         s->anisotropy, s->post_soften[0] ? s->post_soften : "sharp",
@@ -727,7 +734,7 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         RECOMP_MOUSE_SENSITIVITY_DEFAULT, 100000 / RECOMP_MOUSE_SENSITIVITY_DEFAULT,
         clamp_int(s->mouse_sensitivity, RECOMP_MOUSE_SENSITIVITY_MIN,
                   RECOMP_MOUSE_SENSITIVITY_MAX),
-        s->mouse_invert ? 1 : 0);
+        s->mouse_invert ? 1 : 0, s->crosshair ? 1 : 0);
 
     fprintf(f,
         "\n"

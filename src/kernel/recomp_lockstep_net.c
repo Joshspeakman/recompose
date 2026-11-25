@@ -179,8 +179,9 @@ static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
 static uint32_t get32(const uint8_t *p) { return get16(p) | (uint32_t)get16(p + 2) << 16; }
 static uint64_t get64(const uint8_t *p) { return get32(p) | (uint64_t)get32(p + 4) << 32; }
 
-/* One frame's pad on the wire: the gamepad's 18 bytes and the mouse's look. */
-#define NET_PAD 22
+/* One frame's pad on the wire: the gamepad's 18 bytes, the mouse's look and
+ * a number key. */
+#define NET_PAD 23
 
 static void pad_put(uint8_t *b, const RecompLockstepPad *p)
 {
@@ -194,6 +195,7 @@ static void pad_put(uint8_t *b, const RecompLockstepPad *p)
     put16(b + 16, (uint16_t)p->thumb_ry);
     put16(b + 18, (uint16_t)p->look_x);
     put16(b + 20, (uint16_t)p->look_y);
+    b[22] = p->number_key;
 }
 
 static void pad_get(RecompLockstepPad *p, const uint8_t *b)
@@ -208,6 +210,7 @@ static void pad_get(RecompLockstepPad *p, const uint8_t *b)
     p->thumb_ry = (int16_t)get16(b + 16);
     p->look_x = (int16_t)get16(b + 18);
     p->look_y = (int16_t)get16(b + 20);
+    p->number_key = b[22];
 }
 
 static uint64_t fnv64(const uint8_t *p, size_t n)

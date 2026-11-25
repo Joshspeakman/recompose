@@ -405,6 +405,16 @@ void d3d8_states_apply_sampler(DWORD stage)
     }
     sd.compare = RHI_CMP_NEVER;
     sd.max_lod = 3.402823466e+38f;          /* D3D11_FLOAT32_MAX */
+    /* RECOMP_MAX_LOD=<n> (diagnostic): no mip level smaller than the n-th. */
+    {
+        static int lod = -2;
+        if (lod == -2) {
+            const char *v = getenv("RECOMP_MAX_LOD");
+            lod = v && *v ? atoi(v) : -1;
+        }
+        if (lod >= 0)
+            sd.max_lod = (float)lod;
+    }
 
     /* Unchanged since it was bound: nothing to do. */
     if (g_sampler_states[stage] &&

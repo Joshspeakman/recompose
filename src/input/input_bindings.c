@@ -1307,6 +1307,85 @@ int recomp_mouse_title_menu_on(void)
     return (int)g_title_menu;
 }
 
+/* The number row and the wheel (input_bindings.h). */
+static volatile long g_number_pending;
+static void (*g_wheel_filter)(int wheel, XBOX_GAMEPAD *pad);
+
+int recomp_input_take_number_key(void)
+{
+#if defined(_WIN32)
+    return (int)InterlockedExchange(&g_number_pending, 0);
+#else
+    return (int)__atomic_exchange_n(&g_number_pending, 0, __ATOMIC_SEQ_CST);
+#endif
+}
+
+void recomp_bindings_set_wheel_filter(void (*fn)(int wheel, XBOX_GAMEPAD *pad))
+{
+    g_wheel_filter = fn;
+}
+
+/* RECOMP_INPUT_FAKE=t<tick>:<what>,... -- at that lockstep tick a number key
+ * (1..9) pressed or a wheel notch (wheel_up, wheel_down), as if from the
+ * keyboard and the mouse: the number row and the wheel tested by script. */
+extern uint32_t recomp_lockstep_tick(void);   /* src/kernel/recomp_lockstep.h */
+static void input_fake_feed(void)
+{
+    static int ready, n, next;
+    static uint32_t at[64];
+    static int what[64];                        /* 1..9 a key, 10 wheel up, 11 down */
+    uint32_t tick;
+
+    if (!ready) {
+        const char *v = getenv("RECOMP_INPUT_FAKE");
+        ready = 1;
+        while (v && *v && n < 64) {
+            const char *colon;
+            if (*v == 't')
+                v++;
+            at[n] = (uint32_t)strtoul(v, (char **)&v, 10);
+            colon = *v == ':' ? v + 1 : NULL;
+            if (!colon)
+                break;
+            what[n] = !strncmp(colon, "wheel_up", 8) ? 10 : !strncmp(colon, "wheel_down", 10) ? 11
+                    : atoi(colon);
+            n++;
+            v = strchr(colon, ',');
+            if (!v)
+                break;
+            v++;
+        }
+    }
+    tick = recomp_lockstep_tick();
+    while (next < n && at[next] <= tick) {
+        if (what[next] >= 1 && what[next] <= 9)
+            g_number_pending = what[next];
+        else if (what[next] == 10)
+            recomp_mouse_wheel(1);
+        else if (what[next] == 11)
+            recomp_mouse_wheel(-1);
+        next++;
+    }
+}
+
+/* Controller 1's sample: a number key going down is kept for the title. */
+static void number_keys(KeyCache *kc)
+{
+    static unsigned held;
+    unsigned now = 0;
+    int k;
+
+    input_fake_feed();
+
+    for (k = 1; k <= 9; k++)
+        if (key_down(kc, '0' + k))
+            now |= 1u << k;
+    for (k = 1; k <= 9; k++)
+        if ((now & (1u << k)) && !(held & (1u << k)))
+            g_number_pending = k;
+    held = now;
+}
+
 static void title_menu_mouse(XBOX_GAMEPAD *out)
 {
     if (g_mouse_held & (1L << RECOMP_MOUSE_LEFT))
@@ -1362,6 +1441,9 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
             int m;
             if (port == 0 && g_title_menu && c->bind[i].src[s].kind == SRC_MOUSE)
                 continue;                        /* the menu's (title_menu_mouse) */
+            if (port == 0 && g_wheel_filter && c->bind[i].src[s].kind == SRC_MOUSE &&
+                c->bind[i].src[s].arg >= RECOMP_MOUSE_BUTTONS)
+                continue;                        /* the title's (g_wheel_filter) */
             m = source_magnitude(&c->bind[i].src[s], &kc, &pad, have_pad, c->deadzone);
             if (m > mag)
                 mag = m;
@@ -1410,6 +1492,13 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
     }
     if (port == 0 && g_title_menu)
         title_menu_mouse(out);
+    else if (port == 0) {
+        number_keys(&kc);
+        if (g_wheel_filter) {
+            int w = wheel_magnitude(0) ? 1 : wheel_magnitude(1) ? -1 : 0;
+            g_wheel_filter(w, out);
+        }
+    }
     /* The on-screen controls, on top of everything bound (touch_controls.h). */
     if (port == 0)
         recomp_touch_apply(out);

@@ -435,7 +435,17 @@ static void dump_presented(void)
         run_left = frames - 1;
         run_index = 0;
     } else {
+        /* RECOMP_PRESENT_DUMP_AFTER_MS=<ms>: by the clock, from that long
+         * after the first present (free-running, where there is no tick). */
+        static unsigned long long start, after = ~0ull;
         now = GetTickCount64();
+        if (after == ~0ull) {
+            const char *a = getenv("RECOMP_PRESENT_DUMP_AFTER_MS");
+            after = a && *a ? strtoull(a, NULL, 10) : 0;
+            start = now;
+        }
+        if (now < start + after)
+            return;
         if (next && now < next)
             return;
         next = now + every;

@@ -687,6 +687,21 @@ extern "C" void hle_set_fov(int degrees)
     g_fov.store(degrees <= 0 ? 0 : degrees);
 }
 
+/* The crosshair setting (recomp_config.h crosshair): read once, then the
+ * menu's. A title that has an aiming crosshair asks each frame. */
+namespace { std::atomic<int> g_crosshair{-1}; }
+
+extern "C" int hle_crosshair_always(void)
+{
+    int v = g_crosshair.load();
+
+    if (v < 0) {
+        v = recomp_config_int("RECOMP_CROSSHAIR", "crosshair", 1) ? 1 : 0;
+        g_crosshair.store(v);
+    }
+    return v;
+}
+
 namespace {
 
 void tab_display()
@@ -825,6 +840,17 @@ void tab_mouse()
     changed |= ImGui::SliderInt("Sensitivity", &sens, RECOMP_MOUSE_SENSITIVITY_MIN,
                                 RECOMP_MOUSE_SENSITIVITY_MAX);
     changed |= ImGui::Checkbox("Invert vertical look", &inv);
+    bool cross = hle_crosshair_always() != 0;
+    bool locked = !g_held.load();            /* online: both players' must match */
+    if (locked)
+        ImGui::BeginDisabled();
+    if (ImGui::Checkbox("Crosshair always on", &cross)) {
+        g_crosshair.store(cross ? 1 : 0);
+        m.st.crosshair = cross;
+        settings_save();
+    }
+    if (locked)
+        ImGui::EndDisabled();
     if (changed) {
         m.st.mouse_look = look;
         m.st.mouse_sensitivity = sens;

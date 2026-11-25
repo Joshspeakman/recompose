@@ -100,6 +100,22 @@ void recomp_bindings_block(int on);
 void recomp_mouse_title_menu(int on);
 int  recomp_mouse_title_menu_on(void);
 
+/* ---- the number row and the wheel, a PC shooter's -----------------------
+ *
+ * A PC shooter picks its weapons with the number keys and zooms with the
+ * wheel; a console title has neither. A number key goes to the title as a
+ * value it acts on itself -- recomp_input_number_key (src/hle/hle_input.c),
+ * the latched one under online co-op, so both machines act on it alike. The
+ * wheel, when a title takes it, goes to the title's filter, which turns it
+ * into the title's own controls on controller 1 (a swap, a zoom); then
+ * bindings to mouse:wheel_up and mouse:wheel_down are left to it. Neither
+ * acts while the title's own menu has the mouse or the in-game menu is up. */
+/* The number key 1..9 pressed most recently since the last call, or 0. */
+int  recomp_input_take_number_key(void);
+/* fn: wheel is +1 for a press away from the player, -1 towards, 0 none;
+ * pad, controller 1 as bound, which fn adds the controls it means to. */
+void recomp_bindings_set_wheel_filter(void (*fn)(int wheel, XBOX_GAMEPAD *pad));
+
 /* Native mouse look: the title turns its camera by the mouse as an angle
  * (TimeSplitters 2 adds it to the player's own yaw and pitch), and the right
  * stick is left to the pad. The title opts in at start; then each frame it

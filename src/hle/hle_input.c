@@ -145,6 +145,31 @@ static void lockstep_sample(unsigned port, RecompLockstepPad *out)
         out->look_x = look_q(dx);
         out->look_y = look_q(dy);
     }
+    /* And its number keys (input_bindings.h). */
+    out->number_key = port == 0 ? (uint8_t)recomp_input_take_number_key() : 0;
+}
+
+/* A number key 1..9 pressed for a guest port this frame, or 0: under
+ * lockstep the latched one, given once per tick; otherwise this machine's
+ * keyboard, with controller 1. */
+int recomp_input_number_key(unsigned port)
+{
+    static uint32_t taken_at[4];
+
+    if (port >= 4)
+        return 0;
+    if (recomp_lockstep_active()) {
+        RecompLockstepPad lp;
+        uint32_t tick = recomp_lockstep_tick();
+
+        if (taken_at[port] == tick)
+            return 0;
+        taken_at[port] = tick;
+        if (!recomp_lockstep_pad(port, &lp))
+            return 0;
+        return lp.number_key <= 9 ? lp.number_key : 0;
+    }
+    return port == 0 ? recomp_input_take_number_key() : 0;
 }
 
 /* hle_input.h: the look for a guest port this frame, in degrees. */

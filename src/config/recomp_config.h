@@ -246,6 +246,8 @@ typedef struct RecompSettings {
     int  mouse_look;            /* 0 or 1 */
     int  mouse_sensitivity;     /* RECOMP_MOUSE_SENSITIVITY_MIN..MAX */
     int  mouse_invert;          /* 0 or 1: moving the mouse forward looks down */
+    int  crosshair;             /* 1: a title's aiming crosshair always shown to
+                                   a mouse player (TimeSplitters 2); 0: only while aiming */
     /* The on-screen controls (src/input/touch_controls.h). */
     char touch_controls[8];     /* "auto", "on", "off" */
     double touch_opacity;       /* 0.1 .. 1.0 */

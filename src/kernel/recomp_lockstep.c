@@ -103,9 +103,12 @@ static int hexval(int c)
     return -1;
 }
 
-/* 22 bytes: the gamepad's 18, then the mouse's look (1/64 degree). */
-#define PAD_BYTES     22
-#define PAD_BYTES_OLD 18
+/* 23 bytes: the gamepad's 18, the mouse's look (1/64 degree), a number key.
+ * Written as short as it can be -- 18 with no look and no key, 22 with no
+ * key -- so a recording made before either reads as it was. */
+#define PAD_BYTES      23
+#define PAD_BYTES_LOOK 22
+#define PAD_BYTES_OLD  18
 
 static void pad_to_bytes(const RecompLockstepPad *p, uint8_t b[PAD_BYTES])
 {
@@ -119,6 +122,7 @@ static void pad_to_bytes(const RecompLockstepPad *p, uint8_t b[PAD_BYTES])
     b[16] = (uint8_t)p->thumb_ry; b[17] = (uint8_t)((uint16_t)p->thumb_ry >> 8);
     b[18] = (uint8_t)p->look_x;   b[19] = (uint8_t)((uint16_t)p->look_x >> 8);
     b[20] = (uint8_t)p->look_y;   b[21] = (uint8_t)((uint16_t)p->look_y >> 8);
+    b[22] = p->number_key;
 }
 
 static void pad_from_bytes(RecompLockstepPad *p, const uint8_t b[PAD_BYTES])
@@ -133,6 +137,7 @@ static void pad_from_bytes(RecompLockstepPad *p, const uint8_t b[PAD_BYTES])
     p->thumb_ry = (int16_t)(uint16_t)(b[16] | (b[17] << 8));
     p->look_x = (int16_t)(uint16_t)(b[18] | (b[19] << 8));
     p->look_y = (int16_t)(uint16_t)(b[20] | (b[21] << 8));
+    p->number_key = b[22];
 }
 
 /* FNV-1a over 8-byte words, then a final mix: fast enough to run over two
@@ -223,14 +228,15 @@ static void replay_load(const char *path)
                 if (!(rt->mask & (1u << port)))
                     continue;
                 memset(b, 0, sizeof b);
-                /* 18 bytes, or 22 with the mouse's look: up to the comma. */
+                /* 18 bytes, 22 with the mouse's look, 23 with a number
+                 * key: up to the comma. */
                 for (i = 0; i < PAD_BYTES; i++) {
                     int hi = hexval(q[2 * i]), lo = hexval(q[2 * i + 1]);
                     if (hi < 0 || lo < 0)
                         break;
                     b[i] = (uint8_t)(hi << 4 | lo);
                 }
-                if (i == PAD_BYTES || i == PAD_BYTES_OLD)
+                if (i == PAD_BYTES || i == PAD_BYTES_LOOK || i == PAD_BYTES_OLD)
                     pad_from_bytes(&rt->pads[port], b);
                 q += 2 * i;
                 if (*q == ',')
@@ -879,7 +885,8 @@ void recomp_lockstep_frame(void)
             if (!(s_mask & (1u << port)))
                 continue;
             pad_to_bytes(&s_pads[port], b);
-            n = (s_pads[port].look_x || s_pads[port].look_y) ? PAD_BYTES : PAD_BYTES_OLD;
+            n = s_pads[port].number_key ? PAD_BYTES
+              : (s_pads[port].look_x || s_pads[port].look_y) ? PAD_BYTES_LOOK : PAD_BYTES_OLD;
             for (k = 0; k < n; k++)
                 fprintf(s_trace, "%02X", b[k]);
             fputc(',', s_trace);
