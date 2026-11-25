@@ -1284,6 +1284,13 @@ static VshCacheEntry *compile_shader(const DWORD *microcode, int num_insns,
         free(hlsl_buf);
         return NULL;
     }
+    /* RECOMP_VSH_PRINT=<hash>: the HLSL made from that program (the hash
+     * d3d8_replay --list-draws names), to see how a draw's vertices come out. */
+    {
+        const char *pv = getenv("RECOMP_VSH_PRINT");
+        if (pv && *pv && (uint32_t)strtoul(pv, NULL, 0) == hash)
+            fprintf(stderr, "--- HLSL for vertex program 0x%08X ---\n%s\n--- End ---\n", hash, hlsl_buf);
+    }
     free(hlsl_buf);
 
     /* Insert into cache */

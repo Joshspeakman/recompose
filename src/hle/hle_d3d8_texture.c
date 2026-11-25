@@ -1490,6 +1490,17 @@ static uint32_t guest_bytes_hash(uint32_t phys, uint32_t n)
     return (uint32_t)(h ^ (h >> 32));
 }
 
+/* For the log: how much of a guest range holds anything. */
+static uint32_t nonzero_bytes(uint32_t phys, uint32_t n)
+{
+    const uint8_t *p = (const uint8_t *)HLE_PTR(CONTIG_BASE + phys);
+    uint32_t i, k = 0;
+
+    for (i = 0; i < n; i++)
+        k += p[i] != 0;
+    return k;
+}
+
 static void upload_static_cube(IDirect3DCubeTexture8 *host, uint32_t phys, uint32_t fmt,
                                uint32_t edge, uint32_t levels, uint32_t stride)
 {
@@ -1559,7 +1570,10 @@ static IDirect3DCubeTexture8 *static_cube(IDirect3DDevice8 *dev, uint32_t va)
             if (sum != g_static_cubes[i].checksum) {
                 g_static_cubes[i].checksum = sum;
                 upload_static_cube(host, phys, fmt, edge, levels, stride);
-                g_static_cube_reuploads++;
+                if (g_static_cube_reuploads++ < 8)
+                    fprintf(stderr, "[HLE-D3D8] static cube 0x%08X re-uploaded at frame %lu: "
+                            "%u of %u bytes non-zero\n", va, now,
+                            nonzero_bytes(phys, total), total);
             }
         }
         return host;
@@ -1587,7 +1601,8 @@ static IDirect3DCubeTexture8 *static_cube(IDirect3DDevice8 *dev, uint32_t va)
     upload_static_cube(g_static_cubes[i].host, phys, fmt, edge, levels, stride);
     g_static_cube_uploads++;
     fprintf(stderr, "[HLE-D3D8] static cube 0x%08X mirrored: format 0x%02X %ux%u, "
-            "%u level(s), face stride %u\n", va, fmt, edge, edge, levels, stride);
+            "%u level(s), face stride %u, data physical 0x%08X; %u of %u bytes non-zero\n",
+            va, fmt, edge, edge, levels, stride, phys, nonzero_bytes(phys, total), total);
     return g_static_cubes[i].host;
 }
 
