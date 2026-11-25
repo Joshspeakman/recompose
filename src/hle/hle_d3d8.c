@@ -1289,6 +1289,13 @@ static uint32_t g_multisample_type;
 /* D3DDevice_SetShaderConstantMode's last mode is g_shader_constant_mode. */
 #define X_D3DSCM_NORESERVEDCONSTANTS 0x10u
 
+/* The title's view-model zoom (xbox_D3D8SetViewModelZoom): 1, or how much
+ * larger program draws come out, and about where: the title's point in its
+ * screen pixels, or (x < 0) the middle of the viewport. */
+static float        g_view_model_zoom = 1.0f;
+static float        g_view_model_cx = -1.0f, g_view_model_cy = -1.0f;
+static D3DVIEWPORT8 g_constants_viewport;   /* the last one laid out below */
+
 static void shadow_viewport_constants(const D3DVIEWPORT8 *vp)
 {
     int super = (g_multisample_type & X_D3DMULTISAMPLE_SUPERSAMPLE) != 0;
@@ -1305,9 +1312,40 @@ static void shadow_viewport_constants(const D3DVIEWPORT8 *vp)
     float scale[4]  = { half_w, -half_h, g_z_scale, 1.0f };
     float offset[4] = { half_w, half_h, 0.0f, 0.0f };
 
+    g_constants_viewport = *vp;
+    /* The zoom is the undo's alone: the title's own constants stay as the
+     * title set them. A point s on the screen goes to the middle c plus k
+     * times its distance from it, so the undo's scale is divided by k and
+     * its offset is c + (half - c) / k. */
+    if (g_view_model_zoom != 1.0f) {
+        float k = g_view_model_zoom;
+        float cx = g_view_model_cx >= 0.0f ? g_view_model_cx * ax : reserved[4];
+        float cy = g_view_model_cx >= 0.0f ? g_view_model_cy * ay : reserved[5];
+
+        scale[0] /= k;
+        scale[1] /= k;
+        offset[0] = cx + (half_w - cx) / k;
+        offset[1] = cy + (half_h - cy) / k;
+    }
     if (!(g_shader_constant_mode & X_D3DSCM_NORESERVEDCONSTANTS))
         host_vsh_set_constant(58, reserved, 2);
     host_vsh_set_screenspace(scale, offset);
+}
+
+/* d3d8_xbox.h. */
+void xbox_D3D8SetViewModelZoom(float k, float cx, float cy)
+{
+    if (!(k > 0.0f && k < 16.0f))
+        k = 1.0f;
+    if (!(cx >= 0.0f && cy >= 0.0f))
+        cx = cy = -1.0f;
+    if (k == g_view_model_zoom &&
+        (k == 1.0f || (cx == g_view_model_cx && cy == g_view_model_cy)))
+        return;
+    g_view_model_zoom = k;
+    g_view_model_cx = cx;
+    g_view_model_cy = cy;
+    shadow_viewport_constants(&g_constants_viewport);
 }
 
 static void shadow_use_viewport(int whole_target)
@@ -1888,22 +1926,28 @@ static void trace_draw_callers(void)
     }
     /* RECOMP_HLE_D3D8_TRACE_DRAW_FRAME=<swap>: every draw of that one frame,
      * numbered from the frame's first as d3d8_replay --list-draws numbers a
-     * capture of it, with its chain of guest return addresses. */
+     * capture of it, with its chain of guest return addresses. t<tick>: the
+     * frame of that lockstep tick instead, the one RECOMP_PRESENT_DUMP_TICKS
+     * names (a swap is not a tick: the boot's presents come first). */
     {
         static long frame = -2;
+        static int by_tick;
         static unsigned long cur_swap = (unsigned long)-1;
         static int index;
 
         if (frame == -2) {
             const char *f = getenv("RECOMP_HLE_D3D8_TRACE_DRAW_FRAME");
-            frame = f && *f ? (long)strtoul(f, NULL, 0) : -1;
+            by_tick = f && *f == 't';
+            frame = f && *f ? (long)strtoul(f + by_tick, NULL, 0) : -1;
         }
-        if (frame >= 0 && g_shadow_swaps == (unsigned long)frame) {
+        if (frame >= 0 && (by_tick ? recomp_lockstep_tick() == (uint32_t)frame
+                                   : g_shadow_swaps == (unsigned long)frame)) {
             if (cur_swap != g_shadow_swaps) {
                 cur_swap = g_shadow_swaps;
                 index = 0;
             }
-            fprintf(stderr, "[DRAW-FRAME] swap %lu draw %d:", g_shadow_swaps, index++);
+            fprintf(stderr, "[DRAW-FRAME] swap %lu tick %u draw %d:", g_shadow_swaps,
+                    recomp_lockstep_tick(), index++);
             for (i = -8; i < 160 && n < 8; i++) {
                 v = HLE_MEM32(g_esp + 4u * (uint32_t)i);
                 if (v > g_xbox_code_lo && v < g_xbox_code_hi) {

@@ -1299,6 +1299,20 @@ void xbox_D3D8SetPresentCrop(float x, float y, float w, float h);
  * draw regardless, so the game sees nothing different. */
 void xbox_D3D8SetDrawFilter(int (*keep)(void));
 
+/* Draw the vertex-program draws that follow k times larger about (cx, cy),
+ * the title's screen pixels (1: as the title made them). For a title whose
+ * weapon in hand goes through the world's projection, so that with the
+ * field of view widened past the game's own (hle_fov) it shrank: the title
+ * sets k around its weapon's draws -- tan(fov / 2) / tan(game's fov / 2) --
+ * about the middle of its view, and back to 1 after; it is kept in draw
+ * order with the viewport. The middle is the title's to say: a split-screen
+ * game may lay each player's view out in its own projection over a viewport
+ * of the whole screen (Future Perfect does). A negative cx: the middle of
+ * the viewport. Only the host's undo of screen space changes; the title's
+ * own constants and everything it can read stay as they were. Called on the
+ * title's D3D thread. */
+void xbox_D3D8SetViewModelZoom(float k, float cx, float cy);
+
 /* Draw over every presented frame, after the picture, the frame counter and
  * the touch controls: the in-game menu. out_view is the swap chain's RhiView,
  * width and height its size. Called on the presenting thread. NULL: nothing. */
