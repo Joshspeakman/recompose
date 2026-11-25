@@ -24,6 +24,9 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include "../platform/win32_compat.h"   /* QueryPerformanceCounter and the types, on POSIX */
+#endif
 
 #include "audio_output.h"
 #include "xbox_adpcm.h"
@@ -35,8 +38,23 @@
  * that never samples them can have the picture drawn over it. 0 when none. */
 void hle_d3d8_movie_surface(uint32_t data, uint32_t xbox_format);
 
-/* kernel_path.c: an Xbox path to the host file it names. */
-BOOL xbox_translate_path(const char *xbox_path, WCHAR *host_path_buf, DWORD buf_size);
+/* kernel_path.c: an Xbox path to the host file it names (kernel.h's xbox_host_char: wide on
+ * Windows, UTF-8 elsewhere). */
+#if defined(_WIN32)
+typedef WCHAR xmv_host_char;
+#else
+typedef char  xmv_host_char;
+#endif
+BOOL xbox_translate_path(const char *xbox_path, xmv_host_char *host_path_buf, DWORD buf_size);
+
+static FILE *host_open(const xmv_host_char *path)
+{
+#if defined(_WIN32)
+    return _wfopen(path, L"rb");
+#else
+    return fopen(path, "rb");
+#endif
+}
 
 #define MAX_MOVIES      4
 #define MAX_CATCH_UP    8u          /* pictures decoded in one poll when behind */
@@ -200,7 +218,7 @@ static uint32_t movie_clock(movie *m)
 int xmv_play_open(uint32_t source_va, uint32_t *width, uint32_t *height)
 {
     char path[300];
-    WCHAR host[MAX_PATH * 2];
+    xmv_host_char host[MAX_PATH * 2];
     FILE *f;
     movie *m = NULL;
     int i;
@@ -219,7 +237,7 @@ int xmv_play_open(uint32_t source_va, uint32_t *width, uint32_t *height)
         }
     if (!m)
         return 0;
-    if (!xbox_translate_path(path, host, MAX_PATH * 2) || !(f = _wfopen(host, L"rb"))) {
+    if (!xbox_translate_path(path, host, MAX_PATH * 2) || !(f = host_open(host))) {
         fprintf(stderr, "[XMV] %s: not found on the host; the movie is skipped\n", path);
         return 0;
     }
@@ -455,20 +473,4 @@ void xmv_play_close(int handle)
     memset(m, 0, sizeof *m);
 }
 
-#else  /* !_WIN32: no host player yet */
 
-int xmv_play_open(uint32_t source_va, uint32_t *width, uint32_t *height)
-{
-    (void)source_va; (void)width; (void)height;
-    return 0;
-}
-void xmv_play_start(int handle) { (void)handle; }
-uint32_t xmv_play_update(int handle, uint32_t surface_va, uint32_t *pts_ms)
-{
-    (void)handle; (void)surface_va; (void)pts_ms;
-    return 2u;
-}
-uint32_t xmv_play_time(int handle) { (void)handle; return 0; }
-void xmv_play_close(int handle) { (void)handle; }
-
-#endif
