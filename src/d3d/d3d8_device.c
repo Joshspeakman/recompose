@@ -1440,8 +1440,27 @@ static BOOL clear_rects_to_host(DWORD count, const D3DRECT *rects, UINT w, UINT 
     return FALSE;
 }
 
+/* Per-channel clears, as the title asks (xbox_D3D8SetClearChannels, d3d8_xbox.h);
+ * RECOMP_CLEAR_CHANNELS=0/1 wins. */
+static int g_clear_channels_title;
+void xbox_D3D8SetClearChannels(int on)
+{
+    g_clear_channels_title = on != 0;
+}
+static int clear_channels_on(void)
+{
+    static int env = -2;
+    if (env == -2) {
+        const char *e = getenv("RECOMP_CLEAR_CHANNELS");
+        env = e && *e ? (atoi(e) != 0) : -1;
+    }
+    return env >= 0 ? env : g_clear_channels_title;
+}
+
 static HRESULT __stdcall dev_Clear(IDirect3DDevice8 *self, DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil)
 {
+    if (!clear_channels_on())
+        Flags &= ~(DWORD)(D3DCLEAR_ONLY_R | D3DCLEAR_ONLY_G | D3DCLEAR_ONLY_B | D3DCLEAR_ONLY_A);
     RhiRect host_rects[CLEAR_MAX_RECTS];
     UINT n_rects = 0, target_w, target_h;
     float clear_color[4] = {
@@ -1466,7 +1485,20 @@ static HRESULT __stdcall dev_Clear(IDirect3DDevice8 *self, DWORD Count, const D3
                         : g_device_state.width;
     target_h = g_cur_rt ? g_cur_rt->height * (g_cur_rt->host_scale > 1 ? g_cur_rt->host_scale : 1)
                         : g_device_state.height;
-    if (!clear_rects_to_host(Count, pRects, target_w, target_h, host_rects, &n_rects)) {
+    /* The colour channels it clears: all four, or only those of an Xbox
+     * per-channel clear (D3DCLEAR_ONLY_R..A), which only the rectangle pass
+     * can do -- so such a clear of the whole target goes there too. */
+    uint32_t color_mask = !(Flags & D3DCLEAR_TARGET) ? 0u
+                        : (Flags & 0xF0u) ? (uint32_t)((Flags >> 4) & 0xFu) : (uint32_t)RHI_WRITE_ALL;
+    BOOL whole = clear_rects_to_host(Count, pRects, target_w, target_h, host_rects, &n_rects);
+    if (whole && color_mask && color_mask != RHI_WRITE_ALL) {
+        host_rects[0].left = host_rects[0].top = 0;
+        host_rects[0].right = (int32_t)target_w;
+        host_rects[0].bottom = (int32_t)target_h;
+        n_rects = 1;
+        whole = FALSE;
+    }
+    if (!whole) {
         /* A depth-only rectangle belongs to the 3D viewport it was worked
          * out for (Max Payne clears a portal's rectangle before drawing
          * through it), so under the vertical zoom it grows with that
@@ -1488,7 +1520,7 @@ static HRESULT __stdcall dev_Clear(IDirect3DDevice8 *self, DWORD Count, const D3
         }
         if (n_rects &&
             d3d8_clear_rects(rtv, dsv, target_w, target_h, host_rects, n_rects,
-                             (Flags & D3DCLEAR_TARGET) != 0, (Flags & D3DCLEAR_ZBUFFER) != 0,
+                             color_mask, (Flags & D3DCLEAR_ZBUFFER) != 0,
                              (Flags & D3DCLEAR_STENCIL) != 0, clear_color, Z,
                              (uint8_t)Stencil) != 0) {
             static int said;

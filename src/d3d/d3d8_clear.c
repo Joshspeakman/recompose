@@ -15,7 +15,9 @@
  * depth as the quad's z, and the stencil as the reference value through
  * REPLACE -- with blending, scissor and culling off. A clear with no
  * rectangles, or one that covers the target, never comes here: it stays the
- * backends' native clear (d3d8_device.c, dev_Clear).
+ * backends' native clear (d3d8_device.c, dev_Clear) -- unless it clears only
+ * some colour channels (the Xbox's per-channel bits), which no native clear
+ * does: then it is this pass over the whole target, writing those channels.
  *
  * What it touches on the device is what d3d8_overlay.c touches, and it puts
  * back the same: the render target and viewport. Everything else is set
@@ -45,7 +47,7 @@ static struct {
     int             tried, failed;
     RhiShader      *vs, *ps;
     RhiBuffer      *cb;
-    RhiBlendState  *blend[2];       /* [writes colour] */
+    RhiBlendState  *blend[16];      /* [colour channels written, RHI_WRITE_*], made as needed */
     RhiDepthState  *depth[4];       /* [writes depth | writes stencil << 1] */
     RhiRasterState *raster;
 } g;
@@ -99,9 +101,9 @@ static int create(void)
     bd.cpu_access = RHI_CPU_WRITE;
     if (!(g.cb = rhi_buffer_create(&bd, NULL))) { fail("CreateBuffer"); return 0; }
 
-    for (i = 0; i < 2; i++) {
+    for (i = 0; i < 16; i += 15) {     /* none and all four; the rest when asked for */
         memset(&bl, 0, sizeof bl);
-        bl.write_mask = i ? RHI_WRITE_ALL : 0;
+        bl.write_mask = (uint32_t)i;
         if (!(g.blend[i] = rhi_blend_state_create(&bl))) { fail("CreateBlendState"); return 0; }
     }
     for (i = 0; i < 4; i++) {
@@ -131,9 +133,10 @@ static int create(void)
 }
 
 int d3d8_clear_rects(RhiView *rtv, RhiView *dsv, UINT width, UINT height,
-                     const RhiRect *rects, UINT count, int color, int depth, int stencil,
+                     const RhiRect *rects, UINT count, uint32_t color_mask, int depth, int stencil,
                      const float rgba[4], float z, uint8_t stencil_value)
 {
+    uint32_t color = color_mask & RHI_WRITE_ALL;
     RhiOutputState saved;
     RhiViewport vp;
     float blend_factor[4] = { 1, 1, 1, 1 };
@@ -167,7 +170,14 @@ int d3d8_clear_rects(RhiView *rtv, RhiView *dsv, UINT width, UINT height,
     rhi_set_shader(RHI_STAGE_PIXEL, g.ps);
     rhi_set_uniform_buffers(RHI_STAGE_VERTEX, 7, 1, &g.cb);
     rhi_set_uniform_buffers(RHI_STAGE_PIXEL, 7, 1, &g.cb);
-    rhi_set_blend_state(g.blend[color ? 1 : 0], blend_factor, 0xFFFFFFFF);
+    if (!g.blend[color]) {
+        RhiBlendDesc bl;
+        memset(&bl, 0, sizeof bl);
+        bl.write_mask = color;
+        if (!(g.blend[color] = rhi_blend_state_create(&bl)))
+            color = RHI_WRITE_ALL;          /* could not: all four, as before */
+    }
+    rhi_set_blend_state(g.blend[color], blend_factor, 0xFFFFFFFF);
     rhi_set_depth_state(g.depth[(depth ? 1 : 0) | (stencil ? 2 : 0)], stencil_value);
     rhi_set_raster_state(g.raster);
 
@@ -208,7 +218,7 @@ void d3d8_clear_shutdown(void)
     rhi_shader_destroy(g.vs);            g.vs = NULL;
     rhi_shader_destroy(g.ps);            g.ps = NULL;
     rhi_buffer_destroy(g.cb);            g.cb = NULL;
-    for (i = 0; i < 2; i++) { rhi_blend_state_destroy(g.blend[i]); g.blend[i] = NULL; }
+    for (i = 0; i < 16; i++) { rhi_blend_state_destroy(g.blend[i]); g.blend[i] = NULL; }
     for (i = 0; i < 4; i++) { rhi_depth_state_destroy(g.depth[i]); g.depth[i] = NULL; }
     rhi_raster_state_destroy(g.raster);  g.raster = NULL;
     g.tried = g.failed = 0;

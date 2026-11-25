@@ -49,11 +49,12 @@ RhiView  *d3d8_GetDefaultTargetView(void);
 void d3d8_SetTwoDSqueeze(BOOL on);
 
 /* Clear with rectangles (d3d8_clear.c): each rectangle, in the target's
- * host pixels, clipped to width x height, cleared through a draw -- colour,
- * depth and stencil as asked, the scissor and viewport ignored. 0 done (or
- * nothing to do), -1 if the pass could not be made. */
+ * host pixels, clipped to width x height, cleared through a draw -- the
+ * colour channels in color_mask (RHI_WRITE_R..A; 0 none), depth and stencil
+ * as asked, the scissor and viewport ignored. 0 done (or nothing to do), -1
+ * if the pass could not be made. */
 int  d3d8_clear_rects(RhiView *rtv, RhiView *dsv, UINT width, UINT height,
-                      const RhiRect *rects, UINT count, int color, int depth, int stencil,
+                      const RhiRect *rects, UINT count, uint32_t color_mask, int depth, int stencil,
                       const float rgba[4], float z, uint8_t stencil_value);
 void d3d8_clear_shutdown(void);
 

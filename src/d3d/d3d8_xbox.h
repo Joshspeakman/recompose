@@ -639,6 +639,14 @@ typedef enum D3DCLEAR_FLAGS {
     D3DCLEAR_TARGET  = 0x01,
     D3DCLEAR_ZBUFFER = 0x02,
     D3DCLEAR_STENCIL = 0x04,
+    /* Not PC D3D: a target clear limited to some channels, the Xbox's own
+     * per-channel bits (hle/d3d8_xbox_map.h, xbox_clear_flags_to_host). None
+     * of them with D3DCLEAR_TARGET is all four. Shifted down by four they are
+     * the RHI's write mask (RHI_WRITE_R..A). */
+    D3DCLEAR_ONLY_R  = 0x10,
+    D3DCLEAR_ONLY_G  = 0x20,
+    D3DCLEAR_ONLY_B  = 0x40,
+    D3DCLEAR_ONLY_A  = 0x80,
 } D3DCLEAR_FLAGS;
 
 /* ================================================================
@@ -1361,6 +1369,15 @@ enum {
     XBOX_D3D8_2D_EDGE
 };
 void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag);
+
+/* Clears of only some colour channels (the Xbox's per-channel D3DCLEAR bits,
+ * D3DCLEAR_ONLY_R..A): 1 clears just those channels, as the NV2A does; 0, the
+ * default, clears all four, as the renderer always has. A title turns it on
+ * once it has been checked against it (Future Perfect: its options panel is
+ * translucent, not black); TimeSplitters 2's title screen draws differently
+ * with it and has not been compared with the console yet.
+ * RECOMP_CLEAR_CHANNELS=0/1 overrides the title either way. */
+void xbox_D3D8SetClearChannels(int on);
 
 /* A title's own test for which of its fixed-function draws are screen-space.
  * The renderer knows two kinds: pre-transformed vertices, and a vertex
