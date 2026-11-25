@@ -868,8 +868,86 @@ static void warp_scissor(float *l, float *t, float *r, float *b)
     *b = (float)(nb > Y + H ? Y + H : nb);
 }
 
+/*
+ * Drawn without the title's scissors (xbox_D3D8SetScissorsOff).
+ * TimeSplitters 2 clips each room it sees through a doorway to the
+ * doorway's rectangle on screen (about fifty a frame), and the sky it shows
+ * through one -- drawn flat, with no depth test -- too. In play that only
+ * spares drawing: its frames come out the same without them, pixel for
+ * pixel, HUD and all, but for the hairlines below (24 Nov 2026, compared
+ * over whole recordings). Two things go wrong with them here:
+ *  - the rectangles are whole console pixels, so at a higher resolution a
+ *    hairline of sky shows along pillar and door edges, and flickers as
+ *    the view moves, where a wall's edge falls inside a pixel the
+ *    rectangle leaves out;
+ *  - in frame interpolation's in-between frames they are where the newer
+ *    frame had them, so while the player turned and walked whole slabs of
+ *    rooms near the screen's edge were cut off and the sky showed, or the
+ *    sky was painted over the wall beside a doorway. Carrying them along
+ *    with the turn (d3d8_SetScissorWarp) cannot follow a walk: near
+ *    doorways move more than far ones.
+ * A title that says so is drawn without them, in the in-between frames only
+ * or in its own frames too; set only while it holds (TS2's menus need
+ * theirs: its list boxes and character select are clipped by them).
+ */
+static int g_scissors_off;                 /* XBOX_D3D8_SCISSORS_* */
+static int g_interp_redraw;
+
+void xbox_D3D8SetScissorsOff(int mode)
+{
+    static int said;
+    if (mode != g_scissors_off && said < 8) {
+        said++;
+        fprintf(stderr, "D3D8: %s\n",
+                mode == XBOX_D3D8_SCISSORS_OFF ? "drawn without the title's scissors"
+                : mode == XBOX_D3D8_SCISSORS_OFF_INBETWEEN
+                ? "in-between frames drawn without the title's scissors"
+                : "the title's scissors kept");
+    }
+    g_scissors_off = mode;
+}
+
+void d3d8_SetInterpRedraw(int on)
+{
+    g_interp_redraw = on;
+}
+
+static int scissor_ignored(void)
+{
+    static int test = -1;
+    int mode = g_scissors_off;
+
+    /* RECOMP_SCISSOR_TEST (diagnostic): "off" ignores every scissor all the
+     * time, "keep" keeps them all; otherwise as the title asked. */
+    if (test < 0) {
+        const char *v = getenv("RECOMP_SCISSOR_TEST");
+        test = !v ? 0 : !strcmp(v, "off") ? 1 : !strcmp(v, "keep") ? 2 : 0;
+    }
+    if (test)
+        return test == 1;
+    return mode == XBOX_D3D8_SCISSORS_OFF ||
+           (mode == XBOX_D3D8_SCISSORS_OFF_INBETWEEN && g_interp_redraw);
+}
+
 BOOL d3d8_GetScissor(RhiRect *out)
 {
+    if (g_scissor_enabled) {
+        int ignored = scissor_ignored();
+        /* RECOMP_SCISSOR_STATS=1: of the draws with a scissor, how many
+         * ignored it, each 200,000. */
+        static int stats = -1;
+        static unsigned long kept, dropped;
+        if (stats < 0)
+            stats = getenv("RECOMP_SCISSOR_STATS") != NULL;
+        if (stats) {
+            if (ignored) dropped++; else kept++;
+            if ((kept + dropped) % 200000u == 0)
+                fprintf(stderr, "[SCISSOR] %lu ignored, %lu kept, mode %d\n",
+                        dropped, kept, g_scissors_off);
+        }
+        if (ignored)
+            return FALSE;
+    }
     if (out) {
         float sx = rt_scale_x(), sy = rt_scale_y();
         float gl = (float)g_scissor.left, gt = (float)g_scissor.top;

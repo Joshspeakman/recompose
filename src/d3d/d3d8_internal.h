@@ -315,6 +315,9 @@ BOOL d3d8_target_is_screen(void);
  * the viewport along with the camera's turn r (3x3) since the newer frame
  * (d3d8_device.c); NULL stops. */
 void d3d8_SetScissorWarp(const double *r, double sx, double sy);
+/* Frame interpolation is drawing an in-between frame (1) or not (0), for
+ * xbox_D3D8SetScissorsOff. */
+void d3d8_SetInterpRedraw(int on);
 
 /* bpp of the data actually uploaded to D3D11 (post-conversion). */
 UINT d3d8_upload_bpp(D3DFORMAT fmt);

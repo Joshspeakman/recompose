@@ -33,6 +33,10 @@
  *      rewrites;
  *   3. the same program, stride, primitive type and target: a batch the CPU
  *      builds, whose count and texture change every frame (particles).
+ *      Blended draws only: an opaque piece of the level matched this way
+ *      took the place of the one the frame before drew there, which was
+ *      then neither blended nor filled in (TS2, 24 Nov 2026: on a fast turn
+ *      a slab of sky down the screen's edge the camera was leaving).
  * Unmatched draws are drawn as N drew them.
  *
  * Blending (the registers: xbox_D3D8SetInterpRegisters, interp_projection,
@@ -40,8 +44,9 @@
  * have the same kind. Each 4-register affine matrix is split into rotation,
  * scale and translation; the rotation is blended as a quaternion and the
  * other two linearly, so a turning object keeps its size. A matrix that
- * turned more than 20 degrees or moved by half its distance in one frame
- * is a cut, and drawn as N has it. Only draws whose program goes through
+ * turned more than 12 degrees or moved by half its distance in one frame
+ * is a cut, and drawn as N has it in the world, moved back with the camera
+ * (as is what has no partner). Only draws whose program goes through
  * the projection are blended: screen-space draws are N's exactly, so the
  * HUD does not shimmer.
  *
@@ -82,11 +87,13 @@
 
 #define MIN_MATCHED          0.60                /* of the 3D primitives */
 #define MAX_CUT              0.50
-/* A frame's turn: cos(20 deg / 2). TS2's corridor sweep (Nov 2026): in-between
- * frames are whole at 15 degrees a frame and lose pieces of the level at 30
- * and 60, where what the older camera saw and the newer one did not reaches
- * well past the screen's edge; such a flick is shown as the title's frames. */
-#define MAX_TURN_COS         0.98480775
+/* A frame's turn: cos(12 deg / 2). TS2 (Nov 2026): in-between frames lost
+ * pieces of the level at the screen's edge the camera was leaving on fast
+ * turns -- with a real mouse, 13% of them turning 15 to 20 degrees a frame
+ * against 2 to 3% at 10 to 15, and walking at a wide field of view at 15;
+ * at 30 and 60 far more. A flick faster than 12 degrees a frame (720 a
+ * second at 60) is shown as the title's own frames. */
+#define MAX_TURN_COS         0.99452190
 #define MAX_MOVE             0.5                 /* of the distance */
 
 typedef struct {
@@ -359,7 +366,7 @@ static void match_tier(InterpList *cur, const InterpList *prev, key_fn key, int 
     /* Chains in draw order: insert from the end. */
     for (j = prev->ndraws - 1; j >= 0; j--) {
         int slot;
-        if (used[j])
+        if (used[j] || (tier == 3 && !prev->draws[j].key.blended))
             continue;
         keys[j] = key(&prev->draws[j].key);
         slot = (int)(keys[j] & (uint64_t)(size - 1));
@@ -374,7 +381,7 @@ static void match_tier(InterpList *cur, const InterpList *prev, key_fn key, int 
         double best_dist = 0.0;
         const float *t;
 
-        if (d->match >= 0)
+        if (d->match >= 0 || (tier == 3 && !d->key.blended))
             continue;
         k = key(&d->key);
         t = tier == 1 ? draw_translation(cur, i, ti) : NULL;
@@ -772,6 +779,41 @@ static int prepare_frame(void)
                 g_prep[i * g_groups].ok)
                 cand[n++] = i;
         }
+        /* By primitives, each weighed down by how much nearer the eye than
+         * most of the frame it is: what is carried in view space -- the
+         * first-person weapon and hands, half a unit from TimeSplitters 2's
+         * eye -- holds still on the screen while the camera turns, and on a
+         * fast turn toward a bare wall its two pistols outnumbered the level
+         * in view: the camera was taken to stand still, and what only the
+         * frame before drew was left where it had been, a slab of sky down
+         * the screen's edge. Agreeing is the same turn and the same move (a
+         * sky that travels with the eye turns as the level does but does not
+         * move as it does when the player walks). */
+        static double *dist, *dsort;
+        static int dist_cap;
+        double med = 0.0;
+        if (n > dist_cap) {
+            double *d1 = (double *)realloc(dist, (size_t)n * 2 * sizeof *d1);
+            double *d2 = (double *)realloc(dsort, (size_t)n * 2 * sizeof *d2);
+            if (d1) dist = d1;
+            if (d2) dsort = d2;
+            if (d1 && d2) dist_cap = n * 2;
+        }
+        if (n > dist_cap)
+            n = 0;
+        for (a = 0; a < n; a++) {
+            const float *m = regs_of(cur, cand[a]) + (g_proj >= 0 ? 16 : 0);
+            dist[a] = sqrt((double)m[3] * m[3] + (double)m[7] * m[7] + (double)m[11] * m[11]);
+            dsort[a] = dist[a];
+        }
+        for (a = 1; a < n; a++) {                /* a median: insertion sort, few pieces */
+            double v = dsort[a];
+            for (b = a - 1; b >= 0 && dsort[b] > v; b--)
+                dsort[b + 1] = dsort[b];
+            dsort[b + 1] = v;
+        }
+        if (n)
+            med = dsort[n / 2];
         for (a = 0; a < n; a++) {
             const Prepared *pa = &g_prep[cand[a] * g_groups];
             double agree = 0.0;
@@ -779,12 +821,66 @@ static int prepare_frame(void)
                 const Prepared *pb = &g_prep[cand[b] * g_groups];
                 double dot = pa->q[0] * pb->q[0] + pa->q[1] * pb->q[1] + pa->q[2] * pb->q[2] +
                              pa->q[3] * pb->q[3];
-                if (fabs(dot) > 0.99999)         /* within half a degree */
-                    agree += cur->draws[cand[b]].key.prims;
+                double dx = pa->t[0] - pb->t[0], dy = pa->t[1] - pb->t[1], dz = pa->t[2] - pb->t[2];
+                double w = cur->draws[cand[b]].key.prims;
+                if (med > 0.0 && dist[b] < med)
+                    w *= dist[b] / med;
+                if (fabs(dot) > 0.99999 &&       /* within half a degree */
+                    sqrt(dx * dx + dy * dy + dz * dz) <= 0.01 * med + 1e-6)
+                    agree += w;
             }
             if (agree > most) {
                 most = agree;
                 g_ref_draw = cand[a];
+            }
+        }
+    }
+    /* RECOMP_INTERP_ACCOUNT also lists the matched pieces whose motion is not
+     * the camera's (moving things -- or a piece paired with the wrong copy). */
+    {
+        const char *v = getenv("RECOMP_INTERP_ACCOUNT");
+        unsigned long from = 0, to = 0;
+        if (v && *v && sscanf(v, "%lu-%lu", &from, &to) != 2)
+            to = from;
+        if (to && g_ref_draw >= 0 && g_groups && recomp_lockstep_tick() >= from &&
+            recomp_lockstep_tick() <= to) {
+            const Prepared *r = &g_prep[g_ref_draw * g_groups];
+            int odd = 0, said = 0;
+            double odd_prims = 0.0;
+            for (i = 0; i < cur->ndraws; i++) {
+                const InterpDraw *d = &cur->draws[i];
+                const Prepared *p = &g_prep[i * g_groups];
+                const float *bm;
+                double dot, dt, dist;
+                int copies = 0, j;
+                if (!d->key.uses_proj || d->match < 0 || d->cut || !(d->groups & 1u) || !p->ok)
+                    continue;
+                dot = fabs(p->q[0] * r->q[0] + p->q[1] * r->q[1] + p->q[2] * r->q[2] + p->q[3] * r->q[3]);
+                dt = sqrt((p->t[0] - r->t[0]) * (p->t[0] - r->t[0]) + (p->t[1] - r->t[1]) * (p->t[1] - r->t[1]) +
+                          (p->t[2] - r->t[2]) * (p->t[2] - r->t[2]));
+                bm = regs_of(cur, i) + (g_proj >= 0 ? 16 : 0);
+                dist = sqrt((double)bm[3] * bm[3] + (double)bm[7] * bm[7] + (double)bm[11] * bm[11]);
+                if (dot > 0.99996 && dt < 0.02 * (dist + 1.0))
+                    continue;
+                odd++;
+                odd_prims += d->key.prims;
+                for (j = 0; j < cur->ndraws; j++)
+                    if (key_same(&cur->draws[j].key) == key_same(&d->key))
+                        copies++;
+                if (copies > 1 && said++ < 24)
+                    fprintf(stderr, "[INTERP-ACCT]   draw %d tier %d prims %u copies %d: turn off the "
+                            "camera's by %.2f deg, moved off it by %.3f at distance %.2f\n", i, d->tier,
+                            d->key.prims, copies, 2.0 * acos(dot > 1.0 ? 1.0 : dot) * 57.29578, dt, dist);
+            }
+            {
+                const float *rb = regs_of(cur, g_ref_draw) + (g_proj >= 0 ? 16 : 0);
+                fprintf(stderr, "[INTERP-ACCT] tick %u: %d matched pieces (%.0f prims) moved unlike the "
+                        "camera; the camera's piece: draw %d, %u prims, turns %.2f deg, moves %.3f, "
+                        "at distance %.2f\n", recomp_lockstep_tick(), odd, odd_prims, g_ref_draw,
+                        cur->draws[g_ref_draw].key.prims,
+                        2.0 * acos(fabs(r->q[0]) > 1.0 ? 1.0 : fabs(r->q[0])) * 57.29578,
+                        sqrt(r->t[0] * r->t[0] + r->t[1] * r->t[1] + r->t[2] * r->t[2]),
+                        sqrt((double)rb[3] * rb[3] + (double)rb[7] * rb[7] + (double)rb[11] * rb[11]));
             }
         }
     }
@@ -920,8 +1016,13 @@ static void set_draw_registers(int i, double a)
     int g, k;
 
     memcpy(out, b, (size_t)g_nregs * 4 * sizeof(float));
-    if (!blend && g_cam_back_ok && d->key.uses_proj && d->match < 0 && g_ref_draw >= 0 &&
-        d->key.target == cur->draws[g_ref_draw].key.target) {
+    /* What the frame before has no partner for, or whose motion was a jump
+     * (a cut), is moved back with the camera: as N has it in the world, seen
+     * from this frame's camera. Drawn as N has it on the screen instead, a
+     * near wall cut on a fast turn was still off the screen where the
+     * in-between frame had it in view, and the sky showed there. */
+    if (!blend && g_cam_back_ok && d->key.uses_proj && (d->match < 0 || d->cut) &&
+        g_ref_draw >= 0 && d->key.target == cur->draws[g_ref_draw].key.target) {
         float *o = out + (g_proj >= 0 ? 16 : 0);
         for (g = 0; g < g_groups; g++) {
             const float *m = b + (g_proj >= 0 ? 16 : 0) + g * 16;
@@ -1087,6 +1188,7 @@ static void redraw(double a)
     }
     hle_d3d8_interp_rec = 0;                     /* what is drawn now is not kept */
     hle_d3d8_interp_replaying = 1;
+    d3d8_SetInterpRedraw(1);
     /* The camera's turn from N to this frame, for the scissors: the
      * reference piece's motion a of the way, less all of it. */
     if (g_ref_draw >= 0 && g_proj >= 0 && g_ref_draw < cur->ndraws) {
@@ -1119,6 +1221,7 @@ static void redraw(double a)
         off += sizeof(op_header) + INTERP_ALIGN(h->size);
     }
     d3d8_SetScissorWarp(NULL, 0.0, 0.0);
+    d3d8_SetInterpRedraw(0);
     hle_d3d8_interp_replaying = 0;
     if (g_dump_prefix && g_swaps + 1 >= g_dump_from && g_dumped < 24) {
         char path[512];

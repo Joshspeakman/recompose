@@ -85,10 +85,36 @@ the draw's program reads is blended (`d3d8_vsh_bound_reads`): a register the
 program never reads holds whatever was last put there. Only draws whose
 program goes through the projection are blended, so screen-space draws (HUD,
 menus) are N's to the pixel and do not shimmer. A motion that turns more than
-20 degrees, or moves by more than half the distance, in one frame is a cut,
-and drawn as N has it; a camera turning that fast cuts most of the frame, so
-the frame is held. (20, not more: TimeSplitters 2's in-between frames were
-whole turning 15 degrees a frame and lost pieces of the level at 30 and 60.)
+12 degrees, or moves by more than half the distance, in one frame is a cut;
+a camera turning that fast cuts most of the frame, so the frame is held.
+(12, not more: with a real mouse, TimeSplitters 2's in-between frames lost
+pieces of the level at the edge the camera was leaving in 13% of frames
+turning 15 to 20 degrees, 2 to 3% below 15.) A cut piece, and a piece the
+frame before has no partner for, is moved back with the camera: as N has it
+in the world, seen from the in-between frame's camera.
+
+**The camera's own motion** is the motion most matched pieces share, by
+primitives, each weighed down by how much nearer the eye than most of the
+frame it is, and agreeing in turn and move alike. What is carried in view
+space (TimeSplitters 2's first-person weapon, half a unit from the eye)
+holds still on the screen while the camera turns, and on a fast turn toward
+a bare wall its two pistols outnumbered the level in view.
+
+**Without the title's scissors** (`xbox_D3D8SetScissorsOff`). A title whose
+scissors only spare drawing while it plays can be drawn without them, in the
+in-between frames or in its own frames too. TimeSplitters 2 clips each room
+it sees through a doorway, and the sky it shows through one (drawn flat, no
+depth test), to the doorway's rectangle on screen; in an in-between frame
+the rectangles are where the newer frame had them, and carrying them along
+with the turn (`d3d8_SetScissorWarp`, still used for a title that keeps its
+scissors) cannot follow a walk. Its frames in play are the same without
+them, HUD and all, but for flickering hairlines of sky and sand the
+whole-pixel rectangles left at higher resolutions; its menus need theirs, so
+it asks only in play.
+
+**Matching, tier 3** is for blended draws only: an opaque piece of the
+level matched by program and layout alone could take the place of the one
+the frame before drew there.
 
 **What only one of the two frames drew** (November 2026, TimeSplitters 2,
 whose in-between frames showed the sky through doorways on fast mouse turns).

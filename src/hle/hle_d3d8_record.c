@@ -965,6 +965,10 @@ static void draw_key(HleInterpDrawKey *k, DWORD type, UINT prims, UINT stride,
      * for it. A fixed-function draw is not blended. */
     k->uses_proj = d3d8_vsh_is_programmable(g_bound_vs) &&
                    d3d8_vsh_bound_uses_projection();
+    {
+        const DWORD *rs = d3d8_GetRenderStates();
+        k->blended = rs && rs[D3DRS_ALPHABLENDENABLE];
+    }
 }
 
 /* ------------------------------------------------------------ device calls */

@@ -1232,6 +1232,19 @@ void xbox_D3D8SetConstantFilter(void (*fn)(int first_reg, float *data, int count
  * 0 as the console draws it, 1 sharp (one screen pixel), 2 off. */
 void xbox_D3D8SetPostSoften(int mode);
 
+/* Drawn without the title's scissors (d3d8_device.c): for a title whose
+ * scissors only spare drawing while it holds -- its frames come out the
+ * same without them, as with TimeSplitters 2's doorway rectangles in play
+ * -- in frame interpolation's in-between frames (where the rectangles are
+ * in the wrong place) or in the title's own frames as well. Set only while
+ * it holds (a title's play, not its menus). */
+enum {
+    XBOX_D3D8_SCISSORS_KEEP = 0,
+    XBOX_D3D8_SCISSORS_OFF_INBETWEEN,
+    XBOX_D3D8_SCISSORS_OFF
+};
+void xbox_D3D8SetScissorsOff(int mode);
+
 /* Hor+ for a title that can widen its field of view but not change its
  * aspect: the engine takes a horizontal field of view and works the vertical
  * out from a 4:3 rectangle it also uses for other things. Such a title
