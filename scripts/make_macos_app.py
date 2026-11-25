@@ -3,7 +3,7 @@
 
     python3 scripts/make_macos_app.py titles/timesplitters2/build-mac/timesplitters2_recomp \\
         --name "TimeSplitters 2" [--out <dir>] [--bundle-id <id>] [--game <folder>] \\
-        [--no-sign] [--dry-run]
+        [--metal-only] [--no-sign] [--dry-run]
 
 FOR YOUR OWN MACHINE ONLY. A title's .app holds its recompiled game code (and,
 with --game, the game's files), so it must never be distributed: never add one
@@ -30,6 +30,10 @@ What goes in <name>.app/Contents:
                                    ../../../Frameworks/libMoltenVK.dylib
     Resources/game/                only with --game (an APFS clone, so no space)
     Info.plist                     NSHighResolutionCapable, games category
+
+--metal-only: for a build that draws with Metal alone (src/d3d/rhi.c, a Mac
+with the Metal backend): only libdxcompiler.dylib, which Metal compiles its
+shaders with; no Vulkan loader, MoltenVK or driver manifest.
 
 How the pieces are found at run time: src/d3d/rhi_vulkan.c dlopens the loader
 from ../Frameworks beside the executable and points it at the bundle's
@@ -176,6 +180,8 @@ def main():
     ap.add_argument("--bundle-id", help="CFBundleIdentifier (default: org.xboxrecomp.<exe>)")
     ap.add_argument("--version", default="0.9.0")
     ap.add_argument("--game", help="a game folder (with default.xbe) to clone into Contents/Resources/game")
+    ap.add_argument("--metal-only", action="store_true",
+                    help="no Vulkan loader, MoltenVK or manifest: only the shader compiler Metal uses")
     ap.add_argument("--no-sign", action="store_true", help="skip the ad-hoc signature")
     ap.add_argument("--dry-run", action="store_true", help="print every step, change nothing")
     a = ap.parse_args()
@@ -210,6 +216,8 @@ def main():
         "libMoltenVK.dylib": find_sdk_file("lib/libMoltenVK.dylib"),
         "libdxcompiler.dylib": find_sdk_file("lib/libdxcompiler.dylib"),
     }
+    if a.metal_only:
+        pieces = {"libdxcompiler.dylib": pieces["libdxcompiler.dylib"]}
     missing = [k for k, v in pieces.items() if not v]
     if missing:
         die("not found in $VULKAN_SDK/lib or /usr/local/lib: " + ", ".join(missing)
@@ -223,7 +231,7 @@ def main():
 
     if app.exists():
         step(f"remove the old {app}", lambda: shutil.rmtree(app))
-    for d in (macos, frameworks, resources / "vulkan" / "icd.d"):
+    for d in (macos, frameworks, resources) if a.metal_only else (macos, frameworks, resources / "vulkan" / "icd.d"):
         step(f"make {d}", lambda d=d: d.mkdir(parents=True))
 
     binary = macos / exe.name
@@ -233,13 +241,14 @@ def main():
     for dst_name, src in pieces.items():
         copy_file(src, frameworks / dst_name)
 
-    icd_src = find_sdk_file("share/vulkan/icd.d/MoltenVK_icd.json")
-    icd = json.loads(icd_src.read_text()) if icd_src else {
-        "file_format_version": "1.0.0", "ICD": {"api_version": "1.4.0", "is_portability_driver": True}}
-    icd["ICD"]["library_path"] = "../../../Frameworks/libMoltenVK.dylib"
-    icd_dst = resources / "vulkan" / "icd.d" / "MoltenVK_icd.json"
-    step(f"write {icd_dst} (library_path ../../../Frameworks/libMoltenVK.dylib)",
-         lambda: icd_dst.write_text(json.dumps(icd, indent=4) + "\n"))
+    if not a.metal_only:
+        icd_src = find_sdk_file("share/vulkan/icd.d/MoltenVK_icd.json")
+        icd = json.loads(icd_src.read_text()) if icd_src else {
+            "file_format_version": "1.0.0", "ICD": {"api_version": "1.4.0", "is_portability_driver": True}}
+        icd["ICD"]["library_path"] = "../../../Frameworks/libMoltenVK.dylib"
+        icd_dst = resources / "vulkan" / "icd.d" / "MoltenVK_icd.json"
+        step(f"write {icd_dst} (library_path ../../../Frameworks/libMoltenVK.dylib)",
+             lambda: icd_dst.write_text(json.dumps(icd, indent=4) + "\n"))
 
     # Everything the executable itself links from outside the system.
     done = {}

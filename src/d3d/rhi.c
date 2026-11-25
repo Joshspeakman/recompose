@@ -14,18 +14,29 @@
 #include <string.h>
 
 /* The default: Direct3D 11 on Windows (Vulkan there is asked for with
- * RECOMP_D3D8_BACKEND=vulkan), Vulkan everywhere else, and nothing in a
- * build that has neither -- then rhi_device_create fails and says why. */
+ * RECOMP_D3D8_BACKEND=vulkan), Metal alone on a Mac that has it, Vulkan
+ * everywhere else, and nothing in a build that has none -- then
+ * rhi_device_create fails and says why. */
+#if defined(__APPLE__) && defined(RHI_HAVE_METAL)
+#define RHI_METAL_ONLY 1
+#endif
 #if defined(_WIN32)
 const RhiBackend *g_rhi = &rhi_d3d11_backend;
+#elif defined(RHI_METAL_ONLY)
+const RhiBackend *g_rhi = &rhi_metal_backend;
 #elif defined(RHI_HAVE_VULKAN)
 const RhiBackend *g_rhi = &rhi_vulkan_backend;
 #else
 const RhiBackend *g_rhi = NULL;
 #endif
 
-/* Every backend this build carries, first is the default. */
+/* Every backend this build offers, first is the default. A Mac offers
+ * Metal only: the Vulkan backend is still compiled there (Metal compiles its
+ * shaders through its DXC call) but is never chosen, and never a fallback. */
 static const RhiBackend *const g_backends[] = {
+#if defined(RHI_METAL_ONLY)
+    &rhi_metal_backend,
+#else
 #if defined(_WIN32)
     &rhi_d3d11_backend,
 #endif
@@ -33,7 +44,8 @@ static const RhiBackend *const g_backends[] = {
     &rhi_vulkan_backend,
 #endif
 #if defined(RHI_HAVE_METAL)
-    &rhi_metal_backend,     /* RECOMP_D3D8_BACKEND=metal while it is brought up */
+    &rhi_metal_backend,
+#endif
 #endif
     NULL
 };
@@ -60,6 +72,16 @@ int rhi_select_backend(const char *name)
         name = recomp_config_lookup("RECOMP_D3D8_BACKEND", "renderer");
     if (!name || !*name || strcmp(name, "auto") == 0)
         return 0;                       /* the build's own default */
+#if defined(RHI_METAL_ONLY)
+    /* A Mac draws with Metal whatever was asked: an old settings file's
+     * `renderer = vulkan` included. */
+    if (strcmp(name, "metal") != 0) {
+        fprintf(stderr, "[RHI] renderer \"%s\" asked for; a Mac draws with metal\n", name);
+        fflush(stderr);
+    }
+    g_rhi = &rhi_metal_backend;
+    return 0;
+#endif
     for (i = 0; g_backends[i]; i++) {
         if (strcmp(g_backends[i]->name, name) == 0) {
             g_rhi = g_backends[i];
