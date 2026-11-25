@@ -86,6 +86,7 @@ typedef struct {
     uint32_t adpcm_rest_len;
     uint64_t pcm_submitted;
     int      logged_surface;
+    int      logged_unplayed;
     uint32_t polls;
 } movie;
 
@@ -384,6 +385,17 @@ static void write_surface(movie *m, uint32_t surface)
     }
 }
 
+/* Where the movie's sound ends, in milliseconds from its start: what has
+ * been handed to the voice and what is still waiting. */
+static uint32_t sound_end_ms(const movie *m)
+{
+    uint64_t bytes_per_s = (uint64_t)m->rate * m->channels * 2u;
+
+    if (!bytes_per_s)
+        return 0;
+    return (uint32_t)((m->pcm_submitted + (m->pcm_len - m->pcm_off)) * 1000u / bytes_per_s);
+}
+
 uint32_t xmv_play_update(int handle, uint32_t surface_va, uint32_t *pts_ms)
 {
     movie *m = get(handle);
@@ -430,14 +442,38 @@ uint32_t xmv_play_update(int handle, uint32_t surface_va, uint32_t *pts_ms)
         return 1u;
     }
     if (m->video_done && !m->have_next) {
-        /* Let the last of the sound finish before saying so. */
+        /* Let the last of the sound finish before saying so -- for as long
+         * as the sound lasts and a little over, not for ever. Sound no voice
+         * will take is never handed over: with no audio device (one that
+         * failed to open, or RECOMP_AUDIO_GAIN=0) every submission is
+         * refused, and the movie sat on its last picture for good -- a title
+         * polling for the end (Future Perfect's logos, sub_00030280) swapped
+         * that one picture for ever and never reached its first game frame:
+         * the Mac's boot hang with several copies starting at once, and on
+         * Windows every time with no engine. Nor is a piece shorter than one
+         * sample frame, which feed_audio cannot hand over. */
         uint64_t played = 0;
         uint32_t queued = 0;
-        if (m->audio && m->pcm_off < m->pcm_len)
-            return 0u;
-        if (m->audio && recomp_audio_output_position(RECOMP_AUDIO_SLOT_MOVIE, &played, &queued) &&
-            queued && now < m->next_pts + 2000u)
-            return 0u;
+        uint32_t frame = m->channels * 2u, until = m->next_pts;
+
+        if (m->audio && sound_end_ms(m) > until)
+            until = sound_end_ms(m);
+        if (frame && m->pcm_len - m->pcm_off < frame)
+            m->pcm_off = m->pcm_len;
+        if (m->audio && now < until + 2000u) {
+            if (m->pcm_off < m->pcm_len)
+                return 0u;
+            if (recomp_audio_output_position(RECOMP_AUDIO_SLOT_MOVIE, &played, &queued) &&
+                queued && now < m->next_pts + 2000u)
+                return 0u;
+        }
+        if (m->audio && m->pcm_off < m->pcm_len && !m->logged_unplayed) {
+            m->logged_unplayed = 1;
+            fprintf(stderr, "[XMV] the movie's sound was not taken by a voice (%u bytes left; "
+                    "no audio device?): over with its pictures at %u ms\n",
+                    m->pcm_len - m->pcm_off, now);
+            fflush(stderr);
+        }
         return 2u;
     }
     return 0u;
