@@ -85,16 +85,23 @@ int rhi_device_create(const RhiDeviceDesc *d)
         return -1;
     }
     if (g_rhi->device_create(d) == 0)
-        return 0;
+        goto started;
     if (g_rhi != g_backends[0] && g_backends[0]) {
         fprintf(stderr, "[RHI] the %s renderer could not start; using %s\n",
                 g_rhi->name, g_backends[0]->name);
         fflush(stderr);
         g_rhi->device_destroy();
         g_rhi = g_backends[0];
-        return g_rhi->device_create(d);
+        if (g_rhi->device_create(d) == 0)
+            goto started;
     }
     return -1;
+started:
+    /* Said every run, so a log (a test's, a player's report) names the
+     * renderer it came from. */
+    fprintf(stderr, "[RHI] renderer: %s\n", g_rhi->name);
+    fflush(stderr);
+    return 0;
 }
 void     rhi_device_destroy(void)                      { if (g_rhi) g_rhi->device_destroy(); }
 int      rhi_device_ready(void)                        { return g_rhi && g_rhi->device_ready(); }
