@@ -1638,6 +1638,12 @@ void hle_d3d8_push_arrays_off(void);
 
 static int g_pushed_active;              /* below, with the pushed programs */
 
+/* The program address the selected shader runs from (SHADOW_PROGRAM_SLOTS for
+ * a shader with a program of its own), and how often a load there changed
+ * the running program (D3DDevice_LoadVertexShaderProgram). */
+static uint32_t g_shadow_vs_address = SHADOW_PROGRAM_SLOTS;
+static unsigned long g_slot_reselects;
+
 static void shadow_select_vertex_shader(uint32_t handle, uint32_t address)
 {
     int i;
@@ -1648,6 +1654,7 @@ static void shadow_select_vertex_shader(uint32_t handle, uint32_t address)
         fprintf(stderr, "[TRACE swap %lu] vertex shader 0x%08X (slot %u)\n",
                 g_shadow_swaps, handle, address);
     g_shadow_vs = handle;
+    g_shadow_vs_address = address;
     g_shadow_vs_is_program = (handle & 1) != 0;
     if (!g_shadow_vs_is_program) {
         g_shadow_vs_kind = -1;
@@ -4318,6 +4325,8 @@ static void shadow_track_vertex_shader(uint32_t guest, int has_function,
     }
 }
 
+static void vs_trace(const char *what, uint32_t handle, uint32_t address);
+
 /* void D3DDevice_LoadVertexShaderProgram(const DWORD *pFunction, DWORD Address)
  * Xbox-only: copy a compiled program (the same X_VSH_SHADER_HEADER form
  * CreateVertexShader takes) into transform-program slot Address, with no
@@ -4333,6 +4342,8 @@ HLE_EXPORT(D3DDevice_LoadVertexShaderProgram)
                          "D3DDevice_LoadVertexShaderProgram"))
         HLE_RETURN(0u);
     HLE_CALL_ORIGINAL(D3DDevice_LoadVertexShaderProgram);
+    if (function)
+        vs_trace("LoadVertexShaderProgram", HLE_MEM32(function) >> 16, address);
     if (g_shadow && function && address < SHADOW_PROGRAM_SLOTS) {
         static int logged;
         uint32_t header = HLE_MEM32(function);
@@ -4367,6 +4378,26 @@ HLE_EXPORT(D3DDevice_LoadVertexShaderProgram)
             host_vsh_delete_shader(g_slot_host[address]);
         g_slot_loaded[address] = SUCCEEDED(hr);
         g_slot_host[address] = SUCCEEDED(hr) ? host : 0;
+        /* A load at the address the selected shader runs from changes what
+         * it runs: the NV2A executes whatever its program memory holds at the
+         * start address, with no new select. Future Perfect selects slot 0
+         * once and then loads one program after another there, a draw or
+         * two each -- its characters' skinning among them; kept to the
+         * program the select found, every character was drawn by the
+         * previous program (the world's), as shards. */
+        if (SUCCEEDED(hr) && g_shadow_vs_is_program && g_shadow_vs_slot >= 0 &&
+            g_programs[g_shadow_vs_slot].from_slot && g_shadow_vs_address == address &&
+            g_programs[g_shadow_vs_slot].host != host) {
+            /* As a select of the same handle and address would: the program,
+             * then the layout made for it from the handle's declaration. */
+            g_programs[g_shadow_vs_slot].host = host;
+            g_shadow_vs_kind = g_programs[g_shadow_vs_slot].kind = SHADER_HOST_PROGRAM;
+            shadow_read_declaration(g_shadow_vs_slot, g_shadow_vs);
+            host_SetVertexShader(g_shadow, host);
+            if (g_slot_reselects++ == 0)
+                fprintf(stderr, "[HLE-D3D8] a program loaded at the selected address %u "
+                        "runs from the next draw, as on the console\n", address);
+        }
         if (!valid || !slot_program_cached(host) || g_slot_programs[g_slot_program_count - 1].host == host) {
             /* a new program, or one that could not be made: worth a line */
             if (logged < 64 && !(valid && hr == S_OK && g_slot_reloads && slot_program_cached(host) &&
@@ -4379,6 +4410,43 @@ HLE_EXPORT(D3DDevice_LoadVertexShaderProgram)
     }
 }
 
+/* RECOMP_HLE_VS_TRACE=<from frame>: the vertex shader selections from that
+ * frame on, 400 lines -- which handle, which program slot, and what the
+ * handle is (declaration only, a program of its own). */
+static void vs_trace(const char *what, uint32_t handle, uint32_t address)
+{
+    static long from = -2;
+    static int said;
+    int slot;
+
+    if (from == -2) {
+        const char *v = getenv("RECOMP_HLE_VS_TRACE");
+        from = v && *v ? atol(v) : -1;
+    }
+    if (from < 0 || said >= 400 || (long)g_shadow_swaps < from)
+        return;
+    said++;
+    if (!strncmp(what, "Draw", 4)) {
+        fprintf(stderr, "[VS-TRACE] frame %lu %s stride %u, %u indices; running %s\n",
+                (unsigned long)g_shadow_swaps, what, handle, address,
+                g_shadow_vs_slot >= 0 && g_programs[g_shadow_vs_slot].from_slot ? "the slot's program as selected" : "-");
+        return;
+    }
+    if (!strcmp(what, "LoadVertexShaderProgram")) {
+        fprintf(stderr, "[VS-TRACE] frame %lu LoadVertexShaderProgram(%u instructions at slot %u)\n",
+                (unsigned long)g_shadow_swaps, handle, address);
+        return;
+    }
+    slot = handle ? shadow_program_find(handle) : -1;
+    fprintf(stderr, "[VS-TRACE] frame %lu %s(0x%08X, %s%u) handle is %s; slot %s\n",
+            (unsigned long)g_shadow_swaps, what, handle,
+            address == 0xFFFFFFFFu ? "-" : "slot ", address == 0xFFFFFFFFu ? 0u : address,
+            !handle ? "none" : slot < 0 ? "unknown"
+            : g_programs[slot].kind == SHADER_DECLARATION ? "a declaration only"
+            : g_programs[slot].kind == SHADER_HOST_PROGRAM ? "a program" : "not replayed",
+            address >= SHADOW_PROGRAM_SLOTS ? "-" : g_slot_loaded[address] ? "loaded" : "NOT LOADED");
+}
+
 /* HRESULT D3DDevice_SetVertexShader(DWORD Handle)                            */
 HLE_EXPORT(D3DDevice_SetVertexShader)
 {
@@ -4389,6 +4457,7 @@ HLE_EXPORT(D3DDevice_SetVertexShader)
     if (original_missing(hle_original_D3DDevice_SetVertexShader, "D3DDevice_SetVertexShader"))
         HLE_RETURN(0x80004005u);
     HLE_CALL_ORIGINAL(D3DDevice_SetVertexShader);
+    vs_trace("SetVertexShader", handle, 0xFFFFFFFFu);
     if (g_shadow)
         shadow_select_vertex_shader(handle, SHADOW_PROGRAM_SLOTS);
 }
@@ -4407,6 +4476,7 @@ HLE_EXPORT(D3DDevice_SelectVertexShader)
                          "D3DDevice_SelectVertexShader"))
         HLE_RETURN(0x80004005u);
     HLE_CALL_ORIGINAL(D3DDevice_SelectVertexShader);
+    vs_trace("SelectVertexShader", handle, HLE_ARG(1));
     if (g_shadow && handle)
         shadow_select_vertex_shader(handle, HLE_ARG(1));
 }
@@ -6765,6 +6835,7 @@ void hle_d3d8_shadow_draw_indexed(uint32_t xpt, uint32_t count, const uint16_t *
         hle_d3d8_apply_pending_textures();
         hle_d3d8_apply_pending_constants();
     }
+    vs_trace(hle_d3d8_pb_walking() ? "DrawIndexed(walk)" : "DrawIndexed", stride, count);
     if (!shadow_can_draw(xpt, stride))
         return;
     if (!xbox_primitive_to_host(xpt, count, &pt, &prims)) {
