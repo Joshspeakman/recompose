@@ -225,6 +225,65 @@ static bool apu_decode_and_handle(PCONTEXT ctx, uint32_t mmio_offset, int is_wri
         return true;
     }
 
+    /* TEST r/m, imm (F6 /0 ib; F7 /0 iw or id) - read. clang emits it for a
+     * lifted `if (MEM32(reg) & mask)`; Future Perfect's DirectSound start-up
+     * polled 0xFE802000 so (25 Nov 2026) and faulted with this unknown. The
+     * immediate is 16-bit under 0x66 and 32-bit otherwise, sign-extended under
+     * REX.W. */
+    if ((opcode[0] == 0xF6 || opcode[0] == 0xF7) && ((opcode[1] >> 3) & 7) == 0) {
+        if (opcode[0] == 0xF6) access_size = 1;
+        int modrm_len = decode_modrm_len(opcode + 1, rex_b);
+        int imm_len = access_size == 1 ? 1 : access_size == 2 ? 2 : 4;
+        const uint8_t *ib = opcode + 1 + modrm_len;
+        uint64_t imm = imm_len == 1 ? ib[0]
+                     : imm_len == 2 ? *(const uint16_t *)ib
+                     : (uint64_t)(int64_t)*(const int32_t *)ib;
+        uint64_t mem_val = mcpx_apu_mmio_read(g_apu_state, mmio_offset, access_size);
+        uint64_t mask = access_size == 8 ? ~0ULL : (1ULL << (access_size * 8)) - 1;
+        uint64_t result = mem_val & imm & mask;
+        ctx->EFlags &= ~(0x0001 | 0x0040 | 0x0080 | 0x0800);
+        if (result == 0) ctx->EFlags |= 0x0040;
+        if (result & (1ULL << (access_size * 8 - 1))) ctx->EFlags |= 0x0080;
+        ctx->Rip += prefix_len + 1 + modrm_len + imm_len;
+        g_apu_mmio_read_count++;
+        return true;
+    }
+
+    /* OR, AND and CMP r/m, imm (80 /1 /4 /7 ib; 81 iw or id; 83 ib
+     * sign-extended): the immediate forms of the register forms below, which
+     * a compiler picks for a constant mask or value. */
+    if ((opcode[0] == 0x80 || opcode[0] == 0x81 || opcode[0] == 0x83) &&
+        (((opcode[1] >> 3) & 7) == 1 || ((opcode[1] >> 3) & 7) == 4 || ((opcode[1] >> 3) & 7) == 7)) {
+        int op = (opcode[1] >> 3) & 7;
+        if (opcode[0] == 0x80) access_size = 1;
+        int modrm_len = decode_modrm_len(opcode + 1, rex_b);
+        int imm_len = opcode[0] == 0x81 ? (access_size == 2 ? 2 : 4) : 1;
+        const uint8_t *ib = opcode + 1 + modrm_len;
+        uint64_t imm = opcode[0] == 0x80 ? ib[0]
+                     : opcode[0] == 0x83 ? (uint64_t)(int64_t)(int8_t)ib[0]
+                     : imm_len == 2 ? *(const uint16_t *)ib
+                     : (uint64_t)(int64_t)*(const int32_t *)ib;
+        uint64_t mask = access_size == 8 ? ~0ULL : (1ULL << (access_size * 8)) - 1;
+        uint64_t mem_val = mcpx_apu_mmio_read(g_apu_state, mmio_offset, access_size) & mask;
+        imm &= mask;
+        ctx->EFlags &= ~(0x0001 | 0x0040 | 0x0080 | 0x0800);
+        if (op == 7) {
+            uint64_t result = (mem_val - imm) & mask;
+            if (result == 0) ctx->EFlags |= 0x0040;
+            if (mem_val < imm) ctx->EFlags |= 0x0001;
+            if (result & (1ULL << (access_size * 8 - 1))) ctx->EFlags |= 0x0080;
+            g_apu_mmio_read_count++;
+        } else {
+            uint64_t result = (op == 1 ? (mem_val | imm) : (mem_val & imm)) & mask;
+            mcpx_apu_mmio_write(g_apu_state, mmio_offset, result, access_size);
+            if (result == 0) ctx->EFlags |= 0x0040;
+            if (result & (1ULL << (access_size * 8 - 1))) ctx->EFlags |= 0x0080;
+            g_apu_mmio_write_count++;
+        }
+        ctx->Rip += prefix_len + 1 + modrm_len + imm_len;
+        return true;
+    }
+
     /* CMP r/m, r (38/39) */
     if (opcode[0] == 0x39 || opcode[0] == 0x38) {
         if (opcode[0] == 0x38) access_size = 1;
