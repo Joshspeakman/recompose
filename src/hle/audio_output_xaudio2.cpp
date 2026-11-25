@@ -281,6 +281,116 @@ void foldSpeaker(float *matrix, uint32_t src_channels, uint32_t c, int speaker, 
     }
 }
 
+/* XAudio2's reverb, made the first time a title describes a room
+   (recomp_audio_output_set_reverb), not at start-up. Made at start-up and
+   left silent -- TS2 only ever says "no room" (-10000) -- its output still
+   went to infinity in most runs a few seconds in, on Josh's PC (25 Nov 2026:
+   4 of 5 title-screen runs on Vulkan, Siberia on D3D11), with every send
+   into it at 0 as well, and with valid parameters given it as well: whatever
+   reached it once that was not a number it seems to keep for ever in its
+   feedback, and through its volume of 0 (inf times 0) it turned the whole mix
+   to NaN -- the music and every effect lost behind a limiter held at full
+   scale. Without it every run was clean (10 of 10, both renderers). A title
+   that does describe a room still gets it, as before. */
+bool reverb_allowed;                /* RECOMP_AUDIO_REVERB is not 0, and there are speakers */
+
+HRESULT setSilentRoom();
+IXAudio2Voice *dryTarget();
+
+/* v, which sends to the speakers only, sends to the reverb too: its speaker
+   levels as they were (new sends start at XAudio2's defaults), the reverb's
+   from `wet` (reverb_inputs x channels), or none. */
+void addReverbSend(IXAudio2Voice *v, uint32_t channels, const float *wet)
+{
+    float dry[XAUDIO2_MAX_AUDIO_CHANNELS * XAUDIO2_MAX_AUDIO_CHANNELS] = {};
+    v->GetOutputMatrix(dryTarget(), channels, master_channels, dry);
+    XAUDIO2_SEND_DESCRIPTOR d[2] = {{0, dryTarget()}, {0, reverb_voice}};
+    XAUDIO2_VOICE_SENDS sends{2u, d};
+    if (FAILED(v->SetOutputVoices(&sends)))
+        return;
+    v->SetOutputMatrix(dryTarget(), channels, master_channels, dry);
+    float zero[2 * XAUDIO2_MAX_AUDIO_CHANNELS] = {};
+    v->SetOutputMatrix(reverb_voice, channels, reverb_inputs, wet ? wet : zero);
+}
+
+/* The APU path's stream, if it plays: its room send, as it gets when made
+   with the reverb there (recomp_audio_output_mix_submit). */
+void rerouteApuStream()
+{
+    std::lock_guard<std::mutex> hold(mix_lock);
+    if (!mix_voice) return;
+    constexpr uint32_t ch = RECOMP_MIX_CHANNELS;
+    float wet[2 * ch] = {};
+    for (uint32_t i = 0; i < reverb_inputs; ++i)
+        wet[i * ch + RECOMP_SPEAKERS] = 1.0f;
+    addReverbSend(mix_voice, ch, wet);
+}
+
+bool makeReverb()
+{
+    if (reverb_voice) return true;
+    if (!reverb_allowed || !engine || !master) return false;
+    XAUDIO2_VOICE_DETAILS details{};
+    master->GetVoiceDetails(&details);
+    const uint32_t outs = master_channels == 6 ? 6u : 2u;
+    for (uint32_t ins = 1; ins <= 2 && !reverb_voice; ++ins) {
+        IUnknown *apo = nullptr;
+        if (FAILED(XAudio2CreateReverb(&apo, 0))) break;
+        XAUDIO2_EFFECT_DESCRIPTOR effect{apo, TRUE, outs};
+        XAUDIO2_EFFECT_CHAIN chain{1, &effect};
+        XAUDIO2_SEND_DESCRIPTOR d{0, dryTarget()};
+        XAUDIO2_VOICE_SENDS sends{1, &d};
+        if (SUCCEEDED(engine->CreateSubmixVoice(&reverb_voice, ins,
+                details.InputSampleRate, 0, 1, &sends, &chain)))
+            reverb_inputs = ins;
+        else
+            reverb_voice = nullptr;
+        apo->Release();
+    }
+    if (!reverb_voice) {
+        reverb_allowed = false;         /* say it once */
+        std::fprintf(stderr, "[audio-output] reverb: could not be made; voices play dry\n");
+        return false;
+    }
+    reverb_voice->SetVolume(0.0f);
+    setSilentRoom();
+    /* What already plays gets its send to it: each voice at its next
+       submission (applyMix sets the sends again, then its levels), the
+       mix-in buffers and the APU stream now, at no level until their mix
+       says one. */
+    for (auto &v : voices)
+        if (v.source) v.route_applied = ~0u;
+    for (auto &sub : submixes)
+        if (sub.voice) addReverbSend(sub.voice, sub.channels, nullptr);
+    rerouteApuStream();
+    std::fprintf(stderr, "[audio-output] reverb: made for the title's room (%s send)\n",
+                 reverb_inputs == 1 ? "mono" : "stereo");
+    return true;
+}
+
+/* The reverb's parameters until the title's room is set: I3DL2's default
+   room (everything at -100 dB), converted as a title's room is. */
+HRESULT setSilentRoom()
+{
+    XAUDIO2FX_REVERB_I3DL2_PARAMETERS i3{};
+    i3.WetDryMix = 100.0f;
+    i3.Room = -10000;
+    i3.RoomHF = 0;
+    i3.RoomRolloffFactor = 0.0f;
+    i3.DecayTime = 1.0f;
+    i3.DecayHFRatio = 0.5f;
+    i3.Reflections = -10000;
+    i3.ReflectionsDelay = 0.02f;
+    i3.Reverb = -10000;
+    i3.ReverbDelay = 0.04f;
+    i3.Diffusion = 100.0f;
+    i3.Density = 100.0f;
+    i3.HFReference = 5000.0f;
+    XAUDIO2FX_REVERB_PARAMETERS native{};
+    ReverbConvertI3DL2ToNative(&i3, &native);
+    return reverb_voice->SetEffectParameters(0, &native, sizeof native);
+}
+
 /* Where the dry mix goes: the meter's submix when there is one. */
 IXAudio2Voice *dryTarget()
 {
@@ -536,34 +646,13 @@ extern "C" void recomp_audio_output_initialize(void)
                          meter_on ? "metering the mix" : "could not attach the meter");
         }
     }
-    /* The I3DL2 room. XAudio2's reverb takes I3DL2 parameters through
-       ReverbConvertI3DL2ToNative, as the console's DSP reverb takes them from
-       IDirectSound_SetI3DL2Listener. RECOMP_AUDIO_REVERB=0 for none. */
+    /* The I3DL2 room: made when a title first describes one (makeReverb).
+       RECOMP_AUDIO_REVERB=0 for none. */
     {
         const char *rev = std::getenv("RECOMP_AUDIO_REVERB");
-        if (!(rev && std::strcmp(rev, "0") == 0) && master_channels) {
-            XAUDIO2_VOICE_DETAILS details{};
-            master->GetVoiceDetails(&details);
-            const uint32_t outs = master_channels == 6 ? 6u : 2u;
-            for (uint32_t ins = 1; ins <= 2 && !reverb_voice; ++ins) {
-                IUnknown *apo = nullptr;
-                if (FAILED(XAudio2CreateReverb(&apo, 0))) break;
-                XAUDIO2_EFFECT_DESCRIPTOR effect{apo, TRUE, outs};
-                XAUDIO2_EFFECT_CHAIN chain{1, &effect};
-                XAUDIO2_SEND_DESCRIPTOR d{0, dryTarget()};
-                XAUDIO2_VOICE_SENDS sends{1, &d};
-                if (SUCCEEDED(engine->CreateSubmixVoice(&reverb_voice, ins,
-                        details.InputSampleRate, 0, 1, &sends, &chain)))
-                    reverb_inputs = ins;
-                else
-                    reverb_voice = nullptr;
-                apo->Release();
-            }
-            if (reverb_voice) reverb_voice->SetVolume(0.0f);
-            std::fprintf(stderr, "[audio-output] reverb: %s\n",
-                         reverb_voice ? (reverb_inputs == 1 ? "ready (mono send)" : "ready (stereo send)")
-                                      : "could not be made; voices play dry");
-        }
+        reverb_allowed = !(rev && std::strcmp(rev, "0") == 0) && master_channels;
+        std::fprintf(stderr, "[audio-output] reverb: %s\n",
+                     reverb_allowed ? "made when the title describes a room" : "off");
     }
     /* RECOMP_MUTE: silent, but everything else as usual. RECOMP_AUDIO_GAIN=0
      * opens no device at all, and then nothing reports a play position: the
@@ -690,11 +779,13 @@ extern "C" void recomp_audio_output_set_submix(uint32_t key, uint32_t channels,
 extern "C" void recomp_audio_output_set_reverb(const RecompI3dl2 *room)
 {
     recomp_audio_output_initialize();
-    if (!engine || !reverb_voice) return;
+    if (!engine) return;
     if (!room || room->room <= -10000) {
-        reverb_voice->SetVolume(0.0f);
+        if (reverb_voice) reverb_voice->SetVolume(0.0f);
         return;
     }
+    if (!reverb_voice && !makeReverb())
+        return;
     XAUDIO2FX_REVERB_I3DL2_PARAMETERS i3{};
     i3.WetDryMix = 100.0f;                 /* a send: all of what reaches it is the room */
     i3.Room = room->room;
