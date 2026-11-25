@@ -6984,8 +6984,17 @@ HLE_EXPORT(D3DDevice_DrawIndexedVerticesUP)
  * apartment were never drawn. The count is in the guest's samples: a
  * supersampled screen counts each of its samples, and a host that renders
  * larger counts more. RECOMP_HLE_D3D8_VISIBILITY=0 goes back to answering
- * without counting. */
+ * without counting.
+ *
+ * Except points: a point is one host pixel at any scale (d3d8_device.c), so
+ * a test that drew only points counts each visible point as one guest
+ * pixel. Future Perfect tests its sun with 50 one-pixel points and sizes the
+ * sun's glare and lens flare by how many of the 50 are seen: scaled down by
+ * the area of a 4x screen, 50 came back as 3 and the sun and its flare were
+ * never drawn (2401's opening in space, against xemu, 26 Nov 2026). */
 void d3d8_display_scene_size(UINT guest_w, UINT guest_h, UINT *scene_w, UINT *scene_h);
+extern volatile unsigned long g_d3d8_prims_points, g_d3d8_prims_other;
+static unsigned long g_vis_points0, g_vis_other0;   /* the counts at the open test's start */
 
 #define VIS_TESTS 512u
 static struct {
@@ -7028,12 +7037,16 @@ void hle_d3d8_pb_zpass(uint32_t enable)
                                  : 1.0;
         if (g_target_is_screen)
             g_vis_scale *= (double)(g_target_aa_x * g_target_aa_y);
+        g_vis_points0 = g_d3d8_prims_points;
+        g_vis_other0 = g_d3d8_prims_other;
     } else if (g_vis_open) {
         uint32_t i = g_vis_n++ % VIS_TESTS;
+        int points_only = g_d3d8_prims_other == g_vis_other0 &&
+                          g_d3d8_prims_points != g_vis_points0;
 
         rhi_occlusion_end(&g_vis[i].t);
         g_vis[i].offset = 0;
-        g_vis[i].scale = g_vis_scale;
+        g_vis[i].scale = points_only ? 1.0 : g_vis_scale;
         g_vis[i].have = 0;
         g_vis[i].swap = (uint32_t)g_shadow_swaps;
         g_vis_open = 0;
@@ -7166,6 +7179,17 @@ HLE_EXPORT(D3DDevice_GetVisibilityTestResult)
 
         hle_d3d8_push_constants_sync();       /* the End this asks about */
         if (visibility_count(index, &counted) == 0) {
+            /* RECOMP_HLE_D3D8_VISIBILITY_TRACE=<n>: the first n answers. */
+            static long trace = -2;
+            if (trace == -2) {
+                const char *t = getenv("RECOMP_HLE_D3D8_VISIBILITY_TRACE");
+                trace = t && *t ? atol(t) : 0;
+            }
+            if (trace > 0) {
+                trace--;
+                fprintf(stderr, "[HLE-D3D8] visibility test %u: %u sample(s), frame %lu\n",
+                        index, counted, (unsigned long)g_shadow_swaps);
+            }
             if (result_va)
                 HLE_MEM32(result_va) = counted;
             if (stamp_va) {

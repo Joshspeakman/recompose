@@ -1727,8 +1727,17 @@ static HRESULT __stdcall dev_GetIndices(IDirect3DDevice8 *self, IDirect3DIndexBu
     return S_OK;
 }
 
+/* Primitives seen, points and the rest (counted where each draw is sized, so
+ * more than once a draw): hle_d3d8.c's visibility tests read whether a test
+ * drew only points, which stay one host pixel at any scale. */
+volatile unsigned long g_d3d8_prims_points, g_d3d8_prims_other;
+
 static uint32_t map_primitive_type(D3DPRIMITIVETYPE pt, UINT count, UINT *out_count)
 {
+    if (pt == D3DPT_POINTLIST)
+        g_d3d8_prims_points++;
+    else
+        g_d3d8_prims_other++;
     /* Lines and points are one host pixel across whatever the scale, so a
      * title that draws them comes out thinner as RECOMP_RES_SCALE rises:
      * said once each, so a log shows whether it does. */
