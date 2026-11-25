@@ -1223,6 +1223,198 @@ static int settings_save(void)
 
 /* ---------------------------------------------------------------- launch */
 
+/* ------------------------------------------------------------- updates */
+
+/* An install with an updater beside the launcher gets an Updates tile
+ * (launcher_showcase.inc). Timeslip's tools\install_windows.ps1 writes
+ * update.ps1 there; it does everything and this only runs it and shows what it
+ * says. `update.ps1 -Check` prints one line -- "available <tag> <commit>",
+ * "current <tag> <commit>", "none" (no release yet) or "error <why>" -- and
+ * `update.ps1` moves to the newest GitHub release, builds it again from the
+ * player's disc and reinstalls, printing "== <phase>" lines between its
+ * detail. A self-building release has its builder's job instead (one job at
+ * a time) and no updater. Windows only so far. */
+typedef enum { UPD_OFF, UPD_CHECKING, UPD_CURRENT, UPD_AVAILABLE, UPD_NONE, UPD_ERROR,
+               UPD_RUNNING, UPD_DONE, UPD_FAILED } UpdState;
+static UpdState g_upd = UPD_OFF;
+static UpdState g_upd_answer;                 /* what the check said, until it ends */
+static char g_upd_script[LAUNCHER_PATH + 32];
+static char g_upd_tag[64], g_upd_error[400], g_upd_phase[160], g_upd_detail[300];
+static double g_upd_progress;
+static int g_upd_cancelled;
+
+static int upd_start(int check)
+{
+#ifdef _WIN32
+    static char ps[LAUNCHER_PATH];
+    const char *root = getenv("SystemRoot");
+    const char *argv[8];
+    int n = 0;
+
+    snprintf(ps, sizeof ps, "%s\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+             root && *root ? root : "C:\\Windows");
+    argv[n++] = ps;
+    argv[n++] = "-NoProfile";
+    argv[n++] = "-ExecutionPolicy";
+    argv[n++] = "Bypass";
+    argv[n++] = "-File";
+    argv[n++] = g_upd_script;
+    if (check)
+        argv[n++] = "-Check";
+    argv[n] = NULL;
+    return lhost_job_start(argv);
+#else
+    (void)check;
+    return 0;
+#endif
+}
+
+static void upd_check(void)
+{
+    g_upd_answer = UPD_ERROR;
+    snprintf(g_upd_error, sizeof g_upd_error, "The updater gave no answer.");
+    if (upd_start(1)) {
+        g_upd = UPD_CHECKING;
+    } else {
+        g_upd = UPD_ERROR;
+        snprintf(g_upd_error, sizeof g_upd_error, "The updater could not be started.");
+    }
+}
+
+static void upd_init(void)
+{
+#ifdef _WIN32
+    char dir[LAUNCHER_PATH], old[LAUNCHER_PATH + 16];
+    FILE *f;
+    size_t n;
+
+    if (g_release || !host_exe_path(dir, sizeof dir))
+        return;
+    /* The launcher an update swapped out (tools\install_windows.ps1 renames
+     * a running one aside): gone once it no longer runs. */
+    n = strlen(dir);
+    if (n > 4 && _stricmp(dir + n - 4, ".exe") == 0) {
+        snprintf(old, sizeof old, "%.*s.old.exe", (int)(n - 4), dir);
+        DeleteFileA(old);
+    }
+    host_path_dirname(dir);
+    snprintf(g_upd_script, sizeof g_upd_script, "%s\\update.ps1", dir);
+    f = fopen(g_upd_script, "rb");
+    if (!f)
+        return;
+    fclose(f);
+    upd_check();
+#endif
+}
+
+/* How far along the update is, from the phase it says it is in. */
+static double upd_progress_of(const char *phase)
+{
+    if (!strncmp(phase, "Asking", 6))      return 0.04;
+    if (!strncmp(phase, "Downloading", 11)) return 0.10;
+    if (!strncmp(phase, "Recompiling", 11)) return 0.20;
+    if (!strncmp(phase, "Installing", 10))  return 0.92;
+    if (!strncmp(phase, "Updated", 7))      return 1.0;
+    return g_upd_progress;
+}
+
+static void upd_tick(void)
+{
+    char line[1024];
+    int n = 0, code;
+
+    if (g_upd != UPD_CHECKING && g_upd != UPD_RUNNING)
+        return;
+    while (n++ < 64 && lhost_job_line(line, sizeof line)) {
+        if (g_upd == UPD_CHECKING) {
+            char word[16] = "", tag[64] = "";
+            if (sscanf(line, "%15s %63s", word, tag) < 1)
+                continue;
+            if (!strcmp(word, "available") || !strcmp(word, "current")) {
+                g_upd_answer = word[0] == 'a' ? UPD_AVAILABLE : UPD_CURRENT;
+                snprintf(g_upd_tag, sizeof g_upd_tag, "%s", tag);
+            } else if (!strcmp(word, "none")) {
+                g_upd_answer = UPD_NONE;
+            } else if (!strcmp(word, "error")) {
+                g_upd_answer = UPD_ERROR;
+                snprintf(g_upd_error, sizeof g_upd_error, "%s", line + 6);
+            }
+        } else if (!strncmp(line, "== ", 3)) {
+            const char *stop = "The update stopped: ";
+            if (!strncmp(line + 3, stop, strlen(stop)))
+                snprintf(g_upd_error, sizeof g_upd_error, "%s", line + 3 + strlen(stop));
+            else {
+                snprintf(g_upd_phase, sizeof g_upd_phase, "%s", line + 3);
+                g_upd_progress = upd_progress_of(g_upd_phase);
+                g_upd_detail[0] = '\0';
+            }
+        } else {
+            const char *p = line;
+            while (*p == ' ')
+                p++;
+            if (*p) {
+                snprintf(g_upd_detail, sizeof g_upd_detail, "%s", p);
+                /* While it builds, creep on with what it compiles. */
+                if (g_upd_progress >= 0.20 && g_upd_progress < 0.88)
+                    g_upd_progress += 0.0004;
+            }
+        }
+    }
+    code = lhost_job_status();
+    if (code < 0)
+        return;
+    if (g_upd == UPD_CHECKING) {
+        g_upd = g_upd_answer;
+        return;
+    }
+    if (code == 0 && !g_upd_error[0]) {
+        g_upd = UPD_DONE;
+        g_upd_progress = 1.0;
+    } else {
+        g_upd = UPD_FAILED;
+        if (g_upd_cancelled)
+            snprintf(g_upd_error, sizeof g_upd_error,
+                     "Cancelled. The installed game is the one you had.");
+        else if (!g_upd_error[0])
+            snprintf(g_upd_error, sizeof g_upd_error, "The updater stopped (exit %d).", code);
+    }
+}
+
+/* The Updates tile, activated: install what is out, or ask again. */
+static void upd_activate(void)
+{
+    if (g_upd == UPD_AVAILABLE) {
+        g_upd_error[0] = g_upd_detail[0] = '\0';
+        snprintf(g_upd_phase, sizeof g_upd_phase, "Starting");
+        g_upd_progress = 0.0;
+        g_upd_cancelled = 0;
+        if (upd_start(0))
+            g_upd = UPD_RUNNING;
+        else {
+            g_upd = UPD_FAILED;
+            snprintf(g_upd_error, sizeof g_upd_error, "The updater could not be started.");
+        }
+    } else if (g_upd == UPD_CURRENT || g_upd == UPD_NONE || g_upd == UPD_ERROR) {
+        upd_check();
+    }
+}
+
+/* After an update: this launcher again, the new one now. */
+static void upd_restart(void)
+{
+    char exe[LAUNCHER_PATH], dir[LAUNCHER_PATH];
+
+    if (host_exe_path(exe, sizeof exe)) {
+        snprintf(dir, sizeof dir, "%s", exe);
+        host_path_dirname(dir);
+        if (lhost_launch(exe, dir)) {
+            lhost_close();
+            return;
+        }
+    }
+    g_upd = UPD_CURRENT;
+}
+
 static int launch_game(void)
 {
     char exe[LAUNCHER_PATH + 64], dir[LAUNCHER_PATH];
@@ -2575,6 +2767,7 @@ void launcher_init(void)
     const char *build;
 
     release_init();
+    upd_init();
     read_title();
     launcher_art_init(g_title_id);
     settings_load();
@@ -2820,6 +3013,7 @@ void launcher_tick(void)
         link_tab_tick();
     if (g_rel == REL_BUILDING)
         release_tick();
+    upd_tick();
     g_pad_seen = pad_poll(&dx, &dy, &a, &b, &t);
     if (g_capturing)
         capture_tick();             /* the press is the answer, not a move */

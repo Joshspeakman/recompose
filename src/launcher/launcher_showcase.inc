@@ -49,7 +49,9 @@
 #endif
 
 enum { SC_NONE = -1, SC_PLAY = 100, SC_QUIT = 101, SC_BACK = 102, SC_CARD = 200, SC_TILE = 300 };
-enum { SC_TILE_GRAPHICS, SC_TILE_CONTROLS, SC_TILE_ONLINE, SC_TILE_SAVES, SC_TILES };
+enum { SC_TILE_GRAPHICS, SC_TILE_CONTROLS, SC_TILE_ONLINE, SC_TILE_SAVES, SC_TILE_UPDATES, SC_TILES };
+/* The tiles shown: Updates only when the install has an updater (launcher.c). */
+static int sc_tiles(void) { return g_upd != UPD_OFF ? SC_TILES : SC_TILES - 1; }
 
 static int g_sc_hover = SC_NONE, g_sc_pressed = SC_NONE;
 static int g_sc_focus = -1;               /* -1 the cards, else a tile */
@@ -137,7 +139,7 @@ static void sc_set_card(int i)
 
 static const char *sc_tile_title(int k)
 {
-    static const char *const t[] = { "GRAPHICS OPTIONS", "CONTROLS", "ONLINE", "SAVES" };
+    static const char *const t[] = { "GRAPHICS OPTIONS", "CONTROLS", "ONLINE", "SAVES", "UPDATES" };
     return t[k];
 }
 
@@ -145,9 +147,14 @@ static void sc_tile_summary(int k, char *out, size_t n)
 {
     switch (k) {
     case SC_TILE_GRAPHICS:
-        snprintf(out, n, "%s" SC_DOT "%dx" SC_DOT "%s" SC_DOT "%dx AF",
-                 g_settings.fullscreen ? "Fullscreen" : "Window", g_settings.resolution_scale,
-                 g_settings.widescreen ? "16:9" : "4:3", g_settings.anisotropy);
+        if (sc_tiles() > 4)                   /* a narrower tile: no room for the filtering */
+            snprintf(out, n, "%s" SC_DOT "%dx" SC_DOT "%s",
+                     g_settings.fullscreen ? "Fullscreen" : "Window", g_settings.resolution_scale,
+                     g_settings.widescreen ? "16:9" : "4:3");
+        else
+            snprintf(out, n, "%s" SC_DOT "%dx" SC_DOT "%s" SC_DOT "%dx AF",
+                     g_settings.fullscreen ? "Fullscreen" : "Window", g_settings.resolution_scale,
+                     g_settings.widescreen ? "16:9" : "4:3", g_settings.anisotropy);
         break;
     case SC_TILE_CONTROLS:
         snprintf(out, n, "%s", g_settings.mouse_look ? "Keys & Mouse" : "Controller");
@@ -158,6 +165,15 @@ static void sc_tile_summary(int k, char *out, size_t n)
         else if (!strcmp(g_settings.syslink, "host")) snprintf(out, n, "System Link: Host");
         else if (!strcmp(g_settings.syslink, "join")) snprintf(out, n, "System Link: Join");
         else                                          snprintf(out, n, "Off");
+        break;
+    case SC_TILE_UPDATES:
+        switch (g_upd) {
+        case UPD_CHECKING:  snprintf(out, n, "Checking\xe2\x80\xa6"); break;
+        case UPD_CURRENT:   snprintf(out, n, "Up to date"); break;
+        case UPD_AVAILABLE: snprintf(out, n, "Update ready"); break;
+        case UPD_NONE:      snprintf(out, n, "No release yet"); break;
+        default:            snprintf(out, n, "Can't check"); break;
+        }
         break;
     default:
         snprintf(out, n, "Open");
@@ -171,6 +187,16 @@ static const char *sc_tile_note(int k)
     case SC_TILE_GRAPHICS: return "Resolution, widescreen, texture sharpness, frame rate and fullscreen.";
     case SC_TILE_CONTROLS: return "Keyboard and mouse, controllers, mouse look and sensitivity.";
     case SC_TILE_ONLINE:   return "Online co-op with a friend, or System Link for multiplayer.";
+    case SC_TILE_UPDATES: {
+        static char note[200];
+        switch (g_upd) {
+        case UPD_CHECKING:  return "Asking GitHub for the newest release.";
+        case UPD_CURRENT:   snprintf(note, sizeof note, "You have the newest release, %s. Enter checks again.", g_upd_tag); return note;
+        case UPD_AVAILABLE: snprintf(note, sizeof note, "%s is out. Enter installs it: it builds again from your own disc, a few minutes.", g_upd_tag); return note;
+        case UPD_NONE:      return "No release has been published on GitHub yet. Enter checks again.";
+        default:            return "GitHub could not be asked. Enter tries again.";
+        }
+    }
     default:               return "The game's saved profiles and progress, in your file browser.";
     }
 }
@@ -197,13 +223,24 @@ static void sc_open_saves(void)
 /* -------------------------------------------------------------- geometry */
 
 static ThemeRect sc_card_rect(int i) { return sc_rect(60 + i * 436, 250, 404, 224); }
-/* The Graphics tile counts twice, as the Mac's does: five units across. */
+/* The Graphics tile is wider than the rest, its summary being longer: two
+ * tiles across with four, as the Mac's; 1.6 with five (Updates), so the
+ * others still hold "Keys & Mouse". */
 static ThemeRect sc_tile_rect(int k)
 {
-    double u = (840 - 16 * SC_TILES) / (double)(SC_TILES + 1);
-    int at = k == 0 ? 0 : k + 1, xi;
-    double x0 = 60 + at * (u + 16), x1 = x0 + (k == 0 ? 2 * u + 16 : u);
+    int n = sc_tiles(), xi;
+    double gw = n > 4 ? 1.6 : 2.0, gwide;
+    double u = (840 - 16 * (n - 1) - 16 * (gw - 1)) / (n - 1 + gw);
+    double x0, x1;
 
+    gwide = gw * u + 16 * (gw - 1);
+    if (k == 0) {
+        x0 = 60;
+        x1 = x0 + gwide;
+    } else {
+        x0 = 60 + gwide + 16 + (k - 1) * (u + 16);
+        x1 = x0 + u;
+    }
     xi = (int)(x0 + 0.5);
     return sc_rect(xi, 500, (int)(x1 + 0.5) - xi, 66);
 }
@@ -258,7 +295,7 @@ static int sc_hit(int mx, int my)
         return sc_in(sc_panel_rect(), mx, my) ? SC_NONE : (my < SC_H - 92 ? SC_BACK : SC_NONE);
     for (i = 0; i < 2; i++)
         if (sc_in(sc_card_rect(i), mx, my)) return SC_CARD + i;
-    for (i = 0; i < SC_TILES; i++)
+    for (i = 0; i < sc_tiles(); i++)
         if (sc_in(sc_tile_rect(i), mx, my)) return SC_TILE + i;
     return SC_NONE;
 }
@@ -655,7 +692,7 @@ static const char *sc_hint(void)
     if (g_sc_open >= 0)
         return g_pad_seen ? "D-pad changes" SC_DOT "B goes back"
                           : "\xe2\x86\x90/\xe2\x86\x92 change" SC_DOT "\xe2\x86\x91/\xe2\x86\x93 move" SC_DOT "Esc goes back";
-    if (g_sc_hover >= SC_TILE && g_sc_hover < SC_TILE + SC_TILES)
+    if (g_sc_hover >= SC_TILE && g_sc_hover < SC_TILE + sc_tiles())
         k = g_sc_hover - SC_TILE;
     else if (g_sc_hover == SC_NONE && g_sc_focus >= 0)
         k = g_sc_focus;
@@ -831,11 +868,84 @@ static void sc_progress(int done)
     sc_button_ex(sc_play_rect(), done ? "OK" : "CANCEL", done, 0, 0, 0);
 }
 
+/* An update running, or how it ended (the Updates tile, launcher.c). */
+static int sc_update_shown(void)
+{
+    return g_upd == UPD_RUNNING || g_upd == UPD_DONE || g_upd == UPD_FAILED;
+}
+
+static void sc_update_screen(void)
+{
+    ThemeRect p = sc_rect(60, SETUP_PANEL_Y, 840, 300), r, b;
+    int done = g_upd == UPD_DONE, failed = g_upd == UPD_FAILED;
+    char title[120], pct[16], text[600];
+
+    sc_box(p, 0.9, 1);
+    snprintf(title, sizeof title, done ? "Updated to %s" : failed ? "The update did not finish"
+                                                                  : "Updating to %s", g_upd_tag);
+    sc_caps(sc_rect(p.x + 30, p.y + 24, p.w - 60, 24), title, 14,
+            done ? THEME_ACCENT_RGB : THEME_TEXT_RGB, THEME_LEFT, 5);
+    r = sc_rect(p.x + 30, p.y + 72, p.w - 60, 24);
+    theme_text_ex(r, failed ? "Stopped" : g_upd_phase, 12, 600,
+                  sc_c(failed ? THEME_TEXT_RGB : THEME_ACCENT_RGB), THEME_LEFT, 0, THEME_FACE_BODY, 0);
+    if (!failed) {
+        snprintf(pct, sizeof pct, "%d%%", (int)(g_upd_progress * 100.0 + 0.5));
+        theme_text_ex(r, pct, 12, 600, sc_c(THEME_TEXT_RGB), THEME_RIGHT, 0, THEME_FACE_BODY, 0);
+    }
+    b = sc_rect(r.x, r.y + 38, r.w, 14);
+    theme_bar(b, g_upd_progress, done || failed ? -1.0 : g_pulse * 2.0);
+    if (done) {
+        snprintf(text, sizeof text, "%s %s is installed, built from your own disc. Restart the "
+                 "launcher to use it; your saves and settings are where they were.",
+                 launcher_title(), g_upd_tag);
+        theme_text_wrapped(sc_rect(r.x, b.y + 34, r.w, 90), text, 11, THEME_TEXT);
+    } else if (failed) {
+        size_t e = strlen(g_upd_error);
+        snprintf(text, sizeof text, "%s%s Nothing of the installed game was replaced unless it "
+                 "says it was installing. The log is update.log beside the launcher.", g_upd_error,
+                 e && g_upd_error[e - 1] != '.' ? "." : "");
+        theme_text_wrapped(sc_rect(r.x, b.y + 34, r.w, 110), text, 11, THEME_TEXT);
+    } else {
+        theme_text_ex(sc_rect(r.x, b.y + 30, r.w, 20), g_upd_detail, 10, 400,
+                      sc_c(THEME_TEXT_DIM_RGB), THEME_LEFT, 0, THEME_FACE_BODY, 0);
+        theme_text_wrapped(sc_rect(r.x, b.y + 64, r.w, 70),
+            "It moves to the new release and builds the game again from your own copy, on "
+            "this computer. The game you have stays until the last step.", 11, THEME_TEXT_DIM);
+    }
+    sc_footer_line(done ? (g_pad_seen ? "A restarts" : "Enter restarts")
+                 : failed ? (g_pad_seen ? "A goes back" : "Enter goes back")
+                 : (g_pad_seen ? "B cancels" : "Esc cancels"));
+    sc_button_ex(sc_play_rect(), done ? "RESTART" : failed ? "OK" : "CANCEL", done, 0, 0, 0);
+}
+
+/* Enter (accept) or Esc (cancel) on the update screen. */
+static void sc_update_input(int accept, int cancel)
+{
+    if (g_upd == UPD_RUNNING) {
+        if (cancel || accept) {
+            g_upd_cancelled = 1;
+            lhost_job_cancel();
+        }
+    } else if (g_upd == UPD_DONE) {
+        if (accept)
+            upd_restart();
+        else if (cancel)
+            g_upd = UPD_CURRENT;          /* the new launcher next time */
+    } else if (accept || cancel) {
+        upd_check();
+    }
+}
+
 /* The whole window. 1 when drawn (it always is in this layout). */
 static int sc_draw(void)
 {
     int i, hov = g_sc_hover, foc = g_sc_focus;
 
+    if (sc_update_shown()) {
+        sc_header(1);
+        sc_update_screen();
+        return 1;
+    }
     if (g_release && g_rel != REL_READY) {
         sc_header(1);
         if (g_rel == REL_BUILDING)
@@ -853,7 +963,7 @@ static int sc_draw(void)
         g_sc_hover = g_sc_focus = SC_NONE;     /* under a panel, nothing lit */
     for (i = 0; i < 2; i++)
         sc_card_draw(i);
-    for (i = 0; i < SC_TILES; i++)
+    for (i = 0; i < sc_tiles(); i++)
         sc_tile_draw(i);
     if (g_sc_open >= 0) {
         g_sc_hover = hov;
@@ -874,6 +984,10 @@ static void sc_open_tile(int k)
         sc_open_saves();
         return;
     }
+    if (k == SC_TILE_UPDATES) {
+        upd_activate();
+        return;
+    }
     g_sc_open = tab_of[k];
     set_tab((Tab)tab_of[k]);
     g_sel = 0;
@@ -891,6 +1005,10 @@ static void sc_close(void)
  * panel's rows are its rows). */
 static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta)
 {
+    if (sc_update_shown()) {
+        sc_update_input(accept, cancel);
+        return 1;
+    }
     if (g_sc_open >= 0) {
         if (g_capturing)
             return 0;
@@ -913,8 +1031,8 @@ static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta)
     }
     if (dy) {
         g_sc_focus += dy;
-        if (g_sc_focus >= SC_TILES) g_sc_focus = -1;
-        if (g_sc_focus < -1) g_sc_focus = SC_TILES - 1;
+        if (g_sc_focus >= sc_tiles()) g_sc_focus = -1;
+        if (g_sc_focus < -1) g_sc_focus = sc_tiles() - 1;
     }
     if (dx) {
         if (g_sc_focus == -1) {
@@ -925,7 +1043,7 @@ static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta)
         } else {
             g_sc_focus += dx;
             if (g_sc_focus < 0) g_sc_focus = 0;
-            if (g_sc_focus >= SC_TILES) g_sc_focus = SC_TILES - 1;
+            if (g_sc_focus >= sc_tiles()) g_sc_focus = sc_tiles() - 1;
         }
     }
     if (accept) {
@@ -944,6 +1062,11 @@ static int sc_click(int mx, int my, int dbl)
 {
     int h = sc_hit(mx, my);
 
+    if (sc_update_shown()) {
+        if (sc_in(sc_play_rect(), mx, my))
+            sc_update_input(1, 0);
+        return 1;
+    }
     if (h == SC_PLAY) { do_play(); return 1; }
     if (h == SC_QUIT) { lhost_close(); return 1; }
     if (h == SC_BACK) { sc_close(); return 1; }
@@ -958,7 +1081,7 @@ static int sc_click(int mx, int my, int dbl)
             do_play();
         return 1;
     }
-    if (h >= SC_TILE && h < SC_TILE + SC_TILES) {
+    if (h >= SC_TILE && h < SC_TILE + sc_tiles()) {
         g_sc_focus = h - SC_TILE;
         sc_open_tile(h - SC_TILE);
         return 1;
