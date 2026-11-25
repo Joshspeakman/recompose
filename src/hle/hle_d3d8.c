@@ -4415,21 +4415,36 @@ HLE_EXPORT(D3DDevice_LoadVertexShaderProgram)
  * handle is (declaration only, a program of its own). */
 static void vs_trace(const char *what, uint32_t handle, uint32_t address)
 {
-    static long from = -2;
+    static long from = -2, budget = 400;
     static int said;
     int slot;
 
     if (from == -2) {
-        const char *v = getenv("RECOMP_HLE_VS_TRACE");
+        const char *v = getenv("RECOMP_HLE_VS_TRACE");      /* <frame>[:<lines>] */
         from = v && *v ? atol(v) : -1;
+        if (v && strchr(v, ':'))
+            budget = atol(strchr(v, ':') + 1);
     }
-    if (from < 0 || said >= 400 || (long)g_shadow_swaps < from)
+    if (from < 0 || said >= budget || (long)g_shadow_swaps < from)
         return;
     said++;
     if (!strncmp(what, "Draw", 4)) {
-        fprintf(stderr, "[VS-TRACE] frame %lu %s stride %u, %u indices; running %s\n",
-                (unsigned long)g_shadow_swaps, what, handle, address,
-                g_shadow_vs_slot >= 0 && g_programs[g_shadow_vs_slot].from_slot ? "the slot's program as selected" : "-");
+        char layout[256];
+        size_t at = 0;
+        uint32_t r;
+
+        layout[0] = 0;
+        if (g_shadow_vs_is_program && g_shadow_vs) {
+            uint32_t object = g_shadow_vs & ~1u;
+            for (r = 0; r < 16u && at + 24 < sizeof layout; r++) {
+                uint32_t a = object + 20u + r * 16u, f = HLE_MEM32(a + 8u);
+                if (f > 0x02u)
+                    at += (size_t)snprintf(layout + at, sizeof layout - at, " v%u@%u:%02X",
+                                           r, HLE_MEM32(a + 4u), f);
+            }
+        }
+        fprintf(stderr, "[VS-TRACE] frame %lu %s stride %u, %u; object layout%s\n",
+                (unsigned long)g_shadow_swaps, what, handle, address, layout);
         return;
     }
     if (!strcmp(what, "LoadVertexShaderProgram")) {
@@ -6775,6 +6790,7 @@ void hle_d3d8_shadow_draw(uint32_t xpt, uint32_t count, const void *verts,
         hle_d3d8_apply_pending_textures();
         hle_d3d8_apply_pending_constants();
     }
+    vs_trace(hle_d3d8_pb_walking() ? "Draw(walk)" : "Draw", stride, count);
     if (!shadow_can_draw(xpt, stride))
         return;
     if (!xbox_primitive_to_host(xpt, count, &pt, &prims)) {
