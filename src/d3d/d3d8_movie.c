@@ -12,6 +12,7 @@
  * the device's thread.
  */
 #include "d3d8_internal.h"
+#include "d3d8_display.h"   /* d3d8_display_wide_now */
 #include "d3d8_movie.h"
 
 #include <stdio.h>
@@ -231,12 +232,18 @@ void d3d8_movie_draw(void)
     /* The whole screen goes black first, then the picture at its own aspect:
      * a 720x576 PAL movie and a 640x480 one both fill a 4:3 window, and
      * neither is stretched to a wide one. Xbox movies are encoded for a 4:3
-     * screen whatever their pixel size, so 4:3 is the aspect used. */
+     * screen whatever their pixel size, so 4:3 is the aspect used.
+     *
+     * The aspect it is fitted to is the screen's, not the target's: in
+     * widescreen the frame drawn into this target is stretched to 16:9 at
+     * present, so the picture is fitted to 16:9 here and the stretch makes
+     * it 4:3 between black bars. Fitted to the 4:3 target it filled it, and
+     * the stretch widened Future Perfect's opening movies by a third. */
     rhi_clear_color(rtv, black);
     if (!(mapped = rhi_buffer_map(g.cb, RHI_MAP_WRITE_DISCARD)))
         goto restore;
     fa = 4.0f / 3.0f;
-    ba = (float)bw / (float)bh;
+    ba = d3d8_display_wide_now() ? 16.0f / 9.0f : (float)bw / (float)bh;
     c.w = ba > fa ? 2.0f * fa / ba : 2.0f;
     c.h = ba > fa ? 2.0f : 2.0f * ba / fa;
     c.x = -c.w / 2.0f;
