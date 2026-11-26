@@ -20,7 +20,7 @@
  * held, the flip gate presents the held frame again whenever the host asks
  * (host_request_redraw), which this asks for on every input, so the menu
  * keeps answering over a still picture. Not in an online co-op session
- * (recomp_lockstep_active): the other machine's game cannot wait, so there
+ * (recomp_lockstep_local_guest_port; a replay is held): the other machine's game cannot wait, so there
  * the game goes on and the menu only takes the keyboard and mouse.
  */
 #include "imgui.h"
@@ -193,8 +193,10 @@ extern "C" void recomp_menu_set_open(int open)
         return;
     recomp_bindings_block(want);
     if (want) {
-        /* Online, the other machine's game cannot wait for this one. */
-        int hold = !recomp_lockstep_active();
+        /* Online, the other machine's game cannot wait for this one. A
+         * replayed recording, or one being made, waits like any game: no
+         * other machine is in it. */
+        int hold = !(recomp_lockstep_active() && recomp_lockstep_local_guest_port() >= 0);
 
         g_held.store(hold);
         g_reload.store(1);
