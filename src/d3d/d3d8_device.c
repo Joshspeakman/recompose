@@ -2797,18 +2797,38 @@ static HRESULT __stdcall dev_GetDepthStencilSurface(IDirect3DDevice8 *self, IDir
  * pre-transformed, vertex programs and the fixed function alike. 0.5 rather
  * than 0.53125: the 1/32 is the hardware's rounding bias, and at 0.5 a
  * texel-for-pixel copy lands exactly. RECOMP_D3D8_PIXEL_OFFSET=<pixels>
- * overrides it (0 for the old placement). */
+ * overrides it (0 for the old placement).
+ *
+ * A title that draws everything through vertex programs may need none of
+ * it (xbox_D3D8SetPixelOffset): the XDK folds the offset into the viewport
+ * constants a program transforms with (c-38, 320.53125 for a 640-wide
+ * viewport), so its output already carries it, and a program that writes
+ * hardware coordinates itself -- a full-screen copy pass, 0 to 640 sampling
+ * texels 0 to 640 -- is placed exactly with none. Moved half a pixel more,
+ * Future Perfect's picture sat a whole console pixel right of xemu's (half
+ * from the scene's draws, half again from its full-screen copy pass, which
+ * resamples the moved scene), and at a raised resolution that pixel showed
+ * as a black strip down the left edge, four screen pixels wide at 4x. */
+static float g_title_pixel_offset = 0.5f;
+
+void xbox_D3D8SetPixelOffset(float pixels)
+{
+    g_title_pixel_offset = pixels >= 0.0f && pixels <= 1.0f ? pixels : 0.5f;
+}
+
 static float pixel_offset(void)
 {
-    static float offset = -1.0f;
+    static int env = -1;
+    static float env_offset;
 
-    if (offset < 0.0f) {
+    if (env < 0) {
         const char *e = getenv("RECOMP_D3D8_PIXEL_OFFSET");
-        offset = e && *e ? (float)atof(e) : 0.5f;
-        if (offset < 0.0f || offset > 1.0f)
-            offset = 0.5f;
+        env = e && *e;
+        env_offset = env ? (float)atof(e) : 0.5f;
+        if (env_offset < 0.0f || env_offset > 1.0f)
+            env_offset = 0.5f;
     }
-    return offset;
+    return env ? env_offset : g_title_pixel_offset;
 }
 
 static void apply_host_viewport(void)

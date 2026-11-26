@@ -73,6 +73,7 @@
 
 static void held_redraw(void);   /* with the overlay's switches, below */
 static int draw_kept(void);      /* xbox_D3D8SetDrawFilter, beside the draws */
+static int clear_kept(void);     /* the same, asked for a clear */
 #include "hle.h"
 #include "recomp_config.h"
 
@@ -3063,7 +3064,7 @@ HLE_EXPORT(D3DDevice_Clear)
         HLE_RETURN(0x80004005u);
     HLE_CALL_ORIGINAL(D3DDevice_Clear);
     hle_d3d8_push_skip();   /* its own clear methods: cleared here, not by the walk */
-    if (g_shadow && draw_kept()) {
+    if (g_shadow && clear_kept()) {
         float z;
 
         memcpy(&z, &z_bits, sizeof z);
@@ -3129,7 +3130,7 @@ void hle_d3d8_pb_clear(uint32_t surface, uint32_t color, uint32_t zstencil,
     uint32_t stencil = 0;
     int whole;
 
-    if (!g_shadow || !(surface & 0xF3u) || !draw_kept())
+    if (!g_shadow || !(surface & 0xF3u) || !clear_kept())
         return;
     if (g_z_scale == 65535.0f) {
         z = (float)(zstencil & 0xFFFFu) / 65535.0f;
@@ -6842,15 +6843,31 @@ static uint8_t *shadow_expand_vertices(const void *verts, UINT vertices, UINT *s
  * changes. Every draw and clear passes here: the two below, D3DDevice_Clear
  * and the push buffer's clears. */
 static int (*g_draw_filter)(void);
+static int g_filter_asks_clear;   /* xbox_D3D8FilterAsksClear: the query is a clear's */
 
 void xbox_D3D8SetDrawFilter(int (*keep)(void))
 {
     g_draw_filter = keep;
 }
 
+int xbox_D3D8FilterAsksClear(void)
+{
+    return g_filter_asks_clear;
+}
+
 static int draw_kept(void)
 {
     return !g_draw_filter || g_draw_filter();
+}
+
+static int clear_kept(void)
+{
+    int keep;
+
+    g_filter_asks_clear = 1;
+    keep = draw_kept();
+    g_filter_asks_clear = 0;
+    return keep;
 }
 
 /* The host half of every non-indexed draw: the UP draw below and the vertex

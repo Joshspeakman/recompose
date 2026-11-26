@@ -1299,6 +1299,12 @@ void xbox_D3D8SetPresentCrop(float x, float y, float w, float h);
  * draw regardless, so the game sees nothing different. */
 void xbox_D3D8SetDrawFilter(int (*keep)(void));
 
+/* Inside the draw filter: 1 when it is asked about a clear, 0 a draw. A
+ * split-screen game may clear the whole screen once, in its first player's
+ * pass, for every player: the second player's machine must keep that clear
+ * though it leaves out the first player's draws. */
+int xbox_D3D8FilterAsksClear(void);
+
 /* Draw the vertex-program draws that follow k times larger about (cx, cy),
  * the title's screen pixels (1: as the title made them). For a title whose
  * weapon in hand goes through the world's projection, so that with the
@@ -1392,6 +1398,16 @@ void xbox_D3D8SetTwoDPlacement(int placement, uint32_t tag);
  * with it and has not been compared with the console yet.
  * RECOMP_CLEAR_CHANNELS=0/1 overrides the title either way. */
 void xbox_D3D8SetClearChannels(int on);
+
+/* The console's screen-space offset as the host places it, in the title's
+ * pixels: 0.5, the default, moves every draw half a pixel right and down, as
+ * the NV2A's 0.53125 moves pre-transformed and fixed-function vertices. A
+ * title that draws everything through vertex programs, whose outputs carry
+ * the offset already (the XDK's viewport constants) or are hardware
+ * coordinates, sets 0 (Future Perfect: with 0.5 its picture sat a console
+ * pixel right of xemu's, a black strip down the left edge at 2x and over).
+ * Set before the first draw. RECOMP_D3D8_PIXEL_OFFSET=<pixels> overrides. */
+void xbox_D3D8SetPixelOffset(float pixels);
 
 /* A title's own test for which of its fixed-function draws are screen-space.
  * The renderer knows two kinds: pre-transformed vertices, and a vertex
