@@ -1240,6 +1240,11 @@ void xbox_D3D8SetConstantFilter(void (*fn)(int first_reg, float *data, int count
  * 0 as the console draws it, 1 sharp (one screen pixel), 2 off. */
 void xbox_D3D8SetPostSoften(int mode);
 
+/* The player's picture settings (recomp_config.h picture_*), changed while
+ * playing: applied when the frame is put on the screen, after the game's own
+ * gamma ramp, so the in-game menu drawn over it is left as it is. */
+void xbox_D3D8SetPicture(int brightness, int contrast, int saturation, int gamma);
+
 /* Drawn without the title's scissors (d3d8_device.c): for a title whose
  * scissors only spare drawing while it holds -- its frames come out the
  * same without them, as with TimeSplitters 2's doorway rectangles in play

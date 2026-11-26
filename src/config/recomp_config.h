@@ -239,6 +239,13 @@ typedef struct RecompSettings {
     int  vrr;                   /* 0 or 1: present for variable refresh when fullscreen */
     int  frame_interp;          /* 1 (off) to 4: frames shown for each the game draws */
     int  fov;                   /* vertical field of view in degrees; 0: the game's own */
+    /* The picture (d3d8_display.c, the present): adjusted after the game,
+     * as a monitor's own controls would, changed while playing from the
+     * in-game menu. Whole numbers so the file and the launcher stay simple. */
+    int  picture_brightness;    /* RECOMP_PICTURE_BRIGHTNESS_MIN..MAX; 0 is the game's */
+    int  picture_contrast;      /* percent, ..._CONTRAST_MIN..MAX; 100 is the game's */
+    int  picture_saturation;    /* percent, ..._SATURATION_MIN..MAX; 100; 0 is grey */
+    int  picture_gamma;         /* gamma x 100, ..._GAMMA_MIN..MAX; 100; higher, brighter mid-tones */
     /* Mouse look (src/input/input_bindings.c): the mouse moves controller
      * 1's right stick, on top of whatever is bound to it. Per title, unlike
      * the bindings, because a camera on the mouse is right for one game and
@@ -268,6 +275,16 @@ typedef struct RecompSettings {
     char coop[8];               /* "off", "host", "join" */
     int  coop_port;             /* the UDP port a co-op host listens on */
 } RecompSettings;
+
+/* The picture settings' ranges and their neutral values (RecompSettings). */
+#define RECOMP_PICTURE_BRIGHTNESS_MIN  (-50)
+#define RECOMP_PICTURE_BRIGHTNESS_MAX  50
+#define RECOMP_PICTURE_CONTRAST_MIN    50
+#define RECOMP_PICTURE_CONTRAST_MAX    150
+#define RECOMP_PICTURE_SATURATION_MIN  0
+#define RECOMP_PICTURE_SATURATION_MAX  200
+#define RECOMP_PICTURE_GAMMA_MIN       50
+#define RECOMP_PICTURE_GAMMA_MAX       200
 
 /* The port an online co-op host listens on when nobody chooses one. */
 #define RECOMP_COOP_DEFAULT_PORT 27620

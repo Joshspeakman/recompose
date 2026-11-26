@@ -342,6 +342,10 @@ void recomp_settings_defaults(RecompSettings *s)
     s->vrr               = 1;
     s->frame_interp      = 1;
     s->fov               = 0;
+    s->picture_brightness = 0;
+    s->picture_contrast  = 100;
+    s->picture_saturation = 100;
+    s->picture_gamma     = 100;
     s->mouse_look        = 0;
     s->mouse_sensitivity = RECOMP_MOUSE_SENSITIVITY_DEFAULT;
     s->mouse_invert      = 0;
@@ -429,6 +433,14 @@ static void settings_from_table(RecompSettings *s)
         s->fov = atoi(v) <= 0 ? 0 : clamp_int(atoi(v), RECOMP_FOV_MIN, RECOMP_FOV_MAX);
     if ((v = from_table("frame_interp")) != NULL)
         s->frame_interp = clamp_int(atoi(v), 1, 4);
+    if ((v = from_table("picture_brightness")) != NULL)
+        s->picture_brightness = clamp_int(atoi(v), RECOMP_PICTURE_BRIGHTNESS_MIN, RECOMP_PICTURE_BRIGHTNESS_MAX);
+    if ((v = from_table("picture_contrast")) != NULL)
+        s->picture_contrast = clamp_int(atoi(v), RECOMP_PICTURE_CONTRAST_MIN, RECOMP_PICTURE_CONTRAST_MAX);
+    if ((v = from_table("picture_saturation")) != NULL)
+        s->picture_saturation = clamp_int(atoi(v), RECOMP_PICTURE_SATURATION_MIN, RECOMP_PICTURE_SATURATION_MAX);
+    if ((v = from_table("picture_gamma")) != NULL)
+        s->picture_gamma = clamp_int(atoi(v), RECOMP_PICTURE_GAMMA_MIN, RECOMP_PICTURE_GAMMA_MAX);
     if ((v = from_table("mouse_look")) != NULL)
         s->mouse_look = !off_word(v);
     if ((v = from_table("mouse_invert")) != NULL)
@@ -519,6 +531,7 @@ static void make_parents(const char *path)
 static const char *const k_written_keys[] = {
     "resolution_scale", "widescreen", "hor_plus", "hor_plus_register", "widescreen_2d",
     "anisotropy", "post_soften", "renderer", "frame_cap", "fps_overlay", "fullscreen", "vrr", "frame_interp", "fov",
+    "picture_brightness", "picture_contrast", "picture_saturation", "picture_gamma",
     "mouse_look", "mouse_sensitivity", "mouse_invert", "crosshair", "touch_controls", "touch_opacity", "touch_scale",
     "game_dir", "syslink", "syslink_host", "syslink_port", "syslink_code", "syslink_upnp",
     "coop", "coop_port",
@@ -705,6 +718,16 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "# sides as well.                                         [RECOMP_FOV]\n"
         "fov = %d\n"
         "\n"
+        "# The picture, adjusted after the game as a screen's own controls\n"
+        "# would; changed while playing from the menu (Esc). Brightness %d to\n"
+        "# %d, 0 the game's; contrast and saturation in percent, 100 the\n"
+        "# game's, saturation 0 grey; gamma x 100, 100 the game's, higher\n"
+        "# brightens the mid-tones.       [RECOMP_PICTURE_BRIGHTNESS and so on]\n"
+        "picture_brightness = %d\n"
+        "picture_contrast = %d\n"
+        "picture_saturation = %d\n"
+        "picture_gamma = %d\n"
+        "\n"
         "# Mouse look: moving the mouse moves controller 1's right stick, as\n"
         "# well as anything bound to it, while the game's window has the\n"
         "# pointer. Click in the window to give it the pointer; switching to\n"
@@ -729,6 +752,11 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         s->frame_cap[0] ? s->frame_cap : "adaptive", s->fps_overlay,
         s->fullscreen, s->vrr, s->frame_interp < 1 ? 1 : s->frame_interp,
         s->fov > 0 ? s->fov : 0,
+        RECOMP_PICTURE_BRIGHTNESS_MIN, RECOMP_PICTURE_BRIGHTNESS_MAX,
+        clamp_int(s->picture_brightness, RECOMP_PICTURE_BRIGHTNESS_MIN, RECOMP_PICTURE_BRIGHTNESS_MAX),
+        s->picture_contrast ? clamp_int(s->picture_contrast, RECOMP_PICTURE_CONTRAST_MIN, RECOMP_PICTURE_CONTRAST_MAX) : 100,
+        clamp_int(s->picture_saturation, RECOMP_PICTURE_SATURATION_MIN, RECOMP_PICTURE_SATURATION_MAX),
+        s->picture_gamma ? clamp_int(s->picture_gamma, RECOMP_PICTURE_GAMMA_MIN, RECOMP_PICTURE_GAMMA_MAX) : 100,
         s->mouse_look ? 1 : 0,
         RECOMP_MOUSE_SENSITIVITY_MIN, RECOMP_MOUSE_SENSITIVITY_MAX,
         RECOMP_MOUSE_SENSITIVITY_DEFAULT, 100000 / RECOMP_MOUSE_SENSITIVITY_DEFAULT,

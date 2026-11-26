@@ -45,6 +45,7 @@ extern "C" {
  * than included, since the first is the Xbox's own types and C only. */
 void xbox_D3D8SetUiHook(void (*draw)(void *out_view, unsigned width, unsigned height));
 void xbox_D3D8SetPostSoften(int mode);
+void xbox_D3D8SetPicture(int brightness, int contrast, int saturation, int gamma);
 void host_set_suspended(unsigned reason, int on);
 void host_request_redraw(void);
 int  host_exe_path(char *buf, size_t bytes);
@@ -74,6 +75,7 @@ std::atomic_flag g_queue_lock = ATOMIC_FLAG_INIT;
 std::atomic<int> g_open{0};
 std::atomic<int> g_held{0};          /* this opening holds the title */
 std::atomic<int> g_reload{0};        /* read the settings file again: just opened */
+std::atomic<int> g_leaving{0};       /* just closed: save what is not saved yet */
 
 void queue_push(const Event &e)
 {
@@ -203,6 +205,7 @@ extern "C" void recomp_menu_set_open(int open)
         fprintf(stderr, "[MENU] open%s\n", hold ? ": the title is held at its next frame"
                                                 : " (online: the game goes on)");
     } else {
+        g_leaving.store(1);
         if (g_held.exchange(0)) {
             recomp_audio_output_pause(0);
             host_set_suspended(MENU_HOST_SUSPEND_MENU, 0);
@@ -611,6 +614,10 @@ struct Menu {
     RecompSettings started;      /* what this run started with */
     bool           confirm_quit;
     bool           confirm_restart;
+    bool           unsaved;      /* changed here and not in the file yet (Apply) */
+    bool           picture_tab;  /* the Picture tab is showing: the game undimmed */
+    char           test_tab[16]; /* RECOMP_MENU_TEST: the tab to open on, once */
+    bool           test_on;      /* RECOMP_MENU_TEST: keep presenting while open */
 } m;
 
 void settings_load()
@@ -628,6 +635,17 @@ void settings_save()
 {
     if (m.have_path && !recomp_settings_write(m.path, &m.st))
         fprintf(stderr, "[MENU] could not save %s\n", m.path);
+    else
+        m.unsaved = false;
+}
+
+/* Whatever is not saved yet, saved: on Apply, on leaving the menu, on quitting. */
+void settings_save_unsaved()
+{
+    if (m.loaded && m.unsaved) {
+        settings_save();
+        fprintf(stderr, "[MENU] settings saved\n");
+    }
 }
 
 /* The renderer a settings value means: "auto" (or none) is the title's own
@@ -718,29 +736,6 @@ namespace {
 
 void tab_display()
 {
-#if defined(_WIN32)
-    /* The renderer: Vulkan or Direct3D 11, from the next start. Which one
-     * is the default is the title's (Timeslip: Vulkan). */
-    {
-        const bool vk_default = !strcmp(renderer_meant(""), "vulkan");
-        const char *names[2] = {vk_default ? "Vulkan (default)" : "Vulkan",
-                                vk_default ? "Direct3D 11" : "Direct3D 11 (default)"};
-        int r = !strcmp(renderer_meant(m.st.renderer), "vulkan") ? 0 : 1;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
-        if (ImGui::Combo("Renderer", &r, names, 2)) {
-            snprintf(m.st.renderer, sizeof m.st.renderer, "%s", r == 0 ? "vulkan" : "d3d11");
-            settings_save();
-        }
-        if (strcmp(renderer_meant(m.st.renderer), renderer_meant(m.started.renderer)) != 0)
-            next_start_note();
-        else {
-            ImGui::SameLine();
-            ImGui::TextDisabled("(drawing with %s)",
-                                !strcmp(rhi_backend_name(), "vulkan") ? "Vulkan" :
-                                !strcmp(rhi_backend_name(), "d3d11") ? "Direct3D 11" : rhi_backend_name());
-        }
-    }
-#endif
     bool fs = hle_window_fullscreen() != 0;
     if (ImGui::Checkbox("Fullscreen", &fs)) {
         hle_window_set_fullscreen(fs);
@@ -820,6 +815,36 @@ void tab_display()
             settings_save();
         }
     }
+    /* Advanced: what a player seldom needs, kept out of the way. */
+#if defined(_WIN32)
+    ImGui::Spacing();
+    if (!strcmp(m.test_tab, "Advanced"))
+        ImGui::SetNextItemOpen(true);
+    if (ImGui::CollapsingHeader("Advanced")) {
+        /* The renderer: Vulkan or Direct3D 11, from the next start. Which one
+         * is the default is the title's (Timeslip: Vulkan); the other is kept
+         * here, under Advanced, for a machine the default does not suit. */
+        {
+            const bool vk_default = !strcmp(renderer_meant(""), "vulkan");
+            const char *names[2] = {vk_default ? "Vulkan (default)" : "Vulkan",
+                                    vk_default ? "Direct3D 11" : "Direct3D 11 (default)"};
+            int r = !strcmp(renderer_meant(m.st.renderer), "vulkan") ? 0 : 1;
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+            if (ImGui::Combo("Renderer", &r, names, 2)) {
+                snprintf(m.st.renderer, sizeof m.st.renderer, "%s", r == 0 ? "vulkan" : "d3d11");
+                settings_save();
+            }
+            if (strcmp(renderer_meant(m.st.renderer), renderer_meant(m.started.renderer)) != 0)
+                next_start_note();
+            else {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(drawing with %s)",
+                                    !strcmp(rhi_backend_name(), "vulkan") ? "Vulkan" :
+                                    !strcmp(rhi_backend_name(), "d3d11") ? "Direct3D 11" : rhi_backend_name());
+            }
+        }
+    }
+#endif
 }
 
 void tab_frame_rate()
@@ -897,6 +922,63 @@ void tab_mouse()
                        "Esc gives it back.");
 }
 
+/* The picture: changed at once, on the frame behind the menu (the game is
+ * not dimmed while this tab shows), and kept in the file on Apply or when
+ * the menu closes. Per machine: online, nobody else sees it. */
+void tab_picture()
+{
+    int b = m.st.picture_brightness, c = m.st.picture_contrast;
+    int sat = m.st.picture_saturation, g = m.st.picture_gamma;
+    bool changed = false;
+    char label[32];
+
+    ImGui::TextWrapped("Adjusted after the game, as a screen's own controls would be. "
+                       "The game behind the menu shows each change.");
+    ImGui::Spacing();
+    snprintf(label, sizeof label, "%+d", b);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+    changed |= ImGui::SliderInt("Brightness", &b, RECOMP_PICTURE_BRIGHTNESS_MIN,
+                                RECOMP_PICTURE_BRIGHTNESS_MAX, b ? label : "0 (the game's)");
+    snprintf(label, sizeof label, "%d%%%%", c);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+    changed |= ImGui::SliderInt("Contrast", &c, RECOMP_PICTURE_CONTRAST_MIN,
+                                RECOMP_PICTURE_CONTRAST_MAX, c != 100 ? label : "100%% (the game's)");
+    snprintf(label, sizeof label, "%d%%%%", sat);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+    changed |= ImGui::SliderInt("Saturation", &sat, RECOMP_PICTURE_SATURATION_MIN,
+                                RECOMP_PICTURE_SATURATION_MAX, sat != 100 ? label : "100%% (the game's)");
+    snprintf(label, sizeof label, "%.2f", (double)g / 100.0);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+    changed |= ImGui::SliderInt("Gamma", &g, RECOMP_PICTURE_GAMMA_MIN, RECOMP_PICTURE_GAMMA_MAX,
+                                g != 100 ? label : "1.00 (the game's)");
+    bool neutral = b == 0 && c == 100 && sat == 100 && g == 100;
+    if (neutral)
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Reset to the game's")) {
+        b = 0; c = 100; sat = 100; g = 100;
+        changed = true;
+    }
+    if (neutral)
+        ImGui::EndDisabled();
+    if (changed) {
+        m.st.picture_brightness = b;
+        m.st.picture_contrast = c;
+        m.st.picture_saturation = sat;
+        m.st.picture_gamma = g;
+        xbox_D3D8SetPicture(b, c, sat, g);
+        m.unsaved = true;
+        host_request_redraw();          /* the held frame again, with it */
+    }
+}
+
+/* RECOMP_MENU_TEST's tab, selected on the menu's first frame. "Advanced" is
+ * the Display tab with its Advanced part open. */
+ImGuiTabItemFlags test_select(const char *tab)
+{
+    const char *want = !strcmp(m.test_tab, "Advanced") ? "Display" : m.test_tab;
+    return want[0] && !strcmp(want, tab) ? ImGuiTabItemFlags_SetSelected : 0;
+}
+
 void draw_menu(unsigned width, unsigned height)
 {
     const float em = ImGui::GetFontSize();
@@ -905,8 +987,14 @@ void draw_menu(unsigned width, unsigned height)
     if (w > (float)width * 0.92f)
         w = (float)width * 0.92f;
 
-    ImGui::SetNextWindowPos(ImVec2((float)width * 0.5f, (float)height * 0.5f), ImGuiCond_Always,
-                            ImVec2(0.5f, 0.5f));
+    /* On the Picture tab the menu stands at the left, over the least of the
+     * picture, and the game behind it is not dimmed. */
+    if (m.picture_tab)
+        ImGui::SetNextWindowPos(ImVec2(em * 1.5f, (float)height * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.0f, 0.5f));
+    else
+        ImGui::SetNextWindowPos(ImVec2((float)width * 0.5f, (float)height * 0.5f), ImGuiCond_Always,
+                                ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(w, 0.0f), ImGuiCond_Always);
     ImGui::Begin("##recomp_menu", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -931,19 +1019,49 @@ void draw_menu(unsigned width, unsigned height)
     ImGui::Spacing();
 
     if (ImGui::BeginTabBar("##tabs")) {
-        if (ImGui::BeginTabItem("Display")) {
+        if (ImGui::BeginTabItem("Display", nullptr, test_select("Display"))) {
             tab_display();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Frame rate")) {
+        if (ImGui::BeginTabItem("Frame rate", nullptr, test_select("Frame rate"))) {
             tab_frame_rate();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Mouse")) {
+        bool picture = false;
+        if (ImGui::BeginTabItem("Picture", nullptr, test_select("Picture"))) {
+            tab_picture();
+            picture = true;
+            ImGui::EndTabItem();
+        }
+        if (picture != m.picture_tab) {
+            m.picture_tab = picture;
+            host_request_redraw();      /* undimmed, or dimmed again */
+        }
+        if (ImGui::BeginTabItem("Mouse", nullptr, test_select("Mouse"))) {
             tab_mouse();
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
+    }
+
+    /* Apply: what was changed here, kept in the settings file. Changes are
+     * kept on leaving the menu as well; this says so, and does it now. */
+    ImGui::Spacing();
+    {
+        float aw = w - ImGui::GetStyle().WindowPadding.x * 2;
+        if (m.unsaved) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.96f, 0.62f, 0.16f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.00f, 0.72f, 0.30f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.86f, 0.52f, 0.10f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.08f, 0.06f, 0.03f, 1.00f));
+            if (ImGui::Button("Apply  -  save these settings", ImVec2(aw, em * 2.2f)))
+                settings_save_unsaved();
+            ImGui::PopStyleColor(4);
+        } else {
+            ImGui::BeginDisabled();
+            ImGui::Button("Saved", ImVec2(aw, em * 2.2f));
+            ImGui::EndDisabled();
+        }
     }
 
     if (restart_pending()) {
@@ -1005,6 +1123,35 @@ std::chrono::steady_clock::time_point g_last;
 
 void menu_present(void *out_view, unsigned width, unsigned height)
 {
+    if (g_leaving.exchange(0)) {
+        settings_save_unsaved();
+        m.picture_tab = false;
+    }
+    /* RECOMP_MENU_TEST=<seconds>[:<tab>]: the menu opened that long after the
+     * first frame, on that tab (Display, Advanced, Frame rate, Picture,
+     * Mouse), presenting all the while, so a test run can take a picture of
+     * it (RECOMP_PRESENT_DUMP) on any renderer. */
+    {
+        static int test = -1;
+        static std::chrono::steady_clock::time_point start, at;
+        if (test < 0) {
+            const char *v = getenv("RECOMP_MENU_TEST");
+            test = v && *v ? 1 : 0;
+            start = std::chrono::steady_clock::now();
+            if (test) {
+                const char *colon = strchr(v, ':');
+                at = start + std::chrono::milliseconds((long long)(atof(v) * 1000.0));
+                snprintf(m.test_tab, sizeof m.test_tab, "%s", colon ? colon + 1 : "");
+            }
+        }
+        if (test == 1 && std::chrono::steady_clock::now() >= at) {
+            test = 2;
+            m.test_on = true;
+            fprintf(stderr, "[MENU] RECOMP_MENU_TEST: opened%s%s\n",
+                    m.test_tab[0] ? " on " : "", m.test_tab);
+            recomp_menu_set_open(1);
+        }
+    }
     if (!g_open.load() || !out_view || !width || !height)
         return;
     if (!gpu_create())
@@ -1057,19 +1204,27 @@ void menu_present(void *out_view, unsigned width, unsigned height)
         g_font_px_drawn = g_font_px;
     }
     ImGui::NewFrame();
-    /* A dimmed game behind the menu. */
-    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
-                                                  IM_COL32(0, 0, 0, 130));
+    /* A dimmed game behind the menu; not while the picture is being set. */
+    if (!m.picture_tab)
+        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
+                                                      IM_COL32(0, 0, 0, 130));
     draw_menu(width, height);
     ImGui::Render();
     render(ImGui::GetDrawData(), (RhiView *)out_view, width, height);
-    if (settle > 0) {
-        settle--;
+    if (settle > 0 || m.test_on) {
+        if (settle > 0)
+            settle--;
         host_request_redraw();
     }
 }
 
 } // namespace
+
+/* The window closed or the game quit with the menu's changes not saved yet. */
+static void menu_save_at_exit(void)
+{
+    settings_save_unsaved();
+}
 
 extern "C" void recomp_menu_install(void)
 {
@@ -1078,5 +1233,6 @@ extern "C" void recomp_menu_install(void)
     if (done)
         return;
     done = true;
+    atexit(menu_save_at_exit);
     xbox_D3D8SetUiHook(menu_present);
 }

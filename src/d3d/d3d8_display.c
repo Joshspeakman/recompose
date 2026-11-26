@@ -300,11 +300,13 @@ D3D8DisplayFit d3d8_display_fit(UINT shape_w, UINT shape_h, UINT bb_w, UINT bb_h
 typedef struct {
     float origin_x, origin_y, ratio_x, ratio_y;
     float texel_x, texel_y, inv_taps, gamma;   /* gamma: 1 to look up the ramp */
-    float src_x, src_y, pad0, pad1;            /* where the part shown starts, in texels */
+    float src_x, src_y, picture, pad1;         /* where the part shown starts, in texels;
+                                                * picture: 1 to adjust it (below) */
+    float brightness, contrast, saturation, inv_gamma;
 } ResolveConstants;
 
 static const char kSource[] =
-    "cbuffer Resolve : register(b7) { float4 p; float4 q; float4 r; };\n"
+    "cbuffer Resolve : register(b7) { float4 p; float4 q; float4 r; float4 a; };\n"
     "struct VSOut { float4 pos : SV_Position; };\n"
     "VSOut vs_main(uint id : SV_VertexID) {\n"
     "    float2 c = float2((id << 1) & 2, id & 2);\n"   /* one oversized triangle */
@@ -336,6 +338,17 @@ static const char kSource[] =
     "        int3 k = int3(saturate(c.rgb) * 255.0 + 0.5);\n"
     "        c.rgb = float3(ramp.Load(int3(k.r, 0, 0)).r, ramp.Load(int3(k.g, 0, 0)).g,\n"
     "                       ramp.Load(int3(k.b, 0, 0)).b);\n"
+    "    }\n"
+    /* The player's picture settings (xbox_D3D8SetPicture), after the
+     * game's own ramp, as a screen's controls come after the console:
+     * gamma on the mid-tones, contrast about the middle grey, brightness
+     * as an offset, saturation away from or towards the grey of the same
+     * brightness (Rec. 709 weights). Left out at the neutral values. */
+    "    if (r.z > 0.5) {\n"
+    "        float3 x = pow(saturate(c.rgb), a.w);\n"
+    "        x = (x - 0.5) * a.y + 0.5 + a.x;\n"
+    "        float l = dot(x, float3(0.2126, 0.7152, 0.0722));\n"
+    "        c.rgb = saturate(lerp(float3(l, l, l), x, a.z));\n"
     "    }\n"
     "    return c;\n"
     "}\n";
@@ -409,6 +422,47 @@ static int gamma_ready(void)
         g_gamma.dirty = 0;
     }
     return 1;
+}
+
+/* The player's picture settings (recomp_config.h picture_*): read from the
+ * settings once, then whatever the in-game menu sets, while playing. */
+static struct {
+    int read;
+    volatile int brightness, contrast, saturation, gamma;
+} g_picture;
+
+static int clamp_picture(int v, int lo, int hi)
+{
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
+void xbox_D3D8SetPicture(int brightness, int contrast, int saturation, int gamma)
+{
+    g_picture.brightness = clamp_picture(brightness, RECOMP_PICTURE_BRIGHTNESS_MIN,
+                                         RECOMP_PICTURE_BRIGHTNESS_MAX);
+    g_picture.contrast = clamp_picture(contrast, RECOMP_PICTURE_CONTRAST_MIN,
+                                       RECOMP_PICTURE_CONTRAST_MAX);
+    g_picture.saturation = clamp_picture(saturation, RECOMP_PICTURE_SATURATION_MIN,
+                                         RECOMP_PICTURE_SATURATION_MAX);
+    g_picture.gamma = clamp_picture(gamma, RECOMP_PICTURE_GAMMA_MIN, RECOMP_PICTURE_GAMMA_MAX);
+    g_picture.read = 1;
+}
+
+/* 1 when the picture is not the game's own, with the shader's numbers. */
+static int picture_constants(ResolveConstants *c)
+{
+    if (!g_picture.read)
+        xbox_D3D8SetPicture(
+            recomp_config_int("RECOMP_PICTURE_BRIGHTNESS", "picture_brightness", 0),
+            recomp_config_int("RECOMP_PICTURE_CONTRAST", "picture_contrast", 100),
+            recomp_config_int("RECOMP_PICTURE_SATURATION", "picture_saturation", 100),
+            recomp_config_int("RECOMP_PICTURE_GAMMA", "picture_gamma", 100));
+    c->brightness = (float)g_picture.brightness / 200.0f;   /* +-0.25 at the ends */
+    c->contrast = (float)g_picture.contrast / 100.0f;
+    c->saturation = (float)g_picture.saturation / 100.0f;
+    c->inv_gamma = 100.0f / (float)g_picture.gamma;
+    return g_picture.brightness != 0 || g_picture.contrast != 100 ||
+           g_picture.saturation != 100 || g_picture.gamma != 100;
 }
 
 static void fail(const char *what)
@@ -550,7 +604,8 @@ HRESULT d3d8_display_resolve(RhiView *scene, UINT scene_w, UINT scene_h,
         c.ratio_y = part_h / (float)fit.h;
         c.src_x = (float)scene_w * crop[0];
         c.src_y = (float)scene_h * crop[1];
-        c.pad0 = c.pad1 = 0.0f;
+        c.pad1 = 0.0f;
+        c.picture = picture_constants(&c) ? 1.0f : 0.0f;
         c.texel_x = 1.0f / (float)scene_w;
         c.texel_y = 1.0f / (float)scene_h;
         c.inv_taps = 1.0f / (float)(taps * taps);
