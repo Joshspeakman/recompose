@@ -861,6 +861,28 @@ typedef struct { unsigned char state[256]; } KeyCache;
 
 static unsigned char g_key_state[256];
 static unsigned long long g_key_state_at;
+#if defined(_WIN32)
+/* Whether this program's window is in front, asked once a cache window
+ * (key_cache_tick). GetAsyncKeyState reads the keyboard whatever is in
+ * front, so a player who had switched to another window -- typing in a chat
+ * beside the game -- was playing it as well: Enter paused it, W A S D walked,
+ * and online the keys went to the other machine too. Two copies running in
+ * the background for a test both paused on an Enter typed elsewhere (Future
+ * Perfect, 26 Nov 2026). The mouse only ever reached the window in front,
+ * and off Windows SDL's keyboard already hears only the focused window. */
+static int g_key_focus = -1;
+
+static int keyboard_is_ours(void)
+{
+    HWND front = GetForegroundWindow();
+    DWORD pid = 0;
+
+    if (!front)
+        return 0;
+    GetWindowThreadProcessId(front, &pid);
+    return pid == GetCurrentProcessId();
+}
+#endif
 
 #if !defined(_WIN32)
 /* Off Windows the keyboard is SDL's: the state its events leave behind, kept
@@ -937,6 +959,10 @@ static int key_down(KeyCache *kc, int vk)
     if (vk <= 0 || vk > 255)
         return 0;
 #if defined(_WIN32)
+    if (g_key_focus < 0)
+        g_key_focus = keyboard_is_ours();
+    if (!g_key_focus)
+        return 0;
     if (!g_key_state[vk])
         g_key_state[vk] = (GetAsyncKeyState(vk) & 0x8000) ? 2 : 1;
     return g_key_state[vk] == 2;
@@ -951,6 +977,9 @@ static void key_cache_tick(void)
     unsigned long long now = now_ms();
     if (now - g_key_state_at >= KEY_CACHE_TTL_MS) {
         memset(g_key_state, 0, sizeof g_key_state);
+#if defined(_WIN32)
+        g_key_focus = -1;
+#endif
         g_key_state_at = now;
     }
 }
@@ -1200,9 +1229,34 @@ static void look_axes(float out[2])
     out[1] = g_look_out[1];
 }
 
+/* The title's stick dead zone (recomp_mouse_stick_dead_zone): 0, the
+ * default, adds nothing of ours (look_shape, above). A title that names the
+ * dead zone its stick reads have -- Future Perfect's is 0.25 of a push, the
+ * pad's first float -- has a mouse that moves a stick lifted past it: a slow
+ * movement starts just past the dead zone, in proportion beyond it. Without
+ * it a slow mouse moved MapMaker's cursor not at all (a push of 0.14), and
+ * only a fast one did (0.53). */
+static volatile float g_stick_dead_zone;
+
+void recomp_mouse_stick_dead_zone(float dz)
+{
+    g_stick_dead_zone = dz > 0.0f && dz < 0.9f ? dz : 0.0f;
+}
+
+static float past_dead_zone(float look)
+{
+    float dz = g_stick_dead_zone, mag = look < 0.0f ? -look : look;
+
+    if (dz <= 0.0f || mag <= 0.0f)
+        return look;
+    mag = dz + (1.0f - dz) * (mag > 1.0f ? 1.0f : mag);
+    return look < 0.0f ? -mag : mag;
+}
+
 /* A stick axis plus mouse look, kept on the stick. */
 static SHORT add_look(SHORT v, float look)
 {
+    look = past_dead_zone(look);
     long sum = (long)v + (long)(look * 32767.0f);
 
     if (sum > 32767)  sum = 32767;
@@ -1307,6 +1361,27 @@ int recomp_mouse_title_menu_on(void)
     return (int)g_title_menu;
 }
 
+/* The same buttons with the pointer kept (recomp_mouse_pad_buttons): for a
+ * screen that draws a cursor of its own and moves it with a stick, where
+ * the mouse moves that cursor (recomp_mouse_look_left) and its buttons
+ * choose -- Future Perfect's MapMaker. The window keeps the mouse; only
+ * hle_window_title_menu frees the pointer. */
+static volatile long g_pad_buttons;
+
+void recomp_mouse_pad_buttons(int on)
+{
+    g_pad_buttons = on ? 1 : 0;
+}
+
+/* Mouse look without native look moves the left stick instead of the right
+ * (recomp_mouse_look_left): the stick that moves such a cursor. */
+static volatile long g_look_left;
+
+void recomp_mouse_look_left(int on)
+{
+    g_look_left = on ? 1 : 0;
+}
+
 /* The number row and the wheel (input_bindings.h). */
 static volatile long g_number_pending;
 static void (*g_wheel_filter)(int wheel, XBOX_GAMEPAD *pad);
@@ -1375,8 +1450,6 @@ static void number_keys(KeyCache *kc)
     unsigned now = 0;
     int k;
 
-    input_fake_feed();
-
     for (k = 1; k <= 9; k++)
         if (key_down(kc, '0' + k))
             now |= 1u << k;
@@ -1439,7 +1512,7 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
 
         for (s = 0; s < c->bind[i].count; s++) {
             int m;
-            if (port == 0 && g_title_menu && c->bind[i].src[s].kind == SRC_MOUSE)
+            if (port == 0 && (g_title_menu || g_pad_buttons) && c->bind[i].src[s].kind == SRC_MOUSE)
                 continue;                        /* the menu's (title_menu_mouse) */
             if (port == 0 && g_wheel_filter && c->bind[i].src[s].kind == SRC_MOUSE &&
                 c->bind[i].src[s].arg >= RECOMP_MOUSE_BUTTONS)
@@ -1486,11 +1559,21 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         look_axes(look);
         if (look[0] != 0.0f || look[1] != 0.0f) {
             say_first_press(port, "mouse look");
-            out->sThumbRX = add_look(out->sThumbRX, look[0]);
-            out->sThumbRY = add_look(out->sThumbRY, g_look.invert ? -look[1] : look[1]);
+            if (g_look_left) {              /* a cursor: not turned over by invert */
+                out->sThumbLX = add_look(out->sThumbLX, look[0]);
+                out->sThumbLY = add_look(out->sThumbLY, look[1]);
+            } else {
+                out->sThumbRX = add_look(out->sThumbRX, look[0]);
+                out->sThumbRY = add_look(out->sThumbRY, g_look.invert ? -look[1] : look[1]);
+            }
         }
     }
-    if (port == 0 && g_title_menu)
+    /* RECOMP_INPUT_FAKE: fed here, in the menus too -- a scripted wheel
+     * in a title's menu (title_menu_mouse) waited until play when it was
+     * fed only with the number keys. */
+    if (port == 0)
+        input_fake_feed();
+    if (port == 0 && (g_title_menu || g_pad_buttons))
         title_menu_mouse(out);
     else if (port == 0) {
         number_keys(&kc);

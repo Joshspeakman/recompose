@@ -100,6 +100,18 @@ void recomp_bindings_block(int on);
 void recomp_mouse_title_menu(int on);
 int  recomp_mouse_title_menu_on(void);
 
+/* The title's own cursor is up, moved by a stick (Future Perfect's MapMaker):
+ * the mouse's buttons work as the pad's, as in the title's menus above, but
+ * the window keeps the pointer (recomp_mouse_pad_buttons); and mouse look
+ * without native look moves the left stick, not the right, so the mouse moves
+ * the cursor (recomp_mouse_look_left; not turned over by mouse_invert). */
+void recomp_mouse_pad_buttons(int on);
+void recomp_mouse_look_left(int on);
+/* The dead zone the title's stick reads have, as a share of a full push
+ * (0, the default: none of ours). A mouse that moves a stick is then lifted
+ * past it, so a slow movement still moves (Future Perfect: 0.25). */
+void recomp_mouse_stick_dead_zone(float dz);
+
 /* ---- the number row and the wheel, a PC shooter's -----------------------
  *
  * A PC shooter picks its weapons with the number keys and zooms with the
