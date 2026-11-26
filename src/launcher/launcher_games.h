@@ -38,6 +38,10 @@ typedef struct LauncherGame {
     const char *card_line;      /* the line under it */
     const char *place;          /* over the cards, at the right */
     const char *card_art;       /* its card's picture, from its own art folder */
+    /* What its Widescreen does (recomp_config.h RecompWideMode: 1 its own 16:9
+     * mode, 2 its camera widened), which a single game's build is told at
+     * compile time; 0 leaves the build's. */
+    int         widescreen;
     const char *const *bindings;   /* its recomp_title_bindings[] */
     const char *const *settings;   /* its recomp_title_settings[] */
 } LauncherGame;

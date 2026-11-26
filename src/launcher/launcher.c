@@ -3056,6 +3056,8 @@ static void game_pick(int i)
     snprintf(g_title_name, sizeof g_title_name, "Xbox game");
     g_title_id = launcher_games[i].title_id;
     g_xbe_found[0] = '\0';
+    if (launcher_games[i].widescreen > 0)
+        recomp_widescreen_title((RecompWideMode)launcher_games[i].widescreen, -1);
     read_title();
     settings_load();
     bindings_load();
@@ -3089,7 +3091,20 @@ void launcher_init(void)
         games_find();
         g_game = games_first();
         g_title_id = launcher_games[g_game].title_id;
+    } else {
+        /* A self-building release (release.json) is one game's: that one, built
+         * in the player's folder for it, with its own art and defaults. */
+        int i;
+
+        for (i = 0; i < launcher_game_count && i < LAUNCHER_GAMES_MAX; i++)
+            if (launcher_games[i].title_id == g_title_id) {
+                g_game = i;
+                break;
+            }
+        snprintf(g_game_home[g_game], LAUNCHER_PATH, "%s", g_user_dir);
     }
+    if (launcher_games[g_game].widescreen > 0)
+        recomp_widescreen_title((RecompWideMode)launcher_games[g_game].widescreen, -1);
 #endif
     upd_init();
     read_title();
