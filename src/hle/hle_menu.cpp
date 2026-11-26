@@ -652,6 +652,11 @@ void settings_save_unsaved()
  * if it names one, else Direct3D 11 -- as rhi_select_backend reads it. */
 const char *renderer_meant(const char *r)
 {
+#if defined(__APPLE__)
+    /* A Mac: Metal, unless the player picked MoltenVK (rhi_select_backend);
+     * an old file's `vulkan` is Metal too. */
+    return !strcmp(r, "moltenvk") ? "moltenvk" : "metal";
+#endif
     if (!r[0] || !strcmp(r, "auto")) {
         const char *t = recomp_title_setting_default("renderer");
         return t && *t && strcmp(t, "auto") ? t : "d3d11";
@@ -842,6 +847,30 @@ void tab_display()
                                     !strcmp(rhi_backend_name(), "vulkan") ? "Vulkan" :
                                     !strcmp(rhi_backend_name(), "d3d11") ? "Direct3D 11" : rhi_backend_name());
             }
+        }
+    }
+#elif defined(__APPLE__)
+    ImGui::Spacing();
+    if (!strcmp(m.test_tab, "Advanced"))
+        ImGui::SetNextItemOpen(true);
+    if (ImGui::CollapsingHeader("Advanced")) {
+        /* The renderer: Metal, the Mac's own, or Vulkan through MoltenVK,
+         * from the next start. Stored as `moltenvk`, not `vulkan`, which old
+         * settings files say and which stays Metal (rhi_select_backend). */
+        const char *names[2] = {"Metal (default)", "Vulkan (MoltenVK)"};
+        int r = !strcmp(renderer_meant(m.st.renderer), "moltenvk") ? 1 : 0;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        if (ImGui::Combo("Renderer", &r, names, 2)) {
+            snprintf(m.st.renderer, sizeof m.st.renderer, "%s", r == 1 ? "moltenvk" : "metal");
+            settings_save();
+        }
+        if (strcmp(renderer_meant(m.st.renderer), renderer_meant(m.started.renderer)) != 0)
+            next_start_note();
+        else {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(drawing with %s)",
+                                !strcmp(rhi_backend_name(), "vulkan") ? "Vulkan (MoltenVK)" :
+                                !strcmp(rhi_backend_name(), "metal") ? "Metal" : rhi_backend_name());
         }
     }
 #endif

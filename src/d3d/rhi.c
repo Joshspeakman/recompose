@@ -32,12 +32,18 @@ const RhiBackend *g_rhi = &rhi_vulkan_backend;
 const RhiBackend *g_rhi = NULL;
 #endif
 
-/* Every backend this build offers, first is the default. A Mac offers
- * Metal only: the Vulkan backend is still compiled there (Metal compiles its
- * shaders through its DXC call) but is never chosen, and never a fallback. */
+/* Every backend this build offers, first is the default. A Mac draws with
+ * Metal; Vulkan, through MoltenVK, only when the player picks `renderer =
+ * moltenvk` (a launcher's Advanced section). Not `vulkan`: settings files
+ * from when the Mac offered Vulkan say that, and they keep Metal. A
+ * MoltenVK that cannot start (no loader or driver in the bundle) gives way to
+ * Metal, the first here. */
 static const RhiBackend *const g_backends[] = {
 #if defined(RHI_METAL_ONLY)
     &rhi_metal_backend,
+#if defined(RHI_HAVE_VULKAN)
+    &rhi_vulkan_backend,
+#endif
 #else
 #if defined(_WIN32)
     &rhi_d3d11_backend,
@@ -73,10 +79,15 @@ int rhi_select_backend(const char *name)
     if (!name || !*name)
         name = recomp_config_lookup("RECOMP_D3D8_BACKEND", "renderer");
 #if defined(RHI_METAL_ONLY)
-    /* A Mac draws with Metal whatever was asked: an old settings file's
-     * `renderer = vulkan` included. */
-    /* Said only when someone asked: not for the title's own default
-     * (`renderer` in its defaults, which names the PC's renderer). */
+#if defined(RHI_HAVE_VULKAN)
+    if (name && strcmp(name, "moltenvk") == 0) {
+        g_rhi = &rhi_vulkan_backend;
+        return 0;
+    }
+#endif
+    /* Anything else is Metal: an old settings file's `renderer = vulkan`
+     * included. Said only when someone asked: not for the title's own
+     * default (`renderer` in its defaults, which names the PC's renderer). */
     const char *title_default = recomp_title_setting_default("renderer");
     if (name && *name && strcmp(name, "auto") != 0 && strcmp(name, "metal") != 0 &&
         !(title_default && strcmp(name, title_default) == 0 &&
