@@ -661,6 +661,18 @@ static int find_config(char *out, size_t n)
                         "using the built-in bindings\n", env);
         return 0;
     }
+    /* A game's own, which a launcher of several games writes for each
+     * (launcher_games.h): titles/<id>.input.json, beside its settings. */
+    if (home && *home && recomp_config_title_id()) {
+#if defined(_WIN32)
+        snprintf(out, n, "%s\\titles\\%08X.input.json", home,
+                 (unsigned)recomp_config_title_id());
+#else
+        snprintf(out, n, "%s/titles/%08X.input.json", home, (unsigned)recomp_config_title_id());
+#endif
+        if (readable(out))
+            return 1;
+    }
     if (home && *home) {
         snprintf(out, n, "%s%s", home, tail);
         if (readable(out))

@@ -48,7 +48,8 @@
 #define SC_TAGLINE "NATIVE FOR LINUX" SC_DOT "RECOMPILED FROM YOUR XBOX DISC"
 #endif
 
-enum { SC_NONE = -1, SC_PLAY = 100, SC_QUIT = 101, SC_BACK = 102, SC_CARD = 200, SC_TILE = 300 };
+enum { SC_NONE = -1, SC_PLAY = 100, SC_QUIT = 101, SC_BACK = 102, SC_ADVANCED = 103,
+       SC_CARD = 200, SC_TILE = 300 };
 enum { SC_TILE_GRAPHICS, SC_TILE_CONTROLS, SC_TILE_ONLINE, SC_TILE_SAVES, SC_TILE_UPDATES, SC_TILES };
 /* The tiles shown: Updates only when the install has an updater (launcher.c). */
 static int sc_tiles(void) { return g_upd != UPD_OFF ? SC_TILES : SC_TILES - 1; }
@@ -56,8 +57,31 @@ static int sc_tiles(void) { return g_upd != UPD_OFF ? SC_TILES : SC_TILES - 1; }
 static int g_sc_hover = SC_NONE, g_sc_pressed = SC_NONE;
 static int g_sc_focus = -1;               /* -1 the cards, else a tile */
 static int g_sc_open = -1;                /* a panel: the Tab it shows, or -1 */
+/* The Graphics panel's ADVANCED button has the keys (up from its first row). */
+static int g_sc_adv_focus;
 
 static COLORREF sc_c(uint32_t rgb) { return THEME_RGB_(rgb); }
+
+/* A picture of the game's: in a launcher of several, the picked one's, from
+ * its own art folder (launcher_games.h). */
+static const uint32_t *sc_art(const char *name, int *w, int *h)
+{
+#ifdef LAUNCHER_GAMES
+    return launcher_art_image_of(launcher_games[g_game].title_id, name, w, h);
+#else
+    return launcher_art_image(name, w, h);
+#endif
+}
+
+/* The panel's Advanced part is there: something to put in it. */
+static int sc_has_advanced(void)
+{
+#ifdef LAUNCHER_GAMES
+    return g_adv_count > 0;
+#else
+    return 0;
+#endif
+}
 static ThemeRect sc_rect(int x, int y, int w, int h)
 {
     ThemeRect r;
@@ -94,6 +118,25 @@ static void sc_link_heading(ThemeRect r, const char *text)
 
 /* ---------------------------------------------------------------- facts */
 
+#ifdef LAUNCHER_GAMES
+/* A launcher of several games: a card for each, the picked one selected; one
+ * that is not installed is shown, dimmed, and cannot be picked. */
+static int sc_card_ok(int i)
+{
+    return i >= 0 && i < launcher_game_count && i < LAUNCHER_GAMES_MAX && g_game_home[i][0];
+}
+
+static int sc_card(void)
+{
+    return g_game;
+}
+
+static void sc_set_card(int i)
+{
+    if (sc_card_ok(i))
+        game_pick(i);
+}
+#else
 /* The two renderers a card can choose: Direct3D 11 and Vulkan on Windows;
  * elsewhere Vulkan alone (the second card says why it cannot be had). */
 static int sc_card_ok(int i)
@@ -136,6 +179,7 @@ static void sc_set_card(int i)
     snprintf(g_settings.renderer, sizeof g_settings.renderer, "%s", i ? "vulkan" : "d3d11");
 #endif
 }
+#endif
 
 static const char *sc_tile_title(int k)
 {
@@ -253,16 +297,39 @@ enum { SC_PANEL_X = 120, SC_PANEL_W = 720, SC_PANEL_TOP = 26, SC_ROWS_AT = 80, S
 static int sc_panel_rows(void)
 {
     return g_sc_open == TAB_INPUT ? BIND_ROWS_VISIBLE
-         : g_sc_open == TAB_LINK  ? g_link_count : g_video_count;
+         : g_sc_open == TAB_LINK  ? g_link_count
+#ifdef LAUNCHER_GAMES
+         : g_sc_open == TAB_ADVANCED ? g_adv_count
+#endif
+         : g_video_count;
 }
+/* Under the rows: their help (44); on Controls the slot for the columns'
+ * names; on Online the box draw_link adds (with no help over it when the
+ * only row is System Link's, which the box explains). */
+static int sc_panel_extra(void)
+{
+    return g_sc_open == TAB_LINK  ? (g_link_count > 1 ? 52 : 12) + link_box_h() + 30
+         : g_sc_open == TAB_INPUT ? 48 + SC_BIND_GAP
+#ifdef LAUNCHER_GAMES
+         : g_sc_open == TAB_ADVANCED ? 64
+#endif
+         : 48;
+}
+
+/* The rows' pitch: the Mac's 48, or as much less as lets every row and the
+ * help under them fit above the buttons (Graphics has nine rows: at 48 its
+ * help was cut off by the panel's edge). */
+static int sc_pitch(void)
+{
+    int rows = sc_panel_rows(), room = SC_H - 92 - 12 - SC_PANEL_TOP - SC_ROWS_AT - sc_panel_extra();
+    int pitch = rows > 0 ? room / rows : SC_PITCH;
+
+    return pitch >= SC_PITCH ? SC_PITCH : pitch < 38 ? 38 : pitch;
+}
+
 static ThemeRect sc_panel_rect(void)
 {
-    /* Under the rows: their help (44); on Controls the slot for the columns'
-     * names; on Online the box draw_link adds (with no help over it when the
-     * only row is System Link's, which the box explains). */
-    int extra = g_sc_open == TAB_LINK  ? (g_link_count > 1 ? 52 : 12) + link_box_h() + 30
-              : g_sc_open == TAB_INPUT ? 48 + SC_BIND_GAP : 48;
-    int h = SC_ROWS_AT + sc_panel_rows() * SC_PITCH + extra;
+    int h = SC_ROWS_AT + sc_panel_rows() * sc_pitch() + sc_panel_extra();
 
     if (h > SC_H - 92 - 12 - SC_PANEL_TOP)
         h = SC_H - 92 - 12 - SC_PANEL_TOP;
@@ -275,7 +342,7 @@ static void sc_rows_in_panel(void)
     ThemeRect p = sc_panel_rect();
 
     g_row_x = p.x + 30; g_row_y = p.y + SC_ROWS_AT; g_row_w = p.w - 60;
-    g_row_pitch = SC_PITCH; g_row_h = SC_PITCH - 6;
+    g_row_pitch = sc_pitch(); g_row_h = g_row_pitch - 6;
     g_content_bottom = p.y + p.h - 14;
     /* Controls: a slot over the first control for its columns' names. */
     g_row_gap = g_row_gap_at = 0;
@@ -285,9 +352,34 @@ static void sc_rows_in_panel(void)
     }
 }
 
+#ifdef LAUNCHER_GAMES
+/* The Advanced panel's way back to Graphics: at its title's left. */
+static ThemeRect sc_advanced_back_rect(void)
+{
+    ThemeRect p = sc_panel_rect();
+
+    return sc_rect(p.x + 30, p.y + 20, 120, 28);
+}
+#endif
+
+/* The Graphics panel's ADVANCED button: at its title's right. */
+static ThemeRect sc_advanced_rect(void)
+{
+    ThemeRect p = sc_panel_rect();
+
+    return sc_rect(p.x + p.w - 30 - 132, p.y + 20, 132, 28);
+}
+
 static int sc_hit(int mx, int my)
 {
     int i;
+
+    if (g_sc_open == TAB_VIDEO && sc_has_advanced() && sc_in(sc_advanced_rect(), mx, my))
+        return SC_ADVANCED;
+#ifdef LAUNCHER_GAMES
+    if (g_sc_open == TAB_ADVANCED && sc_in(sc_advanced_back_rect(), mx, my))
+        return SC_BACK;
+#endif
 
     if (sc_in(sc_play_rect(), mx, my)) return SC_PLAY;
     if (sc_in(sc_quit_rect(), mx, my)) return g_sc_open >= 0 ? SC_BACK : SC_QUIT;
@@ -542,6 +634,57 @@ static void sc_draw_input(void)
 
 /* -------------------------------------------------------- the main screen */
 
+#ifdef LAUNCHER_GAMES
+/* A game's card: its own picture, from its own art folder (the player's,
+ * made from their disc), whether it is there to play, its name and what is
+ * in it. The renderer cards' numbers. */
+static void sc_card_draw(int i)
+{
+    const LauncherGame *g = &launcher_games[i];
+    ThemeRect r = sc_card_rect(i), t;
+    int ok = sc_card_ok(i), sel = ok && sc_card() == i, hot = g_sc_hover == SC_CARD + i && ok;
+    int foc = sel && g_sc_focus == -1 && g_sc_open < 0, w = 0, h = 0;
+    const uint32_t *shot = launcher_art_image_of(g->title_id, g->card_art, &w, &h);
+
+    if (sel)
+        theme_glow_rect(r, THEME_ACCENT_RGB, g_sc_focus >= 0 ? 0.22 : 0.45, 13);
+    theme_fill(r, 0x000000, 1);
+    if (shot)
+        theme_cover(r, shot, w, h, 0.82, 0.5, 0.38, sel ? 1.0 : hot ? 0.85 : ok ? 0.58 : 0.3,
+                    1 + i);
+    {
+        double at[3] = { 0, 0.42, 1 };
+        uint32_t c[3] = { 0x000000, 0x000000, THEME_INK_RGB };
+        double a[3] = { 0, 0.3, 0.94 };
+
+        theme_vgrad(r, 3, at, c, a);
+    }
+    if (!sel)
+        theme_fill(r, THEME_INK_RGB, hot ? 0.16 : ok ? 0.32 : 0.5);
+    t = sc_rect(r.x + 20, r.y + r.h - 100, 360, 16);
+    sc_caps(t, ok ? "READY TO PLAY" : "NOT INSTALLED", 8,
+            sel || hot ? THEME_ACCENT_RGB : THEME_TEXT_DIM_RGB, THEME_LEFT, 3);
+    t = sc_rect(r.x + 18, r.y + r.h - 86, 380, 52);
+    theme_text_ex(t, g->card_name, 25, 700,
+                  !ok ? sc_c(THEME_TEXT_DIM_RGB)
+                  : sel || hot ? RGB(255, 255, 255) : RGB(0xC1, 0xC6, 0xD0),
+                  THEME_LEFT, 4, THEME_FACE_HEAVY, 1);
+    t = sc_rect(r.x + 20, r.y + r.h - 32, 370, 20);
+    theme_text_ex(t, ok ? g->card_line : "Install it from its disc to play it here", 10, 400,
+                  sel || hot ? sc_c(THEME_TEXT_RGB) : sc_c(THEME_TEXT_DIM_RGB),
+                  THEME_LEFT, 0, THEME_FACE_BODY, 0);
+    theme_outline(r, sel || hot ? THEME_ACCENT_RGB : THEME_ACCENT_DIM_RGB, sel ? 1 : ok ? 0.7 : 0.4,
+                  sel ? 2 : 1);
+    if (sel) {
+        ThemeRect b = r, tag = sc_rect(r.x + r.w - 104, r.y + 12, 92, 22);
+
+        b.x -= 6; b.y -= 6; b.w += 12; b.h += 12;
+        theme_brackets(b, foc ? 22 : 16, foc ? 3 : 2, THEME_ACCENT_RGB, 1);
+        theme_fill(tag, THEME_ACCENT_RGB, 0.92);
+        sc_caps(tag, "SELECTED", 8, THEME_INK_RGB, THEME_CENTRE, 2);
+    }
+}
+#else
 static void sc_card_draw(int i)
 {
 #if defined(_WIN32)
@@ -598,6 +741,7 @@ static void sc_card_draw(int i)
         sc_caps(tag, "SELECTED", 8, THEME_INK_RGB, THEME_CENTRE, 2);
     }
 }
+#endif
 
 static void sc_tile_draw(int k)
 {
@@ -631,9 +775,9 @@ static void sc_tile_draw(int k)
 static void sc_header(int compact)
 {
     int w = 0, h = 0, lw = 0, lh = 0, gw = 0, gh = 0;
-    const uint32_t *bd = launcher_art_image("backdrop", &w, &h);
-    const uint32_t *logo = launcher_art_image("logo", &lw, &lh);
-    const uint32_t *glow = launcher_art_image("glow", &gw, &gh);
+    const uint32_t *bd = sc_art("backdrop", &w, &h);
+    const uint32_t *logo = sc_art("logo", &lw, &lh);
+    const uint32_t *glow = sc_art("glow", &gw, &gh);
     ThemeRect lr = compact ? sc_rect(290, 12, 380, 92) : sc_rect(230, 16, 500, 132), t;
     int sub_y = compact ? 106 : 150, tag_y = compact ? 140 : 184;
 
@@ -675,7 +819,12 @@ static void sc_header(int compact)
         theme_picture_ex(lr, logo, lw, lh, THEME_CENTRE, 1, 6, NULL);
     } else {
         t = sc_rect(0, compact ? 34 : 60, SC_W, 72);
+#ifdef LAUNCHER_GAMES
+        theme_text_ex(t, launcher_games[g_game].name, compact ? 32 : 44, 700, sc_c(THEME_TEXT_RGB),
+                      THEME_CENTRE,
+#else
         theme_text_ex(t, THEME_SC_NAME, compact ? 32 : 44, 700, sc_c(THEME_TEXT_RGB), THEME_CENTRE,
+#endif
                       8, THEME_FACE_HEAVY, 1);
         theme_fill(sc_rect(SC_W / 2 - 180, compact ? 102 : 141, 360, 1), THEME_ACCENT_DIM_RGB, 0.8);
     }
@@ -698,7 +847,21 @@ static const char *sc_hint(void)
         k = g_sc_focus;
     if (k >= 0)
         return sc_tile_note(k);
-#if defined(_WIN32)
+#if defined(LAUNCHER_GAMES)
+    if (g_sc_open < 0 && g_sc_adv_focus == 0 && g_sc_hover >= SC_CARD &&
+        g_sc_hover < SC_CARD + 2) {
+        static char line[160];
+        int i = g_sc_hover - SC_CARD;
+
+        if (!sc_card_ok(i))
+            snprintf(line, sizeof line, "%s is not installed here.",
+                     launcher_games[i].card_name);
+        else
+            snprintf(line, sizeof line, "%s: click to choose it, double-click to play.",
+                     launcher_games[i].card_name);
+        return line;
+    }
+#elif defined(_WIN32)
     if (g_sc_hover == SC_CARD)
         return sc_default_card() == 0
             ? "Direct3D 11: Windows' own renderer, the default. Double-click to play."
@@ -730,7 +893,8 @@ static void draw_tab_body(void);          /* launcher.c: a tab's rows */
 
 static void sc_panel(void)
 {
-    static const char *const titles[] = { "GRAPHICS OPTIONS", "CONTROLS", "ONLINE", "ABOUT" };
+    static const char *const titles[] = { "GRAPHICS OPTIONS", "CONTROLS", "ONLINE", "ABOUT",
+                                          "ADVANCED OPTIONS" };
     ThemeRect p = sc_panel_rect(), b = p;
 
     theme_fill(sc_rect(0, 0, SC_W, SC_H - 92), THEME_INK_RGB, 0.94);
@@ -739,9 +903,39 @@ static void sc_panel(void)
     theme_outline(p, THEME_ACCENT_DIM_RGB, 1, 1);
     b.x -= 6; b.y -= 6; b.w += 12; b.h += 12;
     theme_brackets(b, 22, 3, THEME_ACCENT_RGB, 1);
-    sc_caps(sc_rect(p.x, p.y + 18, p.w, 30), titles[g_sc_open < 4 ? g_sc_open : 3], 15,
+    sc_caps(sc_rect(p.x, p.y + 18, p.w, 30), titles[g_sc_open < 5 ? g_sc_open : 3], 15,
             THEME_ACCENT_RGB, THEME_CENTRE, 6);
     theme_fill(sc_rect(p.x + 30, p.y + 58, p.w - 60, 1), THEME_ACCENT_DIM_RGB, 0.6);
+    /* Graphics: what a player seldom needs is a step away, behind ADVANCED. */
+    if (g_sc_open == TAB_VIDEO && sc_has_advanced()) {
+        ThemeRect a = sc_advanced_rect();
+        int hot = g_sc_hover == SC_ADVANCED, foc = g_sc_adv_focus;
+
+        theme_fill(a, foc ? THEME_ACCENT_RGB : THEME_INK_RGB, foc ? 0.22 : 0.9);
+        theme_outline(a, hot || foc ? THEME_ACCENT_RGB : THEME_ACCENT_DIM_RGB, hot || foc ? 1 : 0.8, 1);
+        sc_caps(sc_rect(a.x, a.y, a.w - 14, a.h), "ADVANCED", 8,
+                hot || foc ? THEME_HILITE_RGB : THEME_TEXT_DIM_RGB, THEME_CENTRE, 3);
+        theme_chevron(a.x + a.w - 18, a.y + a.h / 2.0, 1, 5, 10,
+                      hot || foc ? THEME_ACCENT_RGB : THEME_TEXT_DIM_RGB, 1.0);
+        if (foc) {
+            ThemeRect bb = a;
+
+            bb.x -= 4; bb.y -= 4; bb.w += 8; bb.h += 8;
+            theme_brackets(bb, 8, 2, THEME_ACCENT_RGB, 1);
+        }
+    }
+#ifdef LAUNCHER_GAMES
+    /* Advanced: where it came from, and the way back. */
+    if (g_sc_open == TAB_ADVANCED) {
+        ThemeRect back = sc_advanced_back_rect();
+        int hot = g_sc_hover == SC_BACK;
+
+        theme_chevron(back.x + 4, back.y + back.h / 2.0, 0, 5, 10,
+                      hot ? THEME_ACCENT_RGB : THEME_TEXT_DIM_RGB, 1.0);
+        sc_caps(sc_rect(back.x + 16, back.y, back.w - 16, back.h), "GRAPHICS", 8,
+                hot ? THEME_HILITE_RGB : THEME_TEXT_DIM_RGB, THEME_LEFT, 3);
+    }
+#endif
     sc_rows_in_panel();
     draw_tab_body();
 }
@@ -957,8 +1151,14 @@ static int sc_draw(void)
         return 1;
     }
     sc_header(0);
+#ifdef LAUNCHER_GAMES
+    sc_caps(sc_rect(60, 226, 400, 16), "CHOOSE YOUR GAME", 8, THEME_TEXT_DIM_RGB, THEME_LEFT, 3);
+    sc_caps(sc_rect(SC_W - 460, 226, 400, 16), launcher_games[g_game].place, 8, THEME_TEXT_DIM_RGB,
+            THEME_RIGHT, 3);
+#else
     sc_caps(sc_rect(60, 226, 400, 16), "CHOOSE YOUR RENDERER", 8, THEME_TEXT_DIM_RGB, THEME_LEFT, 3);
     sc_caps(sc_rect(SC_W - 460, 226, 400, 16), THEME_SC_PLACE, 8, THEME_TEXT_DIM_RGB, THEME_RIGHT, 3);
+#endif
     if (g_sc_open >= 0)
         g_sc_hover = g_sc_focus = SC_NONE;     /* under a panel, nothing lit */
     for (i = 0; i < 2; i++)
@@ -991,11 +1191,33 @@ static void sc_open_tile(int k)
     g_sc_open = tab_of[k];
     set_tab((Tab)tab_of[k]);
     g_sel = 0;
+    g_sc_adv_focus = 0;
     sc_rows_in_panel();
+}
+
+/* The Graphics panel's Advanced part, and back. */
+static void sc_open_advanced(int open)
+{
+#ifdef LAUNCHER_GAMES
+    g_sc_open = open ? TAB_ADVANCED : TAB_VIDEO;
+    set_tab(open ? TAB_ADVANCED : TAB_VIDEO);
+    g_sel = 0;
+    g_sc_adv_focus = !open;              /* back on Graphics: the button, as left */
+    sc_rows_in_panel();
+#else
+    (void)open;
+#endif
 }
 
 static void sc_close(void)
 {
+#ifdef LAUNCHER_GAMES
+    if (g_sc_open == TAB_ADVANCED) {
+        sc_open_advanced(0);
+        return;
+    }
+#endif
+    g_sc_adv_focus = 0;
     g_sc_open = -1;
     g_capturing = 0;
     settings_save();
@@ -1012,13 +1234,30 @@ static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta)
     if (g_sc_open >= 0) {
         if (g_capturing)
             return 0;
+        if (g_sc_open == TAB_VIDEO && sc_has_advanced()) {
+            if (g_sc_adv_focus) {
+                if (accept)
+                    sc_open_advanced(1);
+                else if (cancel)
+                    sc_close();
+                else if (dy > 0) {
+                    g_sc_adv_focus = 0;
+                    g_sel = 0;
+                }
+                if (accept || cancel || dy || dx)
+                    return 1;
+            } else if (dy < 0 && g_sel == 0) {
+                g_sc_adv_focus = 1;
+                return 1;
+            }
+        }
         if (cancel || (accept && g_tab != TAB_INPUT)) {
             sc_close();
             return 1;
         }
         if (tabdelta) {
             static const int order[] = { TAB_VIDEO, TAB_INPUT, TAB_LINK };
-            int i, at = 0;
+            int i, at = 0;           /* Advanced counts as Graphics */
 
             for (i = 0; i < 3; i++)
                 if (order[i] == g_sc_open)
@@ -1070,6 +1309,7 @@ static int sc_click(int mx, int my, int dbl)
     if (h == SC_PLAY) { do_play(); return 1; }
     if (h == SC_QUIT) { lhost_close(); return 1; }
     if (h == SC_BACK) { sc_close(); return 1; }
+    if (h == SC_ADVANCED) { sc_open_advanced(1); return 1; }
     if (g_sc_open >= 0) {
         sc_rows_in_panel();
         return 0;                             /* a panel's rows: the plain launcher's */

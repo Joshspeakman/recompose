@@ -335,3 +335,43 @@ const uint32_t *launcher_art_image(const char *name, int *w, int *h)
     *h = kept[i].h;
     return kept[i].px;
 }
+
+/* A picture of another title's, for a launcher of several games
+ * (launcher_games.h): <name>.jpg or .png in that title's art cache, the
+ * first time it is asked for, and kept. The player's own, made from their
+ * disc, as the rest are; RECOMP_LAUNCHER_NO_ART leaves them out too. */
+const uint32_t *launcher_art_image_of(uint32_t title_id, const char *name, int *w, int *h)
+{
+    static struct { uint32_t id; char name[32]; uint32_t *px; int w, h, tried; } kept[24];
+    static int off = -1;
+    char dir[ART_PATH], path[ART_PATH + 64];
+    int i, j;
+
+    *w = *h = 0;
+    if (off < 0) {
+        const char *v = getenv("RECOMP_LAUNCHER_NO_ART");
+        off = v && *v && strcmp(v, "0") != 0;
+    }
+    if (off || !name)
+        return NULL;
+    for (i = 0; i < 24 && kept[i].tried; i++)
+        if (kept[i].id == title_id && !strcmp(kept[i].name, name)) {
+            *w = kept[i].w;
+            *h = kept[i].h;
+            return kept[i].px;
+        }
+    if (i == 24)
+        return NULL;
+    kept[i].id = title_id;
+    snprintf(kept[i].name, sizeof kept[i].name, "%s", name);
+    kept[i].tried = 1;
+    if (cache_dir(title_id, dir, sizeof dir))
+        for (j = 0; j < 2 && !kept[i].px; j++) {
+            snprintf(path, sizeof path, "%s/%s.%s", dir, name, j ? "png" : "jpg");
+            if (file_exists(path))
+                kept[i].px = launcher_image_load(path, &kept[i].w, &kept[i].h);
+        }
+    *w = kept[i].w;
+    *h = kept[i].h;
+    return kept[i].px;
+}

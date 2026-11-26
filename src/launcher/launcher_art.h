@@ -16,5 +16,7 @@ const uint32_t *launcher_art_backdrop(int *w, int *h);
 const uint32_t *launcher_art_logo(int *w, int *h);
 /* Any other picture of the title's by name (art/<name>.jpg or .png). */
 const uint32_t *launcher_art_image(const char *name, int *w, int *h);
+/* The same, from another title's art folder (a launcher of several games). */
+const uint32_t *launcher_art_image_of(uint32_t title_id, const char *name, int *w, int *h);
 
 #endif /* XBOXRECOMP_LAUNCHER_ART_H */

@@ -26,7 +26,7 @@
 # title's CMakeLists need not ask which host it is on.
 
 function(recomp_add_launcher TARGET GAME_EXE)
-    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP;SHOWCASE" "DEFAULTS;BRAND;ICON;THEME;LOGO" "" ${ARGN})
+    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP;SHOWCASE" "DEFAULTS;BRAND;ICON;THEME;LOGO;GAMES" "" ${ARGN})
     set(_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
 
     if(WIN32)
@@ -184,6 +184,17 @@ function(recomp_add_launcher TARGET GAME_EXE)
              "static const unsigned char launcher_logo_png[] = {${_bytes}};\n")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_logo}")
         target_compile_definitions(${TARGET} PRIVATE LAUNCHER_LOGO_HEADER="${_logo_h}")
+    endif()
+    # GAMES <file>: one launcher for a collection of games (launcher_games.h).
+    # The file lists them -- where each one's program is, its card, its own
+    # defaults -- and the launcher picks among them: its cards are the games,
+    # and the renderer moves into the Graphics panel's Advanced part. The
+    # file brings each game's defaults itself, so DEFAULTS is not given with
+    # it. <exe> is then only the program the build is beside.
+    if(_launcher_GAMES)
+        get_filename_component(_games "${_launcher_GAMES}" ABSOLUTE)
+        target_sources(${TARGET} PRIVATE "${_games}")
+        target_compile_definitions(${TARGET} PRIVATE LAUNCHER_GAMES=1)
     endif()
     # COOP: the title's build supports online co-op (it hooks its frame for
     # src/kernel/recomp_lockstep.h), so the System Link tab offers hosting

@@ -40,6 +40,9 @@
 #include "launcher_theme.h"
 #include "launcher_art.h"
 #include "launcher_bindings.h"
+#ifdef LAUNCHER_GAMES
+#include "launcher_games.h"
+#endif
 #include "recomp_config.h"
 #include "recomp_pad.h"
 #include "net_upnp.h"
@@ -87,6 +90,9 @@ static int g_content_bottom = LAUNCHER_WINDOW_H - 96;
 #ifdef LAUNCHER_SHOWCASE
 static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta);   /* launcher_showcase.inc */
 #endif
+#ifdef LAUNCHER_GAMES
+static void game_pick(int i);             /* below: everything becomes that game's */
+#endif
 
 /* ------------------------------------------------------------- settings */
 
@@ -121,6 +127,27 @@ static int            g_widescreen;        /* the row; settings_save applies it 
 static const char *const k_soften_values[] = { "sharp", "console", "off", NULL };
 static const char *const k_soften_labels[] = { "Sharp", "As the console", "Off", NULL };
 static int            g_soften_index;
+
+#if defined(LAUNCHER_GAMES) && defined(_WIN32)
+/* The renderer, in the Graphics panel's Advanced part (a launcher of several
+ * games has its cards for the games): the title's own first, marked the
+ * default, and written "auto" when it is the one chosen. */
+#define LAUNCHER_RENDERER_ROW 1
+static const char *const k_renderer_vk_values[] = { "vulkan", "d3d11", NULL };
+static const char *const k_renderer_vk_labels[] = { "Vulkan (default)", "Direct3D 11", NULL };
+static const char *const k_renderer_dx_values[] = { "d3d11", "vulkan", NULL };
+static const char *const k_renderer_dx_labels[] = { "Direct3D 11 (default)", "Vulkan", NULL };
+static int            g_renderer_index;
+static int renderer_vulkan_first(void)
+{
+    const char *t = recomp_title_setting_default("renderer");
+    return t && !strcmp(t, "vulkan");
+}
+#endif
+#ifdef LAUNCHER_GAMES
+static Row  g_adv_rows[2];                 /* the Advanced panel's; none without one */
+#endif
+static int  g_adv_count;
 
 static Row  g_video_rows[14];
 static int  g_video_count;
@@ -280,6 +307,22 @@ static void build_rows(void)
     r++;
 
     g_video_count = (int)(r - g_video_rows);
+
+    g_adv_count = 0;
+#ifdef LAUNCHER_RENDERER_ROW
+    r = g_adv_rows;
+    r->label = "Renderer";
+    r->help  = renderer_vulkan_first()
+             ? "Vulkan draws the game, as on Linux. Direct3D 11 is Windows' own,"
+               " for a machine where Vulkan gives trouble. From the next start."
+             : "Direct3D 11 is Windows' own. Vulkan is the renderer Linux uses."
+               " From the next start.";
+    r->kind  = ROW_CHOICE;
+    r->choices = renderer_vulkan_first() ? k_renderer_vk_labels : k_renderer_dx_labels;
+    r->ival = &g_renderer_index;
+    r++;
+    g_adv_count = (int)(r - g_adv_rows);
+#endif
 }
 
 static const char *link_mode_label(int i)
@@ -501,6 +544,68 @@ static void row_paste(Row *r)
 static char g_title_name[128] = "Xbox game";
 static uint32_t g_title_id;
 static char g_xbe_found[LAUNCHER_PATH]; /* empty: the game's files were not found */
+
+#ifdef LAUNCHER_GAMES
+/* The games (launcher_games.h): the one picked, where each one's program was
+ * found -- empty for one that is not installed -- and whether the picked
+ * one's settings are loaded (so leaving it saves them). */
+static int  g_game;
+static char g_game_home[LAUNCHER_GAMES_MAX][LAUNCHER_PATH];
+static int  g_game_ready;
+#endif
+
+/* The program Play starts, as a file name: the picked game's, or the one
+ * recomp_add_launcher was built for. */
+static void game_exe_name(char *out, size_t n)
+{
+#ifdef LAUNCHER_GAMES
+#ifdef _WIN32
+    snprintf(out, n, "%s.exe", launcher_games[g_game].exe);
+#else
+    snprintf(out, n, "%s", launcher_games[g_game].exe);
+#endif
+#else
+    snprintf(out, n, "%s", LAUNCHER_GAME_EXE);
+#endif
+}
+
+/* The image it boots, and where its main.c says its files are. */
+static const char *game_xbe_name(void)
+{
+#ifdef LAUNCHER_GAMES
+    return launcher_games[g_game].xbe ? launcher_games[g_game].xbe : "default.xbe";
+#else
+    return LAUNCHER_GAME_XBE;
+#endif
+}
+
+static const char *game_dir_rel(void)
+{
+#if defined(LAUNCHER_GAMES)
+    return launcher_games[g_game].game_dir;
+#elif defined(LAUNCHER_GAME_DIR)
+    return LAUNCHER_GAME_DIR;
+#else
+    return NULL;
+#endif
+}
+
+/* The folder the program is in: the picked game's, or this launcher's.
+ * 0 when there is none (a game of the collection that is not installed). */
+static int game_home(char *dir, size_t n)
+{
+#ifdef LAUNCHER_GAMES
+    if (!g_game_home[g_game][0])
+        return 0;
+    snprintf(dir, n, "%s", g_game_home[g_game]);
+    return 1;
+#else
+    if (!host_exe_path(dir, n))
+        return 0;
+    host_path_dirname(dir);
+    return 1;
+#endif
+}
 
 /* ------------------------------------------------- a self-building release */
 
@@ -874,13 +979,13 @@ static int read_cert(const char *xbe)
 
 static void read_title(void)
 {
-    const char *env = getenv("RECOMP_GAME_DIR");
-    char dir[LAUNCHER_PATH], xbe[LAUNCHER_PATH + 64], app[LAUNCHER_PATH];
+    const char *env = getenv("RECOMP_GAME_DIR"), *rel = game_dir_rel(), *x = game_xbe_name();
+    char dir[LAUNCHER_PATH], xbe[LAUNCHER_PATH * 2 + 64], app[LAUNCHER_PATH];
 
     /* A release's game is the one its builder made; until there is one, the
      * name and id are release.json's. */
     if (g_release) {
-        snprintf(xbe, sizeof xbe, "%s/game/" LAUNCHER_GAME_XBE, g_user_dir);
+        snprintf(xbe, sizeof xbe, "%s/game/%s", g_user_dir, x);
         read_cert(xbe);
         return;
     }
@@ -889,38 +994,42 @@ static void read_title(void)
      * somewhere else would name a settings file for a different copy.
      * Forward slashes throughout, which Windows takes as well. */
     if (env && *env) {
-        snprintf(xbe, sizeof xbe, "%s/" LAUNCHER_GAME_XBE, env);
+        snprintf(xbe, sizeof xbe, "%s/%s", env, x);
         read_cert(xbe);
         return;
     }
 
+#ifndef LAUNCHER_GAMES
     if (host_app_bundle_dir(app, sizeof app)) {
         snprintf(dir, sizeof dir, "%s", app);
         host_path_dirname(dir);
-        snprintf(xbe, sizeof xbe, "%s/game/" LAUNCHER_GAME_XBE, dir);
+        snprintf(xbe, sizeof xbe, "%s/game/%s", dir, x);
         if (read_cert(xbe))
             return;
-        snprintf(xbe, sizeof xbe, "%s/Contents/Resources/game/" LAUNCHER_GAME_XBE, app);
+        snprintf(xbe, sizeof xbe, "%s/Contents/Resources/game/%s", app, x);
         if (read_cert(xbe))
             return;
     }
-
-    if (!host_exe_path(dir, sizeof dir))
-        return;
-    host_path_dirname(dir);
-
-    snprintf(xbe, sizeof xbe, "%s/game/" LAUNCHER_GAME_XBE, dir);
-    if (read_cert(xbe))
-        return;
-#ifdef LAUNCHER_GAME_DIR
-    snprintf(xbe, sizeof xbe, "%s/%s/" LAUNCHER_GAME_XBE, dir, LAUNCHER_GAME_DIR);
-    if (read_cert(xbe))
-        return;
-    if (strncmp(LAUNCHER_GAME_DIR, "../", 3) == 0) {
-        snprintf(xbe, sizeof xbe, "%s/%s/" LAUNCHER_GAME_XBE, dir, &LAUNCHER_GAME_DIR[3]);
-        read_cert(xbe);
-    }
+#else
+    (void)app;
 #endif
+
+    /* Beside the program: this launcher's folder, or the picked game's. */
+    if (!game_home(dir, sizeof dir))
+        return;
+
+    snprintf(xbe, sizeof xbe, "%s/game/%s", dir, x);
+    if (read_cert(xbe))
+        return;
+    if (rel && *rel) {
+        snprintf(xbe, sizeof xbe, "%s/%s/%s", dir, rel, x);
+        if (read_cert(xbe))
+            return;
+        if (strncmp(rel, "../", 3) == 0) {
+            snprintf(xbe, sizeof xbe, "%s/%s/%s", dir, rel + 3, x);
+            read_cert(xbe);
+        }
+    }
 }
 
 /* ------------------------------------------------------------- capture */
@@ -1104,7 +1213,10 @@ extern const char *const recomp_title_settings[];
  * start from the title's. */
 static void title_defaults(void)
 {
-#if defined(LAUNCHER_TITLE_DEFAULTS)
+#if defined(LAUNCHER_GAMES)
+    recomp_title_defaults_install(launcher_games[g_game].bindings,
+                                  launcher_games[g_game].settings);
+#elif defined(LAUNCHER_TITLE_DEFAULTS)
     recomp_title_defaults_install(recomp_title_bindings, recomp_title_settings);
 #endif
 }
@@ -1130,6 +1242,16 @@ static void settings_load(void)
             }
     }
 
+#ifdef LAUNCHER_RENDERER_ROW
+    {
+        const char *const *v = renderer_vulkan_first() ? k_renderer_vk_values
+                                                       : k_renderer_dx_values;
+        g_renderer_index = 0;
+        if (g_settings.renderer[0] && strcmp(g_settings.renderer, "auto") != 0 &&
+            strcmp(g_settings.renderer, v[0]) != 0 && !strcmp(g_settings.renderer, v[1]))
+            g_renderer_index = 1;
+    }
+#endif
     g_soften_index = 0;
     {
         int i;
@@ -1158,13 +1280,42 @@ static void settings_load(void)
     build_link_rows();
 }
 
+/* Where the bindings are kept. In a launcher of several games each has its
+ * own, titles/<id>.input.json in the per-user settings folder, which its
+ * game reads first (input_bindings.c); until it has one, the shared file
+ * is read for it -- a key changed for one game must not change another's. */
+static int bindings_path(char *path, size_t n, int for_save)
+{
+#ifdef LAUNCHER_GAMES
+    char dir[600];
+
+    if (g_title_id && recomp_config_user_dir(dir, sizeof dir)) {
+        FILE *f;
+#ifdef _WIN32
+        snprintf(path, n, "%s\\titles\\%08X.input.json", dir, g_title_id);
+#else
+        snprintf(path, n, "%s/titles/%08X.input.json", dir, g_title_id);
+#endif
+        if (for_save)
+            return 1;
+        if ((f = fopen(path, "rb")) != NULL) {
+            fclose(f);
+            return 1;
+        }
+    }
+#else
+    (void)for_save;
+#endif
+    return bind_config_path(path, n);
+}
+
 static void bindings_load(void)
 {
     char path[1024];
 
     title_defaults();
     bind_defaults(&g_bind);
-    if (bind_config_path(path, sizeof path))
+    if (bindings_path(path, sizeof path, 0))
         bind_load(path, &g_bind);
     recomp_pad_set_api(g_bind.pad_api == BIND_PAD_API_XINPUT
                        ? RECOMP_PAD_API_XINPUT : RECOMP_PAD_API_SDL);
@@ -1175,7 +1326,7 @@ static void bindings_save(void)
 {
     char path[1024];
 
-    if (g_bind_dirty && bind_config_path(path, sizeof path))
+    if (g_bind_dirty && bindings_path(path, sizeof path, 1))
         if (bind_save(path, &g_bind))
             g_bind_dirty = 0;
 }
@@ -1196,6 +1347,11 @@ static int settings_save(void)
      * unless the switch was moved, so a value set by hand in the file
      * survives every Play. */
     recomp_settings_set_widescreen(&g_settings, g_widescreen);
+#endif
+#ifdef LAUNCHER_RENDERER_ROW
+    snprintf(g_settings.renderer, sizeof g_settings.renderer, "%s",
+             g_renderer_index == 0 ? "auto"
+             : (renderer_vulkan_first() ? k_renderer_vk_values : k_renderer_dx_values)[1]);
 #endif
     snprintf(g_settings.frame_cap, sizeof g_settings.frame_cap, "%s",
              k_frame_caps[g_frame_cap_index]);
@@ -1242,6 +1398,9 @@ static char g_upd_script[LAUNCHER_PATH + 32];
 static char g_upd_tag[64], g_upd_error[400], g_upd_phase[160], g_upd_detail[300];
 static double g_upd_progress;
 static int g_upd_cancelled;
+#ifdef LAUNCHER_GAMES
+static int g_upd_redo;               /* a game was picked while a check ran */
+#endif
 
 static int upd_start(int check)
 {
@@ -1298,6 +1457,11 @@ static void upd_init(void)
         DeleteFileA(old);
     }
     host_path_dirname(dir);
+#ifdef LAUNCHER_GAMES
+    /* The picked game's install, whose updater it is. */
+    if (!game_home(dir, sizeof dir))
+        return;
+#endif
     snprintf(g_upd_script, sizeof g_upd_script, "%s\\update.ps1", dir);
     f = fopen(g_upd_script, "rb");
     if (!f)
@@ -1365,6 +1529,14 @@ static void upd_tick(void)
         return;
     if (g_upd == UPD_CHECKING) {
         g_upd = g_upd_answer;
+#ifdef LAUNCHER_GAMES
+        /* Another game was picked while it asked: ask for that one. */
+        if (g_upd_redo) {
+            g_upd_redo = 0;
+            g_upd = UPD_OFF;
+            upd_init();
+        }
+#endif
         return;
     }
     if (code == 0 && !g_upd_error[0]) {
@@ -1426,15 +1598,20 @@ static int launch_game(void)
     }
 
     /* Beside this executable, whatever the working directory is: a
-     * shortcut on a desktop must work as well as a double-click. */
-    if (!host_exe_path(dir, sizeof dir))
-        dir[0] = '\0';
-    host_path_dirname(dir);
+     * shortcut on a desktop must work as well as a double-click. In a
+     * launcher of several games, in the picked one's folder. */
+    {
+        char name[160];
+
+        if (!game_home(dir, sizeof dir))
+            return 0;
+        game_exe_name(name, sizeof name);
 #ifdef _WIN32
-    snprintf(exe, sizeof exe, "%s\\%s", dir, LAUNCHER_GAME_EXE);
+        snprintf(exe, sizeof exe, "%s\\%s", dir, name);
 #else
-    snprintf(exe, sizeof exe, "%s/%s", dir, LAUNCHER_GAME_EXE);
+        snprintf(exe, sizeof exe, "%s/%s", dir, name);
 #endif
+    }
     return lhost_launch(exe, dir);
 }
 
@@ -1515,8 +1692,15 @@ static int pad_poll(int *dx, int *dy, int *accept, int *cancel, int *tab)
 
 /* ----------------------------------------------------------------- state */
 
+#ifdef LAUNCHER_GAMES
+/* ADVANCED: the renderer, opened from the Graphics panel (launcher_showcase.inc). */
+typedef enum { TAB_VIDEO, TAB_INPUT, TAB_LINK, TAB_ABOUT, TAB_ADVANCED, TAB_COUNT } Tab;
+static const char *const k_tab_names[TAB_COUNT] = { "VIDEO", "INPUT", "SYSTEM LINK", "ABOUT",
+                                                    "ADVANCED" };
+#else
 typedef enum { TAB_VIDEO, TAB_INPUT, TAB_LINK, TAB_ABOUT, TAB_COUNT } Tab;
 static const char *const k_tab_names[TAB_COUNT] = { "VIDEO", "INPUT", "SYSTEM LINK", "ABOUT" };
+#endif
 
 static Tab    g_tab;
 static Tab    g_tab_from;
@@ -1536,6 +1720,12 @@ static Row *tab_rows(int *count)
         *count = g_link_count;
         return g_link_rows;
     }
+#ifdef LAUNCHER_GAMES
+    if (g_tab == TAB_ADVANCED) {
+        *count = g_adv_count;
+        return g_adv_rows;
+    }
+#endif
     *count = 0;
     return NULL;
 }
@@ -1663,7 +1853,11 @@ static void rows_for_tab(void)
 {
     g_rows_on_tab = (g_tab == TAB_VIDEO) ? g_video_count
                   : (g_tab == TAB_INPUT) ? BIND_ROWS_VISIBLE
-                  : (g_tab == TAB_LINK)  ? g_link_count : 0;
+                  : (g_tab == TAB_LINK)  ? g_link_count
+#ifdef LAUNCHER_GAMES
+                  : (g_tab == TAB_ADVANCED) ? g_adv_count
+#endif
+                  : 0;
     if (g_sel >= g_rows_on_tab)
         g_sel = g_rows_on_tab ? g_rows_on_tab - 1 : 0;
 }
@@ -2420,6 +2614,10 @@ static void draw_tab_body(void)
 
     if (g_tab == TAB_VIDEO) {
         draw_rows(g_video_rows, g_video_count, 0);
+#ifdef LAUNCHER_GAMES
+    } else if (g_tab == TAB_ADVANCED) {
+        draw_rows(g_adv_rows, g_adv_count, 0);
+#endif
     } else if (g_tab == TAB_LINK) {
         draw_link();
     } else if (g_tab == TAB_INPUT) {
@@ -2609,7 +2807,11 @@ static void draw_tab_body(void)
             snprintf(line, sizeof line, "Game      %s/%s (built from %s)",
                      g_user_dir, g_release_exe, g_source[0] ? g_source : "your disc");
         else
-            snprintf(line, sizeof line, "Game      %s", LAUNCHER_GAME_EXE);
+        {
+            char name[160];
+            game_exe_name(name, sizeof name);
+            snprintf(line, sizeof line, "Game      %s", name);
+        }
         theme_text(p, line, 11, 400, THEME_TEXT_DIM, THEME_LEFT);
 
         /* Where the title id came from, or that it did not: without it the
@@ -2685,7 +2887,7 @@ static void draw(void)
         ThemeRect t = tab_rect(i);
 
         theme_text(t, k_tab_names[i], 12, 700,
-                   i == g_tab ? THEME_GREEN : THEME_TEXT_DIM, THEME_CENTRE);
+                   i == (int)g_tab ? THEME_GREEN : THEME_TEXT_DIM, THEME_CENTRE);
     }
     {
         ThemeRect a = tab_rect(g_tab_from), b = tab_rect(g_tab);
@@ -2760,6 +2962,121 @@ static int hit_play(int mx, int my)
 #endif
 }
 
+#ifdef LAUNCHER_GAMES
+/* Where each game's program is: the first of its folders (launcher_games.h)
+ * that has it, as a full path. */
+static void games_find(void)
+{
+    char here[LAUNCHER_PATH], dir[LAUNCHER_PATH * 2], exe[LAUNCHER_PATH * 2 + 64];
+    int i, j;
+
+    if (!host_exe_path(here, sizeof here))
+        return;
+    host_path_dirname(here);
+    for (i = 0; i < launcher_game_count && i < LAUNCHER_GAMES_MAX; i++) {
+        const LauncherGame *g = &launcher_games[i];
+
+        g_game_home[i][0] = '\0';
+        for (j = 0; g->dirs && g->dirs[j]; j++) {
+            FILE *f;
+
+            if (!strcmp(g->dirs[j], "."))
+                snprintf(dir, sizeof dir, "%s", here);
+            else
+                snprintf(dir, sizeof dir, "%s/%s", here, g->dirs[j]);
+#ifdef _WIN32
+            snprintf(exe, sizeof exe, "%s/%s.exe", dir, g->exe);
+#else
+            snprintf(exe, sizeof exe, "%s/%s", dir, g->exe);
+#endif
+            if ((f = fopen(exe, "rb")) != NULL) {
+                fclose(f);
+                lhost_full_path(dir, g_game_home[i], LAUNCHER_PATH);
+                break;
+            }
+        }
+    }
+}
+
+/* The game last picked, kept in the per-user settings folder by its key. */
+static int games_memory_path(char *path, size_t n)
+{
+    char dir[600];
+
+    if (!recomp_config_user_dir(dir, sizeof dir))
+        return 0;
+    snprintf(path, n, "%s/launcher_game.txt", dir);
+    return 1;
+}
+
+static int games_first(void)
+{
+    char path[700], key[64] = "", here[LAUNCHER_PATH], full[LAUNCHER_PATH];
+    FILE *f;
+    int i;
+
+    if (games_memory_path(path, sizeof path) && (f = fopen(path, "rb")) != NULL) {
+        if (fgets(key, sizeof key, f))
+            key[strcspn(key, "\r\n")] = '\0';
+        fclose(f);
+        for (i = 0; i < launcher_game_count && i < LAUNCHER_GAMES_MAX; i++)
+            if (g_game_home[i][0] && !strcmp(launcher_games[i].key, key))
+                return i;
+    }
+    /* Else the one beside this launcher, else the first installed. */
+    if (host_exe_path(here, sizeof here)) {
+        host_path_dirname(here);
+        lhost_full_path(here, full, sizeof full);
+        for (i = 0; i < launcher_game_count && i < LAUNCHER_GAMES_MAX; i++)
+            if (g_game_home[i][0] && !strcmp(g_game_home[i], full))
+                return i;
+    }
+    for (i = 0; i < launcher_game_count && i < LAUNCHER_GAMES_MAX; i++)
+        if (g_game_home[i][0])
+            return i;
+    return 0;
+}
+
+/* Everything the launcher shows becomes game i's: what it is, its settings,
+ * its controls, its updater. The game being left keeps what was changed
+ * for it, saved first, as Play would. */
+static void game_pick(int i)
+{
+    char path[700];
+    FILE *f;
+
+    if (g_release || i < 0 || i >= launcher_game_count || i >= LAUNCHER_GAMES_MAX ||
+        !g_game_home[i][0] || (i == g_game && g_game_ready))
+        return;
+    if (g_game_ready) {
+        settings_save();
+        bindings_save();
+    }
+    g_game = i;
+    snprintf(g_title_name, sizeof g_title_name, "Xbox game");
+    g_title_id = launcher_games[i].title_id;
+    g_xbe_found[0] = '\0';
+    read_title();
+    settings_load();
+    bindings_load();
+    build_rows();
+    rows_for_tab();
+#ifdef _WIN32
+    if (g_upd == UPD_CHECKING)
+        g_upd_redo = 1;
+    else if (g_upd != UPD_RUNNING) {
+        g_upd = UPD_OFF;
+        upd_init();
+    }
+#endif
+    g_game_ready = 1;
+    if (games_memory_path(path, sizeof path) && (f = fopen(path, "wb")) != NULL) {
+        fprintf(f, "%s\n", launcher_games[i].key);
+        fclose(f);
+    }
+}
+#endif
+
 /* ---------------------------------------------------- the front end's calls */
 
 void launcher_init(void)
@@ -2767,12 +3084,22 @@ void launcher_init(void)
     const char *build;
 
     release_init();
+#ifdef LAUNCHER_GAMES
+    if (!g_release) {
+        games_find();
+        g_game = games_first();
+        g_title_id = launcher_games[g_game].title_id;
+    }
+#endif
     upd_init();
     read_title();
     launcher_art_init(g_title_id);
     settings_load();
     bindings_load();
     build_rows();
+#ifdef LAUNCHER_GAMES
+    g_game_ready = !g_release;
+#endif
     /* RECOMP_LAUNCHER_TAB=<0..3>: open on that tab (video, input, System
      * Link, about), so a screenshot (RECOMP_LAUNCHER_SHOT) can show it. */
     {
