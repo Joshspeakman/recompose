@@ -924,6 +924,8 @@ void xbox_D3D8SetScissorsOff(int mode)
                 mode == XBOX_D3D8_SCISSORS_OFF ? "drawn without the title's scissors"
                 : mode == XBOX_D3D8_SCISSORS_OFF_INBETWEEN
                 ? "in-between frames drawn without the title's scissors"
+                : mode == XBOX_D3D8_SCISSORS_OFF_WORLD
+                ? "the world drawn without the title's scissors (its 2D keeps them)"
                 : "the title's scissors kept");
     }
     g_scissors_off = mode;
@@ -947,9 +949,18 @@ static int scissor_ignored(void)
     }
     if (test)
         return test == 1;
-    if (!(mode == XBOX_D3D8_SCISSORS_OFF ||
+    if (!(mode == XBOX_D3D8_SCISSORS_OFF || mode == XBOX_D3D8_SCISSORS_OFF_WORLD ||
           (mode == XBOX_D3D8_SCISSORS_OFF_INBETWEEN && g_interp_redraw)))
         return 0;
+    /* The world only: a draw that tests depth. Future Perfect's HUD wipes a
+     * panel in through a rectangle with the depth test off; its rooms seen
+     * through a gap test depth (26 Nov 2026: every scissored draw of a
+     * frame of 2401 logged). */
+    if (mode == XBOX_D3D8_SCISSORS_OFF_WORLD) {
+        const DWORD *rs = d3d8_GetRenderStates();
+        if (!rs || !rs[D3DRS_ZENABLE])
+            return 0;
+    }
     /* A band the viewport's whole width but not its height is a letterbox
      * or a split screen's half, which the title keeps its view to (TS2's
      * end of a match: its 3D streaks went over the bars): kept. */

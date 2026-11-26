@@ -1249,7 +1249,12 @@ void xbox_D3D8SetPostSoften(int mode);
 enum {
     XBOX_D3D8_SCISSORS_KEEP = 0,
     XBOX_D3D8_SCISSORS_OFF_INBETWEEN,
-    XBOX_D3D8_SCISSORS_OFF
+    XBOX_D3D8_SCISSORS_OFF,
+    /* Off for the world only: a draw that tests depth goes without its
+     * scissor, one that does not (the HUD, the 2D layer) keeps it -- for a
+     * title that also scissors its HUD (Future Perfect wipes a panel in
+     * with one). In every frame. */
+    XBOX_D3D8_SCISSORS_OFF_WORLD
 };
 void xbox_D3D8SetScissorsOff(int mode);
 

@@ -39,7 +39,11 @@
 #  include <SDL3/SDL.h>      /* the keyboard (sdl_key_down) */
 #endif
 
-#define MAX_SOURCES 4
+/* Sources one control can have: the pad's own and the keyboard and mouse
+ * column. Future Perfect gives d-pad up four of its own (the middle button,
+ * Z, the side button, the up arrow), which with the pad's made five: the
+ * up arrow, last, was left out at 4, and no menu went up from the keyboard. */
+#define MAX_SOURCES 8
 #define PORTS XBOX_MAX_CONTROLLERS
 
 /* XInput's own left-stick default. A stick is bound as two halves, so the
@@ -288,8 +292,13 @@ static void bind_add(Binding *b, const char *text, int *bad)
 {
     Source s;
 
-    if (b->count >= MAX_SOURCES)
+    if (b->count >= MAX_SOURCES) {
+        static int said;
+        if (said++ < 4)
+            fprintf(stderr, "[INPUT] \"%s\" left out: a control has at most %d sources\n",
+                    text, MAX_SOURCES);
         return;
+    }
     if (!parse_source(text, &s)) {
         (*bad)++;
         return;
