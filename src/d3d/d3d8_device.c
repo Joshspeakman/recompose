@@ -850,6 +850,14 @@ static void warp_scissor(float *l, float *t, float *r, float *b)
     at_b = *b >= Y + H - 1.5;
     if (at_l && at_t && at_r && at_b)
         return;                                  /* the whole view */
+    /* A band the view's whole width is a letterbox or a split screen's half
+     * (as scissor_ignored below keeps it), not a doorway: kept as it is.
+     * Future Perfect splits the screen with scissors over one viewport of
+     * the whole screen, and player 1's half, carried with the turn and
+     * widened for rounding, let its sky over player 2's top rows: an orange
+     * line across the middle of every in-between frame. */
+    if (at_l && at_r)
+        return;
     for (i = 0; i < 4; i++) {
         double u = (i & 1) ? *r : *l, v = (i & 2) ? *b : *t;
         double dx = (u - cx) / (W * 0.5) / g_warp_sx, dy = (cy - v) / (H * 0.5) / g_warp_sy;

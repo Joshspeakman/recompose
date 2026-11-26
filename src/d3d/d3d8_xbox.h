@@ -1474,6 +1474,17 @@ void xbox_D3D8InterpEnd(void);
    register and nothing is taken for affine. */
 void xbox_D3D8SetInterpRegisters(int projection, int affine_first, int affine_count);
 
+/* And a whole transform: model, view and projection in one 4-register
+   matrix at `first` (-1 none), which a title's programs read straight into
+   the position -- neither the projection alone nor affine, so the two
+   above cannot take it. Frame interpolation blends it term by term in each
+   draw that reads it and draws it as the newer frame has it when it moved
+   more than a quarter of its size (a cut). Future Perfect draws its level
+   this way (c68), its objects through the projection and a model-view. The
+   register also has to be one of the title's projection registers
+   (recomp_title_widescreen REGISTER) for its draws to count as 3D. */
+void xbox_D3D8SetInterpProjective(int first);
+
 /**
  * Present frame and pump window messages.
  * Called from recompiled game code (replaces RW driver Present path).

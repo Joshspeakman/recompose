@@ -81,7 +81,11 @@
 
 #define INTERP_MAX_MULTIPLE  8
 #define INTERP_MAX_AFFINE    64                  /* registers */
-#define INTERP_MAX_REGS      (4 + INTERP_MAX_AFFINE)
+#define INTERP_MAX_REGS      (4 + INTERP_MAX_AFFINE + 4)
+/* A whole transform (xbox_D3D8SetInterpProjective) that moved more than
+ * this, as a share of its size, in one frame is a cut: about the 12 degrees
+ * MAX_TURN_COS allows a matrix, measured on the matrix itself. */
+#define MAX_PROJECTIVE_STEP  0.25
 #define INTERP_LIST_LIMIT    (96u * 1024u * 1024u)
 #define INTERP_ALIGN(n)      (((n) + 15u) & ~(size_t)15u)
 
@@ -108,6 +112,7 @@ typedef struct {
     int tier;
     int cut;                                     /* matched, but a matrix jumped */
     int reads_proj;                              /* its program reads the projection */
+    int reads_whole;                             /* ... the whole transform (g_whole) */
     uint32_t groups;                             /* the affine matrices it reads */
 } InterpDraw;
 
@@ -137,6 +142,32 @@ typedef struct {
 static int        g_multiple;                    /* frames shown a frame drawn; <2 off */
 static int        g_on;
 static int        g_proj = -1, g_aff_first = -1, g_aff_count, g_nregs, g_groups;
+/* A whole transform -- model, view and projection in one 4-register matrix,
+ * which is neither the projection alone nor affine -- that the title's
+ * programs read (xbox_D3D8SetInterpProjective): blended term by term, kept
+ * after the affine matrices in a draw's registers. -1 none. */
+static int        g_whole = -1, g_whole_title = -1;
+
+void xbox_D3D8SetInterpProjective(int first)
+{
+    g_whole_title = first >= 0 && first <= 188 ? first : -1;
+}
+
+/* Where a draw's whole transform is among its kept registers. */
+#define WHOLE_AT ((g_proj >= 0 ? 16 : 0) + (size_t)g_aff_count * 4)
+
+/* Whether a whole transform moved too far in a frame to blend: a cut. */
+static int whole_jumped(const float *a, const float *b)
+{
+    double d = 0.0, n = 0.0;
+    int k;
+
+    for (k = 0; k < 16; k++) {
+        d += ((double)b[k] - a[k]) * ((double)b[k] - a[k]);
+        n += (double)b[k] * b[k];
+    }
+    return !(n > 0.0) || d > MAX_PROJECTIVE_STEP * MAX_PROJECTIVE_STEP * n;
+}
 static InterpList g_list[2];
 static int        g_cur;                         /* the list being kept */
 static Prepared  *g_prep;                        /* g_groups a draw of the current list */
@@ -257,7 +288,11 @@ void hle_d3d8_interp_draw(void (*fn)(const void *arg), const void *arg, size_t s
         key->uses_proj && g_proj >= 0 && (d3d8_vsh_bound_reads(g_proj, 4) & 1u);
     l->draws[l->ndraws].groups =
         key->uses_proj && g_aff_count ? d3d8_vsh_bound_reads(g_aff_first, g_aff_count) : 0;
+    l->draws[l->ndraws].reads_whole =
+        key->uses_proj && g_whole >= 0 && (d3d8_vsh_bound_reads(g_whole, 4) & 1u);
     r = l->regs + (size_t)l->ndraws * (size_t)g_nregs * 4;
+    if (g_whole >= 0)
+        memcpy(r + WHOLE_AT, c + g_whole * 4, 16 * sizeof(float));
     if (g_proj >= 0) {
         memcpy(r, c + g_proj * 4, 16 * sizeof(float));
         r += 16;
@@ -342,14 +377,30 @@ static uint64_t key_batch(const HleInterpDrawKey *k)
 }
 
 /* The translation of a draw's first affine matrix, to choose between
- * copies of one mesh. */
+ * copies of one mesh. With a whole transform as well (g_whole), the
+ * transform the draw reads: its affine matrix, else the whole transform's
+ * last column, else none (draw order). A draw that reads only the whole
+ * transform holds in its affine registers whatever the last object left
+ * there, and Future Perfect's level pieces, paired by that, blended toward
+ * other copies: a rock half a turn the wrong way in the in-between frame. */
 static const float *draw_translation(const InterpList *l, int i, float out[3])
 {
     const float *r;
 
-    if (!g_aff_count)
-        return NULL;
-    r = l->regs + (size_t)i * (size_t)g_nregs * 4 + (g_proj >= 0 ? 16 : 0);
+    if (g_whole >= 0) {
+        const InterpDraw *d = &l->draws[i];
+        r = l->regs + (size_t)i * (size_t)g_nregs * 4;
+        if (g_aff_count && (d->groups & 1u))
+            r += (g_proj >= 0 ? 16 : 0);
+        else if (d->reads_whole)
+            r += WHOLE_AT;
+        else
+            return NULL;
+    } else {
+        if (!g_aff_count)
+            return NULL;
+        r = l->regs + (size_t)i * (size_t)g_nregs * 4 + (g_proj >= 0 ? 16 : 0);
+    }
     out[0] = r[3];
     out[1] = r[7];
     out[2] = r[11];
@@ -395,7 +446,10 @@ static void match_tier(InterpList *cur, const InterpList *prev, key_fn key, int 
             }
             /* Of several copies, the nearest: two identical crates must not
              * trade places halfway. */
-            draw_translation(prev, c, tc);
+            if (!draw_translation(prev, c, tc)) {
+                best = c;
+                break;
+            }
             dist = (tc[0] - t[0]) * (tc[0] - t[0]) + (tc[1] - t[1]) * (tc[1] - t[1]) +
                    (tc[2] - t[2]) * (tc[2] - t[2]);
             if (best < 0 || dist < best_dist) {
@@ -1122,6 +1176,13 @@ static void set_draw_registers(int i, double a)
             if (p->ok)
                 blend_group(p, a, o + g * 16);
         }
+        /* The whole transform, term by term: what moved a little in a
+         * frame (a turn, a step) is close to its blend; what jumped is a
+         * cut and drawn as N has it. */
+        if (g_whole >= 0 && d->reads_whole &&
+            !whole_jumped(pa + WHOLE_AT, b + WHOLE_AT))
+            for (k = 0; k < 16; k++)
+                out[WHOLE_AT + k] = (float)((1.0 - a) * pa[WHOLE_AT + k] + a * b[WHOLE_AT + k]);
     }
     if (g_proj >= 0) {
         d3d8_vsh_set_constant(g_proj, out, 4);
@@ -1130,6 +1191,8 @@ static void set_draw_registers(int i, double a)
     } else if (g_aff_count) {
         d3d8_vsh_set_constant(g_aff_first, out, g_aff_count);
     }
+    if (g_whole >= 0)
+        d3d8_vsh_set_constant(g_whole, out + WHOLE_AT, 4);
 }
 
 /* ---------------------------------------------------------- drawing it */
@@ -1320,6 +1383,8 @@ static void redraw(double a)
         d3d8_vsh_set_constant(g_proj, c + g_proj * 4, 4);
     if (g_aff_count)
         d3d8_vsh_set_constant(g_aff_first, c + g_aff_first * 4, g_aff_count);
+    if (g_whole >= 0)
+        d3d8_vsh_set_constant(g_whole, c + g_whole * 4, 4);
     hle_d3d8_overlay_redraw();
     {
         /* The moment it goes to the screen. A present can then block --
@@ -1419,13 +1484,15 @@ static void follow_registers(void)
     d3d8_vsh_interp_registers(&proj, &first, &count);
     if (count > INTERP_MAX_AFFINE)
         count = INTERP_MAX_AFFINE;
-    if (proj == g_proj && first == g_aff_first && count == g_aff_count && g_nregs)
+    if (proj == g_proj && first == g_aff_first && count == g_aff_count &&
+        g_whole_title == g_whole && g_nregs)
         return;
     g_proj = proj;
     g_aff_first = first;
     g_aff_count = count;
+    g_whole = g_whole_title;
     g_groups = count / 4;
-    g_nregs = (proj >= 0 ? 4 : 0) + count;
+    g_nregs = (proj >= 0 ? 4 : 0) + count + (g_whole >= 0 ? 4 : 0);
     list_retire(&g_list[0]);
     list_retire(&g_list[1]);
     {
@@ -1441,6 +1508,9 @@ static void follow_registers(void)
     fprintf(stderr, "[INTERP] blending c%d-c%d as the projection, %s%d affine "
             "matrices from c%d\n", proj, proj + 3, proj < 0 ? "(none) " : "",
             g_groups, first);
+    if (g_whole >= 0)
+        fprintf(stderr, "[INTERP] and c%d-c%d as a whole transform, term by term\n",
+                g_whole, g_whole + 3);
     fflush(stderr);
 }
 
