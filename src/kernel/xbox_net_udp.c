@@ -1016,6 +1016,22 @@ int xbox_NetUdpStart(const uint8_t own_mac[6])
 
         if (via && strcmp(via, "direct") == 0 && !getenv("RECOMP_ONLINE_SERVER"))
             server = NULL;
+        if (cfg.mode == XBOX_NET_HOST || cfg.mode == XBOX_NET_JOIN) {
+            /* Chosen, but not usable: not direct instead, which would open
+             * the router's port for a player who chose not to. */
+            if (via && strcmp(via, "server") == 0 && (!server || !*server)) {
+                fprintf(stderr, "[NET] System Link through an online server needs the server's"
+                                " address (online_server): System Link is off\n");
+                fflush(stderr);
+                return 0;
+            }
+            if (server && *server && strlen(cfg.code) < 4) {
+                fprintf(stderr, "[NET] System Link through an online server needs a session code"
+                                " of at least four characters (syslink_code): System Link is off\n");
+                fflush(stderr);
+                return 0;
+            }
+        }
         if (server && *server && (cfg.mode == XBOX_NET_HOST || cfg.mode == XBOX_NET_JOIN)) {
             cfg.mode = XBOX_NET_JOIN;
             snprintf(cfg.remote, sizeof cfg.remote, "%s", server);

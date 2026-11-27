@@ -3,10 +3,11 @@ Sets up the online server on Fly.io, from this folder, and prints its address.
 
     powershell -ExecutionPolicy Bypass -File deploy.ps1 [-Name <name>] [-Region <code>]
 
-Needs flyctl (pwsh -Command "iwr https://fly.io/install.ps1 -useb | iex") and a Fly.io
-account. It signs in if needed (a browser opens), makes the app (or uses it if it is
-already yours), gives it a dedicated IPv4 address if it has none (UDP needs one; $2 a
-month at Fly's prices), writes fly.toml from fly.toml.template and deploys one machine.
+Needs flyctl (powershell -Command "iwr https://fly.io/install.ps1 -useb | iex") and a
+Fly.io account on the Pay As You Go plan (the Free plan has no dedicated IPv4 addresses).
+It signs in if needed (a browser opens), makes the app (or uses it if it is already
+yours), gives it a dedicated IPv4 address if it has none (UDP needs one; $2 a month at
+Fly's prices), writes fly.toml from fly.toml.template and deploys one machine.
 Run again after an update to deploy the new server; nothing is made twice.
 Remove it with: flyctl apps destroy <name>
 #>
@@ -28,7 +29,7 @@ function Find-Fly {
 $fly = Find-Fly
 if (-not $fly) {
     Write-Host "flyctl is not installed. Install it with:"
-    Write-Host '    pwsh -Command "iwr https://fly.io/install.ps1 -useb | iex"'
+    Write-Host '    powershell -Command "iwr https://fly.io/install.ps1 -useb | iex"'
     Write-Host "then open a new terminal and run this again."
     exit 1
 }
@@ -79,7 +80,7 @@ try {
 if (-not $have) {
     Write-Host "Giving it a dedicated IPv4 address (UDP needs one)..."
     & $fly ips allocate-v4 -a $Name --yes
-    if ($LASTEXITCODE -ne 0) { Write-Host "Fly did not give it an address."; exit 1 }
+    if ($LASTEXITCODE -ne 0) { Write-Host "Fly did not give it an address. Dedicated IPv4 addresses need the Pay As You Go plan: on fly.io, Dashboard, Billing, switch to it, then run this again."; exit 1 }
 }
 
 Write-Host "Deploying: Fly builds the server and starts one machine (a few minutes the first time)..."

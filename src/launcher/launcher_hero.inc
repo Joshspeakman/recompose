@@ -56,6 +56,8 @@ static int g_hx_focus;                    /* the home menu's focused item: its p
 static int g_hx_extras;                   /* the Extras are open */
 static int g_hx_help;                     /* Play Together's page on setting up a server */
 static uint64_t g_hx_help_copied;         /* "copied" shown until then */
+static int g_hx_help_copied_box;          /* by which command */
+static ThemeRect g_hx_cmd_rect[2];        /* the install and setup commands, to click */
 static double g_hx_bar = -1;              /* where the focus wash is drawn, sliding to its row */
 
 static COLORREF sc_c(uint32_t rgb) { return THEME_RGB_(rgb); }
@@ -856,16 +858,19 @@ static void hx_home(void)
 
 /* Fly.io's own commands (fly.io/docs/flyctl/install), this system's. */
 #if defined(_WIN32)
-#define HX_FLY_INSTALL "pwsh -Command \"iwr https://fly.io/install.ps1 -useb | iex\""
-#define HX_FLY_SETUP   "powershell -ExecutionPolicy Bypass -File deploy.ps1"
+/* Windows PowerShell, which every Windows has (Fly's page says pwsh, which
+ * only a PowerShell 7 install has). */
+#define HX_FLY_INSTALL "powershell -Command \"iwr https://fly.io/install.ps1 -useb | iex\""
+#define HX_FLY_SETUP   "powershell -ExecutionPolicy Bypass -File \"%s\\deploy.ps1\""
 #elif defined(__APPLE__)
 #define HX_FLY_INSTALL "brew install flyctl"
-#define HX_FLY_SETUP   "sh deploy.sh"
+#define HX_FLY_SETUP   "sh \"%s/deploy.sh\""
 #else
 #define HX_FLY_INSTALL "curl -L https://fly.io/install.sh | sh"
-#define HX_FLY_SETUP   "sh deploy.sh"
+#define HX_FLY_SETUP   "sh \"%s/deploy.sh\""
 #endif
 #define HX_FLY_PRICING "https://fly.io/docs/about/pricing/"
+enum { SC_CMD = 500 };                    /* + 0 the install line, + 1 the setup line */
 
 /* The server's files (recompose's tools/online_server): beside the launcher
  * in an install (Timeslip's installer puts them there), else in the source
@@ -901,21 +906,60 @@ static void hx_help_folder(void)
         lhost_open(dir);
 }
 
-static void hx_help_copy(void)
+/* The folder as the system writes it, whole, or 0 without one. */
+static int hx_server_folder_shown(char *out, size_t n)
 {
-    if (lhost_copy(HX_FLY_INSTALL))
+    char dir[1100];
+    size_t k;
+
+    if (!hx_server_folder(dir, sizeof dir))
+        return 0;
+    lhost_full_path(dir, out, n);
+#ifdef _WIN32
+    for (k = 0; out[k]; k++)
+        if (out[k] == '/')
+            out[k] = '\\';
+#else
+    (void)k;
+#endif
+    return 1;
+}
+
+/* The two commands: 0 installs flyctl, 1 runs the setup from its folder,
+ * from any terminal (the scripts go to their own folder). */
+static void hx_help_command(int which, char *out, size_t n)
+{
+    char dir[1100];
+
+    if (which == 0)
+        snprintf(out, n, "%s", HX_FLY_INSTALL);
+    else if (hx_server_folder_shown(dir, sizeof dir))
+        snprintf(out, n, HX_FLY_SETUP, dir);
+    else
+        snprintf(out, n, HX_FLY_SETUP, "online_server");
+}
+
+static void hx_help_copy(int which)
+{
+    char cmd[1300];
+
+    hx_help_command(which, cmd, sizeof cmd);
+    if (lhost_copy(cmd)) {
         g_hx_help_copied = lhost_ticks() + 1500;
+        g_hx_help_copied_box = which;
+    }
 }
 
 static void hx_help_draw(void)
 {
     /* Each step: what it is, and the line to type (or none), set apart. */
     static const char *const head[] = {
-        "WHAT IT IS", "MAKE A FLY.IO ACCOUNT, AND INSTALL FLYCTL", "RUN THE SETUP IN THE SERVER FOLDER",
-        "CONNECT", "LATER" };
-    char body[5][600], dir[1100], shown[1100];
-    const char *cmd[5] = { NULL, HX_FLY_INSTALL, HX_FLY_SETUP, NULL, "flyctl apps destroy <its name>" };
-    int y = 116, i;
+        "WHAT IT IS", "A FLY.IO ACCOUNT, ON PAY AS YOU GO", "INSTALL FLYCTL", "RUN THE SETUP",
+        "CONNECT" };
+    static const int line_count[5] = { 2, 2, 1, 2, 2 };
+    char body[5][700], shown[1100], cmd[2][1300];
+    const int box[5] = { -1, -1, 0, 1, -1 };
+    int y = 112, i;
     HxHint hints[4];
     int nh = 0;
 
@@ -923,45 +967,34 @@ static void hx_help_draw(void)
     theme_fill(sc_rect(0, 0, SC_W, SC_H), THEME_INK_RGB, 0.45);
     hx_caps(sc_rect(EX_X0, 30, 900, 50), "SET UP AN ONLINE SERVER", 26, 0xFFFFFF, THEME_LEFT, 6,
             THEME_FACE_HEAVY, 1);
-    hx_caps(sc_rect(EX_X0, 80, 900, 20), "ON FLY.IO" SC_DOT "A FEW MINUTES, ONCE, BY ONE OF YOU", 9,
+    hx_caps(sc_rect(EX_X0, 80, 900, 20), "ON FLY.IO" SC_DOT "ONCE, BY ONE OF YOU", 9,
             hx_accent(), THEME_LEFT, 4, THEME_FACE_DISPLAY, 1);
     hx_logo(sc_rect(HX_R - 300 + 8, 22, 300, 96), THEME_RIGHT, 0.9);
-    if (hx_server_folder(dir, sizeof dir)) {
-        size_t k;
-
-        lhost_full_path(dir, shown, sizeof shown);
-#ifdef _WIN32
-        for (k = 0; shown[k]; k++)
-            if (shown[k] == '/')
-                shown[k] = '\\';
-#else
-        (void)k;
-#endif
-    } else {
+    if (!hx_server_folder_shown(shown, sizeof shown))
         snprintf(shown, sizeof shown, "the online_server folder of the game's source");
-    }
+    hx_help_command(0, cmd[0], sizeof cmd[0]);
+    hx_help_command(1, cmd[1], sizeof cmd[1]);
 
     snprintf(body[0], sizeof body[0],
-        "One server every copy connects to, for System Link and online co-op: nobody opens a"
-        " port on their router. One of you sets it up and shares its address. On Fly.io it costs"
-        " about $4.20 a month at their prices (a small machine, $2.19, and the dedicated IPv4"
-        " address UDP needs, $2); Fly's free plan gives $5 of use a month once a card is added.");
+        "One server every copy connects to, for System Link and online co-op: nobody opens a port"
+        " on their router. One of you runs it and shares its address. At Fly's prices it costs about"
+        " $4.20 a month: a small machine, $2.19, and the dedicated IPv4 address UDP needs, $2.");
     snprintf(body[1], sizeof body[1],
-        "Sign up at fly.io. Then, in a terminal, install flyctl, Fly's command line (A copies it):");
+        "Sign up at fly.io and add a card. Then, on Fly's dashboard, Billing, switch to Pay As You"
+        " Go: Fly's Free plan has no dedicated IPv4 addresses, and a game's traffic (UDP) needs one."
+        " Y shows Fly's prices.");
     snprintf(body[2], sizeof body[2],
-        "The folder is %s (X opens it). There, in a terminal, run the line below. It signs you in,"
-        " asks a name and the region nearest you, and makes and starts the server. At the end it"
-        " prints the address, like name.fly.dev.", shown);
+        "Fly's command line. In a terminal, run this (A, or a click on it, copies it):");
     snprintf(body[3], sizeof body[3],
-        "Back here, in Play Together: Connect, Through an online server; Server address, what it"
-        " printed; Session code, any word of four letters or more. Everyone playing sets the same"
-        " two, then hosts or joins as usual.");
+        "In a new terminal, run this (a click copies it). It signs you in to Fly, asks a name and the"
+        " region nearest you, and makes and starts the server; at the end it prints its address,"
+        " like name.fly.dev. Its files: %s (X opens the folder).", shown);
     snprintf(body[4], sizeof body[4],
-        "The server runs until it is removed, which ends its cost too; the README in the server"
-        " folder has the steps by hand:");
+        "Back here: Connect, Through an online server; Server address, what it printed; Session"
+        " code, any word of four letters or more. Everyone playing types the same two. To remove"
+        " the server, and its cost: flyctl apps destroy, with its name.");
     for (i = 0; i < 5; i++) {
         char num[4];
-        static const int line_count[5] = { 3, 1, 2, 2, 1 };
         int lines = line_count[i];
 
         snprintf(num, sizeof num, "%d", i + 1);
@@ -972,19 +1005,28 @@ static void hx_help_draw(void)
         theme_text_wrapped(sc_rect(EX_X0 + 44, y + 28, SC_W - EX_X0 * 2 - 44, 20 * lines + 4),
                            body[i], 11, sc_c(0xC6D0E2));
         y += 28 + 20 * lines + 8;
-        if (cmd[i]) {
+        if (box[i] >= 0) {
+            int k = box[i], hot = g_sc_hover == SC_CMD + k;
+            int copied = lhost_ticks() < g_hx_help_copied && g_hx_help_copied_box == k;
             ThemeRect c = sc_rect(EX_X0 + 44, y, SC_W - EX_X0 * 2 - 44, 30);
 
-            theme_fill(c, 0x000000, 0.55);
-            theme_fill(sc_rect(c.x, c.y, 3, c.h), hx_bright(), 1);
-            theme_text_ex(sc_rect(c.x + 14, c.y, c.w - 20, c.h), cmd[i], 12, 600, sc_c(0xEAF2FF),
-                          THEME_LEFT, 0, THEME_FACE_BODY, 0);
+            int room = SC_W - EX_X0 * 2 - 44 - 14 - 80, pt = 12;
+
+            /* A long folder: smaller, to show it whole (a click copies it whole). */
+            while (pt > 9 && theme_text_width(cmd[k], pt, 600, 0, THEME_FACE_BODY) > room)
+                pt--;
+            g_hx_cmd_rect[k] = c;
+            theme_fill(c, 0x000000, hot ? 0.7 : 0.55);
+            theme_fill(sc_rect(EX_X0 + 44, y, 3, 30), hx_bright(), 1);
+            theme_text_ex(sc_rect(EX_X0 + 44 + 14, y, room, 30), cmd[k], pt,
+                          600, sc_c(0xEAF2FF), THEME_LEFT, 0, THEME_FACE_BODY, 0);
+            if (copied || hot)
+                hx_caps(sc_rect(SC_W - EX_X0 - 80, y, 70, 30), copied ? "COPIED" : "COPY", 9,
+                        copied ? hx_bright() : 0xBFCADC, THEME_RIGHT, 3, THEME_FACE_CONDENSED_BOLD, 1);
             y += 30 + 6;
         }
         y += 10;
     }
-    if (lhost_ticks() < g_hx_help_copied)
-        hx_text(sc_rect(EX_X0, SC_H - 50, 400, 28), "Copied.", 12, 600, hx_bright(), THEME_LEFT);
     hints[nh].glyph = HX_G_A; hints[nh].key = "ENTER"; hints[nh].pad_key = NULL;
     hints[nh].label = "Copy the install line"; hints[nh++].code = SC_OPEN;
     hints[nh].glyph = HX_G_X; hints[nh].key = "F"; hints[nh].pad_key = NULL;
@@ -1763,7 +1805,7 @@ static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta)
         if (cancel)
             g_hx_help = 0;
         else if (accept)
-            hx_help_copy();
+            hx_help_copy(0);
         return 1;
     }
     if (g_hx_extras)
@@ -1837,8 +1879,12 @@ static int sc_hit(int mx, int my)
                 return SC_TILE + i;
         return SC_NONE;
     }
-    if (g_hx_help)
+    if (g_hx_help) {
+        for (i = 0; i < 2; i++)
+            if (g_hx_cmd_rect[i].w > 0 && sc_in(g_hx_cmd_rect[i], mx, my))
+                return SC_CMD + i;
         return SC_NONE;
+    }
     if (g_sc_open >= 0) {
         if (hx_panel_link() && sc_in(sc_advanced_rect(), mx, my))
             return g_sc_open == TAB_VIDEO ? SC_ADVANCED : g_sc_open == TAB_LINK ? SC_HELP : SC_BACK;
@@ -1864,7 +1910,8 @@ static int sc_click(int mx, int my, int dbl)
     }
     if (g_hx_help) {
         if (h == SC_BACK) g_hx_help = 0;
-        else if (h == SC_OPEN) hx_help_copy();
+        else if (h == SC_OPEN) hx_help_copy(0);
+        else if (h == SC_CMD || h == SC_CMD + 1) hx_help_copy(h - SC_CMD);
         else if (h == SC_FOLDER) hx_help_folder();
         else if (h == SC_PRICES) lhost_open(HX_FLY_PRICING);
         return 1;
@@ -1966,6 +2013,22 @@ static void hx_tick(void)
 }
 
 /* A key the plain launcher has no use for: O opens the Extras folder. */
+/* Typed characters, while a page covers the rows: the letters it names
+ * (both hosts send letters only as characters) and Ctrl+C, and nothing into
+ * the rows under it. 1 if taken. */
+static int hx_char(unsigned ch)
+{
+    if (!g_hx_help && !g_hx_extras)
+        return 0;
+    if (ch == 3 && g_hx_help)
+        hx_help_copy(0);
+    else if (ch >= 'a' && ch <= 'z')
+        hx_key((int)(ch - 'a' + 'A'));
+    else if (ch >= 'A' && ch <= 'Z')
+        hx_key((int)ch);
+    return 1;
+}
+
 static void hx_key(int key)
 {
     if (key == 'O' && g_hx_extras)

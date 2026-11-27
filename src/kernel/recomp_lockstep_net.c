@@ -1347,6 +1347,14 @@ int lsnet_init(int64_t *epoch)
 #endif
     if (via && strcmp(via, "direct") == 0 && !getenv("RECOMP_ONLINE_SERVER"))
         server = NULL;                       /* an address kept, but not chosen */
+    if (via && strcmp(via, "server") == 0 && (!server || !*server)) {
+        /* Chosen, but not usable: not direct instead, which would open the
+         * router's port for a player who chose not to. */
+        say("online co-op through a server needs the server's address (online_server)");
+        status("online co-op: no online server address; playing alone");
+        ls_close(g.sock);
+        return 0;
+    }
     if (server && *server) {
         if (!code || strlen(code) < 4) {
             say("online co-op through a server needs a session code of at least four "

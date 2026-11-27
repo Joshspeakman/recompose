@@ -93,6 +93,7 @@ static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta);   /* la
 #ifdef LAUNCHER_HERO
 static void hx_tick(void);                /* launcher_hero.inc */
 static void hx_key(int key);
+static int  hx_char(unsigned ch);
 #endif
 #ifdef LAUNCHER_GAMES
 static void game_pick(int i);             /* below: everything becomes that game's */
@@ -367,8 +368,8 @@ static void build_link_rows(void)
         r->label = "Connect";
         r->help  = "Directly: the host's router lets friends in (UPnP, or a port"
                    " forwarded by hand). Through an online server: everyone connects"
-                   " to one server, nobody opens a port. Up from the first row: how"
-                   " to set one up.";
+                   " to one server, nobody opens a port. SET UP A SERVER, above the"
+                   " rows, shows how to run one.";
         r->kind  = ROW_CHOICE; r->choices = k_link_via; r->ival = &g_link_via;
         r++;
     }
@@ -2183,8 +2184,8 @@ static void draw_link(void)
         line.h = 70;
         snprintf(text, sizeof text,
                  "%s  Give your friends both; nobody opens a port. %s"
-                 " No server yet? Press up from the first row: one on Fly.io takes"
-                 " a few minutes to set up.",
+                 " No server yet? SET UP A SERVER, above the rows, shows how to run"
+                 " one on Fly.io.",
                  lhost_ticks() < g_copied_until ? "Copied."
                  : LAUNCHER_COPY_KEY " or a click here copies them.",
                  LINK_COOP(g_link_mode)
@@ -3287,6 +3288,10 @@ void launcher_char(unsigned ch)
         setup_char(ch);
         return;
     }
+#ifdef LAUNCHER_HERO
+    if (hx_char(ch))                     /* a page over the rows takes it */
+        return;
+#endif
     /* Typing goes to the System Link tab's text rows; copy there copies
      * the address a host gives out, paste pastes into a row. */
     if (g_tab == TAB_LINK && g_sel < g_link_count && !g_capturing) {

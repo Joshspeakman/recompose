@@ -17,14 +17,19 @@ nothing on disk; a session ends when its players leave or go quiet for 30 second
 
 Fly.io runs it on one small machine. At Fly's prices (fly.io/docs/about/pricing) that is
 about $4.20 a month: a shared-cpu-1x machine with 256 MB, $2.19, and the dedicated IPv4
-address UDP needs, $2. Fly's free plan gives $5 of use a month once a card is added.
+address UDP needs, $2. Fly's Free plan has no dedicated IPv4 addresses
+(fly.io/docs/about/free-plan), so the account has to be on Pay As You Go, which bills
+from the first cent.
 
-1. Make an account at fly.io.
+The setup below has run against a local copy of the server, not yet against Fly itself.
+
+1. Make an account at fly.io and add a card. On the dashboard, Billing, switch to
+   Pay As You Go.
 2. Install flyctl, Fly's command line (fly.io/docs/flyctl/install):
 
    | | |
    | --- | --- |
-   | Windows | `pwsh -Command "iwr https://fly.io/install.ps1 -useb \| iex"` |
+   | Windows | `powershell -Command "iwr https://fly.io/install.ps1 -useb \| iex"` |
    | macOS | `brew install flyctl`, or `curl -L https://fly.io/install.sh \| sh` |
    | Linux | `curl -L https://fly.io/install.sh \| sh` |
 
