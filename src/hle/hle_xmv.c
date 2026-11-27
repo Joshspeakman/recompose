@@ -115,6 +115,10 @@
 #define XMV_OFF_FRAMES   0xE8u
 #define XMV_OFF_DONE     0xECu
 #define XMV_OFF_PLAY     0xF0u   /* hle_xmv_play handle, 0 when not playing */
+#define XMV_OFF_STOP     0xF4u   /* the title asked for the movie to end (XMVPlaybackStart) */
+/* The library's own "stop" byte: what Future Perfect's 11-byte function at
+ * the address named XMVPlaybackStart sets (mov byte [playback + 0x78], 1). */
+#define XMV_OFF_STOP_REQUEST 0x78u
 
 #define XMV_MAGIC 0x584D5648u   /* 'XMVH' */
 
@@ -246,13 +250,31 @@ HLE_EXPORT(XMVPlaybackCreate)
     HLE_RETURN(0);
 }
 
-/* HRESULT XMVPlaybackStart(XMVPlayback *p) */
+/* HRESULT XMVPlaybackStart(XMVPlayback *p)
+ *
+ * Called on a movie that is already playing -- updated at least once -- it
+ * is the title ending it: in Future Perfect the function at this address is
+ * eleven bytes that set the library's stop byte (+0x78), which its movie loop
+ * calls when a button is pressed (the attract movie; A or START, bits 0x280
+ * of its pads' pressed words). Taken as a start, it set the movie's clock
+ * going again, and no button ever ended the attract movie. The byte is set
+ * as the library sets it, and the next Update reports the end of the file. */
 HLE_EXPORT(XMVPlaybackStart)
 {
     uint32_t obj = HLE_ARG(0);
 
     XMV_OTHERS_TO_XDK(XMVPlaybackStart);
 
+    if (xmv_is_ours(obj) && HLE_MEM32(obj + XMV_OFF_FRAMES) > 0u) {
+        *(volatile uint8_t *)HLE_PTR(obj + XMV_OFF_STOP_REQUEST) = 1u;
+        if (!HLE_MEM32(obj + XMV_OFF_STOP)) {
+            HLE_MEM32(obj + XMV_OFF_STOP) = 1u;
+            fprintf(stderr, "[XMV] the title ends the movie (a button skipped it)\n");
+            fflush(stderr);
+        }
+        HLE_RETURN(0);
+        return;
+    }
     if (xmv_is_ours(obj)) {
         HLE_MEM32(obj + XMV_OFF_START_MS) = xmv_now_ms();
         xmv_play_start((int)HLE_MEM32(obj + XMV_OFF_PLAY));
@@ -375,12 +397,29 @@ HLE_EXPORT(XMVPlaybackUpdate)
     uint32_t obj       = HLE_ARG(0);
     uint32_t status_va = HLE_ARG(2);
     uint32_t started, frames, elapsed;
-
     XMV_OTHERS_TO_XDK(XMVPlaybackUpdate);
 
     started = HLE_MEM32(obj + XMV_OFF_START_MS);
     frames  = HLE_MEM32(obj + XMV_OFF_FRAMES) + 1u;
     HLE_MEM32(obj + XMV_OFF_FRAMES) = frames;
+
+    /* Ended by the title (XMVPlaybackStart above): the end of the file from
+     * here on, and the picture and its sound stop now. */
+    if (HLE_MEM32(obj + XMV_OFF_STOP)) {
+        if (HLE_MEM32(obj + XMV_OFF_PLAY)) {
+            xmv_play_close((int)HLE_MEM32(obj + XMV_OFF_PLAY));
+            HLE_MEM32(obj + XMV_OFF_PLAY) = 0;
+        }
+        if (status_va)
+            HLE_MEM32(status_va) = XMV_STATUS_ENDOFFILE;
+        if (!HLE_MEM32(obj + XMV_OFF_DONE)) {
+            HLE_MEM32(obj + XMV_OFF_DONE) = 1u;
+            fprintf(stderr, "[XMV] update #%u: the movie is over (ended by the title)\n", frames);
+            fflush(stderr);
+        }
+        HLE_RETURN(0);
+        return;
+    }
 
     if (HLE_MEM32(obj + XMV_OFF_PLAY)) {
         uint32_t pts = 0, time_va = HLE_ARG(3);
