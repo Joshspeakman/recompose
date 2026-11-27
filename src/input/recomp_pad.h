@@ -38,6 +38,9 @@ enum {
     RECOMP_PAD_START      = 0x0010, RECOMP_PAD_BACK        = 0x0020,
     RECOMP_PAD_LEFT_THUMB = 0x0040, RECOMP_PAD_RIGHT_THUMB = 0x0080,
     RECOMP_PAD_LEFT_SHOULDER = 0x0100, RECOMP_PAD_RIGHT_SHOULDER = 0x0200,
+    /* The Guide button (Xbox, PS, Home), as XInputGetStateEx reports it: no
+     * Xbox title ever reads it, so it is the PC's own -- the in-game menu. */
+    RECOMP_PAD_GUIDE = 0x0400,
     RECOMP_PAD_A = 0x1000, RECOMP_PAD_B = 0x2000,
     RECOMP_PAD_X = 0x4000, RECOMP_PAD_Y = 0x8000
 };

@@ -37,6 +37,7 @@ extern "C" {
 #include "hle_settings.h"
 #include "audio_output.h"
 #include "input_bindings.h"
+#include "recomp_pad.h"
 #include "recomp_config.h"
 #include "recomp_lockstep.h"
 #include "rhi.h"
@@ -620,6 +621,12 @@ struct Menu {
     bool           picture_tab;  /* the Picture tab is showing: the game undimmed */
     char           test_tab[16]; /* RECOMP_MENU_TEST: the tab to open on, once */
     bool           test_on;      /* RECOMP_MENU_TEST: keep presenting while open */
+    /* A controller in the menu (pad_poll). */
+    bool           pad;          /* one is connected: the menu is presented continuously */
+    uint16_t       pad_held;     /* its buttons last frame */
+    bool           pad_busy;     /* last frame: an item active or a popup open (B is theirs) */
+    int            tab_now;      /* the tab showing, 0..3 */
+    int            tab_want;     /* LB/RB: the tab to show next frame, or -1 */
 } m;
 
 void settings_load()
@@ -1004,9 +1011,13 @@ void tab_picture()
 
 /* RECOMP_MENU_TEST's tab, selected on the menu's first frame. "Advanced" is
  * the Display tab with its Advanced part open. */
+const char *const kTabNames[4] = {"Display", "Frame rate", "Picture", "Mouse"};
+
 ImGuiTabItemFlags test_select(const char *tab)
 {
     const char *want = !strcmp(m.test_tab, "Advanced") ? "Display" : m.test_tab;
+    if (m.tab_want >= 0 && m.tab_want < 4 && !strcmp(kTabNames[m.tab_want], tab))
+        return ImGuiTabItemFlags_SetSelected;   /* LB/RB on a controller */
     return want[0] && !strcmp(want, tab) ? ImGuiTabItemFlags_SetSelected : 0;
 }
 
@@ -1047,19 +1058,24 @@ void draw_menu(unsigned width, unsigned height)
     ImGui::SameLine();
     if (ImGui::Button("Quit to desktop", ImVec2(bw, em * 2.0f)))
         m.confirm_quit = true;
+    if (m.pad)
+        ImGui::TextDisabled("Controller: A chooses, B goes back, LB and RB change tab, Start resumes");
     ImGui::Spacing();
 
     if (ImGui::BeginTabBar("##tabs")) {
         if (ImGui::BeginTabItem("Display", nullptr, test_select("Display"))) {
+            m.tab_now = 0;
             tab_display();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Frame rate", nullptr, test_select("Frame rate"))) {
+            m.tab_now = 1;
             tab_frame_rate();
             ImGui::EndTabItem();
         }
         bool picture = false;
         if (ImGui::BeginTabItem("Picture", nullptr, test_select("Picture"))) {
+            m.tab_now = 2;
             tab_picture();
             picture = true;
             ImGui::EndTabItem();
@@ -1069,6 +1085,7 @@ void draw_menu(unsigned width, unsigned height)
             host_request_redraw();      /* undimmed, or dimmed again */
         }
         if (ImGui::BeginTabItem("Mouse", nullptr, test_select("Mouse"))) {
+            m.tab_now = 3;
             tab_mouse();
             ImGui::EndTabItem();
         }
@@ -1152,6 +1169,70 @@ void draw_menu(unsigned width, unsigned height)
 
 std::chrono::steady_clock::time_point g_last;
 
+/* A controller in the menu: every connected pad, read each frame the menu
+ * is presented, given to ImGui as its gamepad (the d-pad or left stick moves,
+ * A chooses -- and on a slider, A then left and right change it -- and B
+ * cancels), and the PC's own buttons: the Guide button, Back and Start
+ * together, or Start close the menu, B closes it when nothing is being
+ * changed and no question is up, LB and RB change the tab. The buttons held
+ * when the menu opened count only once released. 1 when a pad is there. */
+bool pad_poll(ImGuiIO &io, bool just_opened)
+{
+    RecompPadState st, all;
+    int any = 0;
+    uint16_t b, pressed;
+    const uint16_t both = RECOMP_PAD_BACK | RECOMP_PAD_START;
+
+    memset(&all, 0, sizeof all);
+    for (int slot = 0; slot < RECOMP_PAD_SLOTS; slot++) {
+        if (!recomp_pad_read(slot, &st))
+            continue;
+        any = 1;
+        all.buttons |= st.buttons;
+        if (abs(st.lx) > abs(all.lx)) all.lx = st.lx;
+        if (abs(st.ly) > abs(all.ly)) all.ly = st.ly;
+    }
+    if (!any) {
+        m.pad_held = 0;
+        return false;
+    }
+    b = all.buttons;
+    if (just_opened)
+        m.pad_held = b;                  /* what opened it is not a press here */
+    pressed = (uint16_t)(b & ~m.pad_held);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp, (b & RECOMP_PAD_DPAD_UP) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, (b & RECOMP_PAD_DPAD_DOWN) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (b & RECOMP_PAD_DPAD_LEFT) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (b & RECOMP_PAD_DPAD_RIGHT) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (b & RECOMP_PAD_A) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (b & RECOMP_PAD_B) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, (b & RECOMP_PAD_X) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceUp, (b & RECOMP_PAD_Y) != 0);
+    {
+        const float dead = 8000.0f;
+        float x = (float)all.lx, y = (float)all.ly;
+        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, x < -dead, x < -dead ? -x / 32767.0f : 0.0f);
+        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, x > dead, x > dead ? x / 32767.0f : 0.0f);
+        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, y > dead, y > dead ? y / 32767.0f : 0.0f);
+        io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, y < -dead, y < -dead ? -y / 32767.0f : 0.0f);
+    }
+    if (!just_opened) {
+        bool chord = (b & both) == both && (m.pad_held & both) != both;
+        if ((pressed & RECOMP_PAD_GUIDE) || chord ||
+            ((pressed & RECOMP_PAD_START) && !(b & RECOMP_PAD_BACK)) ||
+            ((pressed & RECOMP_PAD_B) && !m.pad_busy)) {
+            m.pad_held = b;
+            recomp_bindings_swallow_held();  /* not the game's once it runs again */
+            recomp_menu_set_open(0);
+            return true;
+        }
+        if ((pressed & (RECOMP_PAD_LEFT_SHOULDER | RECOMP_PAD_RIGHT_SHOULDER)) && !m.pad_busy)
+            m.tab_want = (m.tab_now + ((pressed & RECOMP_PAD_RIGHT_SHOULDER) ? 1 : 3)) % 4;
+    }
+    m.pad_held = b;
+    return true;
+}
+
 void menu_present(void *out_view, unsigned width, unsigned height)
 {
     if (g_leaving.exchange(0)) {
@@ -1193,7 +1274,8 @@ void menu_present(void *out_view, unsigned width, unsigned height)
         ImGuiIO &io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
         io.BackendRendererName = "recompose-rhi";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
         make_base_style();
@@ -1224,6 +1306,9 @@ void menu_present(void *out_view, unsigned width, unsigned height)
     static int settle;
     if (queue_drain(io) > 0 || just_opened)
         settle = 2;
+    m.pad = pad_poll(io, just_opened);
+    if (!g_open.load())
+        return;                          /* closed from the controller */
 
     /* An auto-sized window knows its size only after a frame: laid out once
      * unseen when the menu has just opened, so it does not appear in the
@@ -1240,9 +1325,14 @@ void menu_present(void *out_view, unsigned width, unsigned height)
         ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
                                                       IM_COL32(0, 0, 0, 130));
     draw_menu(width, height);
+    /* B belongs to an item being changed or a question that is up. */
+    m.pad_busy = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+    m.tab_want = -1;
     ImGui::Render();
     render(ImGui::GetDrawData(), (RhiView *)out_view, width, height);
-    if (settle > 0 || m.test_on) {
+    /* A controller is read once a frame: while one is there the held
+     * picture is presented again continuously, as the menu needs it. */
+    if (settle > 0 || m.test_on || m.pad) {
         if (settle > 0)
             settle--;
         host_request_redraw();
@@ -1257,6 +1347,14 @@ static void menu_save_at_exit(void)
     settings_save_unsaved();
 }
 
+/* A controller asks for the menu (input_bindings.c: its Guide button, or Back
+ * and Start together), from the thread reading the controllers. */
+static void menu_from_controller(void)
+{
+    if (!recomp_menu_is_open())
+        recomp_menu_set_open(1);
+}
+
 extern "C" void recomp_menu_install(void)
 {
     static bool done;
@@ -1264,6 +1362,8 @@ extern "C" void recomp_menu_install(void)
     if (done)
         return;
     done = true;
+    m.tab_want = -1;
     atexit(menu_save_at_exit);
+    recomp_bindings_set_menu_hook(menu_from_controller);
     xbox_D3D8SetUiHook(menu_present);
 }

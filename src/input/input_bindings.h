@@ -93,6 +93,16 @@ int  recomp_mouse_invert(void);
  * reads as connected with nothing pressed (recomp_bindings_sample). */
 void recomp_bindings_block(int on);
 
+/* Called when a controller asks for the in-game menu -- its Guide button, or
+ * Back and Start together -- from the thread reading the controllers. The
+ * menu installs it (hle_menu.cpp); the menu, once open, reads the controllers
+ * itself. */
+void recomp_bindings_set_menu_hook(void (*open_menu)(void));
+
+/* The menu closed from a controller: the buttons held now reach the title only
+ * once let go. */
+void recomp_bindings_swallow_held(void);
+
 /* The title's own menu is up, not play (1), or play again (0): the left
  * button is A, the right B and the wheel up and down while it is, and the
  * buttons' bindings rest. The window's side is hle_window_title_menu, which

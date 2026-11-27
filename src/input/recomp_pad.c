@@ -179,6 +179,7 @@ static int sdl_read(int slot, RecompPadState *out)
     if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_RIGHT_STICK))    b |= RECOMP_PAD_RIGHT_THUMB;
     if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER))  b |= RECOMP_PAD_LEFT_SHOULDER;
     if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) b |= RECOMP_PAD_RIGHT_SHOULDER;
+    if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_GUIDE))          b |= RECOMP_PAD_GUIDE;
     /* By position, as SDL3 names them: the bottom face button is A on an
      * Xbox pad, Cross on a PlayStation one and B on a Nintendo one, and it
      * is the button a title asking for A expects under the right thumb. */
@@ -208,6 +209,26 @@ static int sdl_read(int slot, RecompPadState *out)
  * polls its pads several times a frame: an unplugged port would cost more
  * than the game. An empty slot is re-checked once a second, a full one
  * every poll. */
+/* XInputGetStateEx (ordinal 100 of xinput1_4 and xinput1_3): XInputGetState
+ * with the Guide button in it. NULL where there is none. */
+typedef DWORD (WINAPI *XInputGetStateExFn)(DWORD, XINPUT_STATE *);
+static XInputGetStateExFn xinput_state_ex(void)
+{
+    static int tried;
+    static XInputGetStateExFn fn;
+
+    if (!tried) {
+        HMODULE m = LoadLibraryA("xinput1_4.dll");
+
+        if (!m)
+            m = LoadLibraryA("xinput1_3.dll");
+        if (m)
+            fn = (XInputGetStateExFn)(void *)GetProcAddress(m, (LPCSTR)(uintptr_t)100);
+        tried = 1;
+    }
+    return fn;
+}
+
 static int xinput_read(int slot, RecompPadState *out)
 {
     static int connected[RECOMP_PAD_SLOTS];
@@ -218,7 +239,8 @@ static int xinput_read(int slot, RecompPadState *out)
     if (!connected[slot] && now < retry_at[slot])
         return 0;
     memset(&st, 0, sizeof st);
-    if (XInputGetState((DWORD)slot, &st) != ERROR_SUCCESS) {
+    if ((xinput_state_ex() ? xinput_state_ex()((DWORD)slot, &st)
+                           : XInputGetState((DWORD)slot, &st)) != ERROR_SUCCESS) {
         connected[slot] = 0;
         retry_at[slot] = now + 1000;
         return 0;
@@ -263,14 +285,14 @@ const char *recomp_pad_api_name(void)
  * (a test): pad 1 held at those values -- the sticks as signed 16-bit, up
  * positive as the game reads them, the triggers 0..255, the buttons as
  * RecompPadState's bits -- between those times after the first read, up to
- * eight windows; outside them it is a pad at rest. What a controller's
+ * 32 windows; outside them it is a pad at rest. What a controller's
  * stick does to the game can then be measured without a hand on one, and
  * what reaches the game read back from a lockstep recording. */
 static int fake_read(int slot, RecompPadState *out)
 {
     static int ready, windows;
-    static unsigned long long from[8], to[8], start;
-    static int v[8][7];
+    static unsigned long long from[32], to[32], start;
+    static int v[32][7];
     unsigned long long now;
     int w;
 
@@ -278,7 +300,7 @@ static int fake_read(int slot, RecompPadState *out)
         const char *e = getenv("RECOMP_PAD_FAKE");
 
         ready = 1;
-        while (e && *e && windows < 8) {
+        while (e && *e && windows < 32) {
             int *x = v[windows];
             int n = sscanf(e, "%llu-%llu:%d,%d,%d,%d,%d,%d,%d", &from[windows], &to[windows],
                            &x[0], &x[1], &x[2], &x[3], &x[4], &x[5], &x[6]);

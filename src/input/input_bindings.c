@@ -1105,6 +1105,25 @@ static int wheel_magnitude(int d)
     return 255;
 }
 
+/* The in-game menu, opened from a controller (recomp_bindings_set_menu_hook). */
+static void (*volatile g_menu_hook)(void);
+
+/* Buttons held when the menu closed from a controller: kept from the title
+ * until let go, so the B or Start that closed it is not also a melee or a
+ * pause (recomp_bindings_swallow_held). */
+static volatile long g_swallow_next;
+static uint16_t g_swallow[PORTS];
+
+void recomp_bindings_swallow_held(void)
+{
+    g_swallow_next++;                       /* a count: each close is new */
+}
+
+void recomp_bindings_set_menu_hook(void (*open_menu)(void))
+{
+    g_menu_hook = open_menu;
+}
+
 /* RECOMP_MOUSE_FAKE=<from ms>-<to ms>:<x>,<y> -- a mouse moving at x,y
  * counts every 60th of a second between those times after start-up, fed in
  * as the real one is (recomp_mouse_move), from the pad polling, which every
@@ -1545,6 +1564,31 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
     memset(&pad, 0, sizeof pad);
     if (c->device == DEV_PAD)
         have_pad = recomp_pad_read(c->pad, &pad);
+    /* The in-game menu from a controller: its Guide button, which no Xbox
+     * title reads, or Back and Start together -- for a pad whose Guide button
+     * the system keeps (Windows' Game Bar, Steam). Back and Start held
+     * together are taken out of the frame: the press is the menu's. */
+    if (have_pad && port < PORTS) {
+        static long swallow_seen[PORTS];
+        if (g_swallow_next != swallow_seen[port]) {
+            swallow_seen[port] = g_swallow_next;
+            g_swallow[port] = pad.buttons;
+        }
+        g_swallow[port] &= pad.buttons;           /* let go: the title's again */
+        pad.buttons &= (uint16_t)~g_swallow[port];
+    }
+    if (have_pad && port < PORTS) {
+        static uint16_t held[PORTS];
+        const uint16_t both = RECOMP_PAD_BACK | RECOMP_PAD_START;
+        int chord = (pad.buttons & both) == both, chord_was = (held[port] & both) == both;
+        int guide = (pad.buttons & RECOMP_PAD_GUIDE) && !(held[port] & RECOMP_PAD_GUIDE);
+
+        held[port] = pad.buttons;
+        if (chord)
+            pad.buttons &= (uint16_t)~both;
+        if ((guide || (chord && !chord_was)) && g_menu_hook)
+            g_menu_hook();
+    }
 
     for (i = 0; i < CONTROL_COUNT; i++) {
         int mag = 0, s;
