@@ -28,7 +28,8 @@ been tried against a real router.
 | The network card | `src/kernel/xbox_nic.c`, a fault range it registers itself (`recomp_fault_add_range`, routed by `xbox_fault_route.c`); interrupt from the kernel's timer thread | `RECOMP_SYSLINK=host`, `join` or `udp` (`syslink` in the settings file) |
 | A hosted session: the host is a learning switch for up to 16 consoles | `src/kernel/xbox_net_udp.c`; checked by `tests/syslink_hub` | `syslink_host`, `syslink_port`, `syslink_code` (`RECOMP_SYSLINK_HOST`, `_PORT`, `_CODE`) |
 | The router asked to forward the host's port (UPnP), and the addresses to give out | `src/net/net_upnp.c`, over `third_party/miniupnp` (miniupnpc 2.3.3) | `syslink_upnp` (`RECOMP_SYSLINK_UPNP`), on by default |
-| The launcher's System Link tab | `src/launcher/launcher.c` | writes the five `syslink*` settings |
+| A session through an online server: the server is the switch, every copy joins it | `tools/online_server/server.py` (Python 3, standard library; Fly.io files beside it) | `online_via = server`, `online_server` (`RECOMP_ONLINE_SERVER`), `syslink_code` names the session |
+| The launcher's System Link tab | `src/launcher/launcher.c` | writes the five `syslink*` settings and the two `online_*` |
 | The internet through a router in the runtime, for Xbox Live (Insignia): DHCP, ARP, UDP out through this PC (the console's own port kept when free), fragments both ways, TCP refused for now | `src/kernel/xbox_net_nat.c`; checked by `tests/net_nat` | `RECOMP_SYSLINK=nat` (`syslink = nat`), `RECOMP_NET_DNS` (`net_dns`, default `46.101.64.175,1.1.1.1`), `RECOMP_NET_LOG=1` |
 | A UDP tunnel in xemu's format | `src/kernel/xbox_net_udp.c` | `RECOMP_SYSLINK=udp`, `RECOMP_SYSLINK_REMOTE=host:port`, `RECOMP_SYSLINK_LOCAL=port`, `RECOMP_SYSLINK_DELAY_MS`, `RECOMP_SYSLINK_LOSS` |
 | Real Diffie-Hellman and triple DES in the kernel | `src/kernel/xbox_crypto_soft.c`, behind `XcModExp`, `XcKeyTable`, `XcBlockCrypt(CBC)`, `XcDESKeyParity`; checked by `tests/crypto_soft` | |
@@ -69,6 +70,20 @@ The same from the environment, which wins over the settings file:
 host: RECOMP_SYSLINK=host [RECOMP_SYSLINK_PORT=27610] [RECOMP_SYSLINK_CODE=word] [RECOMP_SYSLINK_UPNP=0]
 join: RECOMP_SYSLINK=join RECOMP_SYSLINK_HOST=81.2.3.4[:port] [RECOMP_SYSLINK_CODE=word]
 ```
+
+Through an online server instead (`tools/online_server`), every copy joins
+the server, which answers HELLO as a hosting copy does and is the switch;
+the code names the session there (at least four characters), so one server
+holds many sessions:
+
+```
+every copy: RECOMP_SYSLINK=host|join RECOMP_ONLINE_SERVER=name.fly.dev[:27630] RECOMP_SYSLINK_CODE=word
+```
+
+In the settings file that is `online_via = server` and `online_server`;
+`online_via = direct` (the default) leaves the address unused. A
+TimeSplitters 2 match through it sent nothing larger than 310 bytes, well
+under what Fly.io's UDP carries.
 
 What the log says, in order, on the host:
 

@@ -70,3 +70,6 @@ third_party/android/
 
 # Local Python environment for the pipeline (capstone)
 .venv/
+
+# written by tools/online_server/deploy.ps1 / deploy.sh
+tools/online_server/fly.toml

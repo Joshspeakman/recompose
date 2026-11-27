@@ -274,6 +274,13 @@ typedef struct RecompSettings {
      * opened as syslink_upnp says. */
     char coop[8];               /* "off", "host", "join" */
     int  coop_port;             /* the UDP port a co-op host listens on */
+
+    /* Both, through an online server (recompose's tools/online_server) that
+     * every copy connects to, so nobody opens a port: its address, and
+     * whether to use it ("server") or connect directly ("direct", the
+     * default). The session is named by syslink_code. */
+    char online_server[128];    /* name or address, [:port] */
+    char online_via[8];         /* "direct", "server" */
 } RecompSettings;
 
 /* The picture settings' ranges and their neutral values (RecompSettings). */
@@ -292,6 +299,7 @@ typedef struct RecompSettings {
 /* The port a System Link host listens on when nobody chooses one. The same
  * number as XBOX_NET_DEFAULT_PORT, which the runtime falls back to. */
 #define RECOMP_SYSLINK_DEFAULT_PORT 27610
+#define RECOMP_ONLINE_SERVER_PORT   27630   /* tools/online_server's, when an address has none */
 
 /* Mouse look's defaults and ranges: the one place they are decided. The
  * launcher's rows, the settings file and the runtime all read these, so a

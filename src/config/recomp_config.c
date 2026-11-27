@@ -361,6 +361,7 @@ void recomp_settings_defaults(RecompSettings *s)
     snprintf(s->syslink, sizeof s->syslink, "off");
     s->syslink_port      = RECOMP_SYSLINK_DEFAULT_PORT;
     s->syslink_upnp      = 1;
+    snprintf(s->online_via, sizeof s->online_via, "direct");
     snprintf(s->coop, sizeof s->coop, "off");
     s->coop_port         = RECOMP_COOP_DEFAULT_PORT;
     if (g_title_settings) {
@@ -472,6 +473,10 @@ static void settings_from_table(RecompSettings *s)
         snprintf(s->coop, sizeof s->coop, "%s", v);
     if ((v = from_table("coop_port")) != NULL)
         s->coop_port = clamp_int(atoi(v), 1, 65535);
+    if ((v = from_table("online_server")) != NULL)
+        snprintf(s->online_server, sizeof s->online_server, "%s", v);
+    if ((v = from_table("online_via")) != NULL)
+        snprintf(s->online_via, sizeof s->online_via, "%s", v);
 }
 
 int recomp_settings_read(const char *path, RecompSettings *s)
@@ -534,7 +539,7 @@ static const char *const k_written_keys[] = {
     "picture_brightness", "picture_contrast", "picture_saturation", "picture_gamma",
     "mouse_look", "mouse_sensitivity", "mouse_invert", "crosshair", "touch_controls", "touch_opacity", "touch_scale",
     "game_dir", "syslink", "syslink_host", "syslink_port", "syslink_code", "syslink_upnp",
-    "coop", "coop_port",
+    "coop", "coop_port", "online_server", "online_via",
 };
 
 /* The lines of the file at `path` whose key is not one of those, joined;
@@ -833,6 +838,21 @@ int recomp_settings_write(const char *path, const RecompSettings *s)
         "coop_port = %d\n",
         s->coop[0] ? s->coop : "off",
         s->coop_port > 0 ? s->coop_port : RECOMP_COOP_DEFAULT_PORT);
+    fprintf(f,
+        "\n"
+        "# System Link and co-op through an online server: every copy connects to\n"
+        "# it, so nobody opens a port on their router (recompose's\n"
+        "# tools/online_server, which can run on Fly.io). direct, or server; the\n"
+        "# session is named by syslink_code.               [RECOMP_ONLINE_VIA]\n"
+        "online_via = %s\n"
+        "#\n"
+        "# The server's name or address, with :port if not 27630.\n"
+        "#                                               [RECOMP_ONLINE_SERVER]\n",
+        s->online_via[0] ? s->online_via : "direct");
+    if (s->online_server[0])
+        fprintf(f, "online_server = %s\n", s->online_server);
+    else
+        fprintf(f, "# online_server =\n");
 
     kept_write(f, kept);
     free(kept);

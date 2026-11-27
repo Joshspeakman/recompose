@@ -113,6 +113,17 @@ nothing. A frame starts only when both
 controllers for it are in. The host asks the router for its port (UPnP)
 unless `syslink_upnp = 0`; a joiner needs nothing opened.
 
+Or both through an online server (`tools/online_server`, which runs on Fly.io
+or any machine reachable on UDP 27630): `online_via = server` with
+`online_server = <address>[:port]`, or `RECOMP_ONLINE_SERVER`; the session is
+named by `syslink_code` / `RECOMP_LOCKSTEP_CODE`, at least four characters,
+the same on both. Each side registers with the server (`'X' 'R' 1`
+REGISTER, CHALLENGE, OK, ERROR; the server's README has them) and sends its
+messages to it, and the server passes them to the other side; nobody opens a
+port. A joiner that arrives before its host keeps registering until the host
+does. `online_via = direct`, the default, leaves an `online_server` typed in
+the launcher unused.
+
 With `RECOMP_LOCKSTEP_REPLAY` as well, each machine plays its own
 controller's column of the recording: a session between two machines then
 reproduces a recorded game, checked against the recording and against each

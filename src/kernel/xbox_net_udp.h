@@ -13,6 +13,8 @@
 
 /* The port a host listens on when nobody chooses one. */
 #define XBOX_NET_DEFAULT_PORT 27610
+/* An online server's (recompose's tools/online_server), when its address has no port. */
+#define XBOX_NET_SERVER_PORT 27630
 
 /* Consoles in one hosted session, the host's own included. */
 #define XBOX_NET_MAX_CONSOLES 16

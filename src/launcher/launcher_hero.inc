@@ -42,8 +42,8 @@
 #endif
 
 enum { SC_NONE = -1, SC_PLAY = 100, SC_QUIT = 101, SC_BACK = 102, SC_ADVANCED = 103,
-       SC_SWITCH = 104, SC_FOLDER = 105, SC_OPEN = 106, SC_ITEM = 200, SC_SECTION = 300,
-       SC_TILE = 400 };
+       SC_SWITCH = 104, SC_FOLDER = 105, SC_OPEN = 106, SC_PRICES = 107, SC_HELP = 108,
+       SC_ITEM = 200, SC_SECTION = 300, SC_TILE = 400 };
 
 /* The home menu. Updates only when the install has an updater. */
 enum { HX_PLAY, HX_GRAPHICS, HX_CONTROLS, HX_ONLINE, HX_SAVES, HX_EXTRAS, HX_UPDATES, HX_QUIT,
@@ -54,6 +54,8 @@ static int g_sc_open = -1;                /* a panel: the Tab it shows, or -1 */
 static int g_sc_adv_focus;                /* the Graphics panel's ADVANCED has the keys */
 static int g_hx_focus;                    /* the home menu's focused item: its place in hx_items */
 static int g_hx_extras;                   /* the Extras are open */
+static int g_hx_help;                     /* Play Together's page on setting up a server */
+static uint64_t g_hx_help_copied;         /* "copied" shown until then */
 static double g_hx_bar = -1;              /* where the focus wash is drawn, sliding to its row */
 
 static COLORREF sc_c(uint32_t rgb) { return THEME_RGB_(rgb); }
@@ -850,6 +852,150 @@ static void hx_home(void)
     hx_hints(hints, 2);
 }
 
+/* ------------------------------------------- setting up an online server */
+
+/* Fly.io's own commands (fly.io/docs/flyctl/install), this system's. */
+#if defined(_WIN32)
+#define HX_FLY_INSTALL "pwsh -Command \"iwr https://fly.io/install.ps1 -useb | iex\""
+#define HX_FLY_SETUP   "powershell -ExecutionPolicy Bypass -File deploy.ps1"
+#elif defined(__APPLE__)
+#define HX_FLY_INSTALL "brew install flyctl"
+#define HX_FLY_SETUP   "sh deploy.sh"
+#else
+#define HX_FLY_INSTALL "curl -L https://fly.io/install.sh | sh"
+#define HX_FLY_SETUP   "sh deploy.sh"
+#endif
+#define HX_FLY_PRICING "https://fly.io/docs/about/pricing/"
+
+/* The server's files (recompose's tools/online_server): beside the launcher
+ * in an install (Timeslip's installer puts them there), else in the source
+ * tree a build runs from. 1 with the folder in out. */
+static int hx_server_folder(char *out, size_t n)
+{
+    static const char *const rel[] = { "online_server", "../../recompose/tools/online_server",
+                                       "../../../recompose/tools/online_server" };
+    char here[1024], probe[1200];
+    int i;
+
+    if (!host_exe_path(here, sizeof here))
+        return 0;
+    host_path_dirname(here);
+    for (i = 0; i < 3; i++) {
+        FILE *f;
+
+        snprintf(probe, sizeof probe, "%s/%s/server.py", here, rel[i]);
+        if ((f = fopen(probe, "rb")) != NULL) {
+            fclose(f);
+            snprintf(out, n, "%s/%s", here, rel[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void hx_help_folder(void)
+{
+    char dir[1100];
+
+    if (hx_server_folder(dir, sizeof dir))
+        lhost_open(dir);
+}
+
+static void hx_help_copy(void)
+{
+    if (lhost_copy(HX_FLY_INSTALL))
+        g_hx_help_copied = lhost_ticks() + 1500;
+}
+
+static void hx_help_draw(void)
+{
+    /* Each step: what it is, and the line to type (or none), set apart. */
+    static const char *const head[] = {
+        "WHAT IT IS", "MAKE A FLY.IO ACCOUNT, AND INSTALL FLYCTL", "RUN THE SETUP IN THE SERVER FOLDER",
+        "CONNECT", "LATER" };
+    char body[5][600], dir[1100], shown[1100];
+    const char *cmd[5] = { NULL, HX_FLY_INSTALL, HX_FLY_SETUP, NULL, "flyctl apps destroy <its name>" };
+    int y = 116, i;
+    HxHint hints[4];
+    int nh = 0;
+
+    hx_background(0.5);
+    theme_fill(sc_rect(0, 0, SC_W, SC_H), THEME_INK_RGB, 0.45);
+    hx_caps(sc_rect(EX_X0, 30, 900, 50), "SET UP AN ONLINE SERVER", 26, 0xFFFFFF, THEME_LEFT, 6,
+            THEME_FACE_HEAVY, 1);
+    hx_caps(sc_rect(EX_X0, 80, 900, 20), "ON FLY.IO" SC_DOT "A FEW MINUTES, ONCE, BY ONE OF YOU", 9,
+            hx_accent(), THEME_LEFT, 4, THEME_FACE_DISPLAY, 1);
+    hx_logo(sc_rect(HX_R - 300 + 8, 22, 300, 96), THEME_RIGHT, 0.9);
+    if (hx_server_folder(dir, sizeof dir)) {
+        size_t k;
+
+        lhost_full_path(dir, shown, sizeof shown);
+#ifdef _WIN32
+        for (k = 0; shown[k]; k++)
+            if (shown[k] == '/')
+                shown[k] = '\\';
+#else
+        (void)k;
+#endif
+    } else {
+        snprintf(shown, sizeof shown, "the online_server folder of the game's source");
+    }
+
+    snprintf(body[0], sizeof body[0],
+        "One server every copy connects to, for System Link and online co-op: nobody opens a"
+        " port on their router. One of you sets it up and shares its address. On Fly.io it costs"
+        " about $4.20 a month at their prices (a small machine, $2.19, and the dedicated IPv4"
+        " address UDP needs, $2); Fly's free plan gives $5 of use a month once a card is added.");
+    snprintf(body[1], sizeof body[1],
+        "Sign up at fly.io. Then, in a terminal, install flyctl, Fly's command line (A copies it):");
+    snprintf(body[2], sizeof body[2],
+        "The folder is %s (X opens it). There, in a terminal, run the line below. It signs you in,"
+        " asks a name and the region nearest you, and makes and starts the server. At the end it"
+        " prints the address, like name.fly.dev.", shown);
+    snprintf(body[3], sizeof body[3],
+        "Back here, in Play Together: Connect, Through an online server; Server address, what it"
+        " printed; Session code, any word of four letters or more. Everyone playing sets the same"
+        " two, then hosts or joins as usual.");
+    snprintf(body[4], sizeof body[4],
+        "The server runs until it is removed, which ends its cost too; the README in the server"
+        " folder has the steps by hand:");
+    for (i = 0; i < 5; i++) {
+        char num[4];
+        static const int line_count[5] = { 3, 1, 2, 2, 1 };
+        int lines = line_count[i];
+
+        snprintf(num, sizeof num, "%d", i + 1);
+        theme_text_ex(sc_rect(EX_X0, y, 40, 30), num, 20, 700, sc_c(hx_bright()), THEME_LEFT, 0,
+                      THEME_FACE_HEAVY, 1);
+        hx_caps(sc_rect(EX_X0 + 44, y + 2, 900, 22), head[i], 12, 0xFFFFFF, THEME_LEFT, 3,
+                THEME_FACE_CONDENSED_BOLD, 1);
+        theme_text_wrapped(sc_rect(EX_X0 + 44, y + 28, SC_W - EX_X0 * 2 - 44, 20 * lines + 4),
+                           body[i], 11, sc_c(0xC6D0E2));
+        y += 28 + 20 * lines + 8;
+        if (cmd[i]) {
+            ThemeRect c = sc_rect(EX_X0 + 44, y, SC_W - EX_X0 * 2 - 44, 30);
+
+            theme_fill(c, 0x000000, 0.55);
+            theme_fill(sc_rect(c.x, c.y, 3, c.h), hx_bright(), 1);
+            theme_text_ex(sc_rect(c.x + 14, c.y, c.w - 20, c.h), cmd[i], 12, 600, sc_c(0xEAF2FF),
+                          THEME_LEFT, 0, THEME_FACE_BODY, 0);
+            y += 30 + 6;
+        }
+        y += 10;
+    }
+    if (lhost_ticks() < g_hx_help_copied)
+        hx_text(sc_rect(EX_X0, SC_H - 50, 400, 28), "Copied.", 12, 600, hx_bright(), THEME_LEFT);
+    hints[nh].glyph = HX_G_A; hints[nh].key = "ENTER"; hints[nh].pad_key = NULL;
+    hints[nh].label = "Copy the install line"; hints[nh++].code = SC_OPEN;
+    hints[nh].glyph = HX_G_X; hints[nh].key = "F"; hints[nh].pad_key = NULL;
+    hints[nh].label = "Server folder"; hints[nh++].code = SC_FOLDER;
+    hints[nh].glyph = HX_G_Y; hints[nh].key = "P"; hints[nh].pad_key = NULL;
+    hints[nh].label = "Fly's prices"; hints[nh++].code = SC_PRICES;
+    hints[nh].glyph = HX_G_B; hints[nh].key = "ESC"; hints[nh].pad_key = NULL;
+    hints[nh].label = "Back"; hints[nh++].code = SC_BACK;
+    hx_hints(hints, nh);
+}
+
 /* --------------------------------------------------------------- a panel */
 
 enum { HX_PANEL_X = 610, HX_PANEL_W = SC_W - 64 - 610, HX_ROWS_Y = 134, HX_PITCH = 46,
@@ -1080,6 +1226,17 @@ static void sc_draw_input(void)
 
 static void draw_tab_body(void);          /* launcher.c: a tab's rows */
 
+/* The panel has a link over its rows: Graphics' Advanced (and its way back),
+ * Play Together's page on setting up a server. */
+static int hx_panel_link(void)
+{
+    return (g_sc_open == TAB_VIDEO && sc_has_advanced()) || g_sc_open == TAB_LINK
+#ifdef LAUNCHER_GAMES
+        || g_sc_open == TAB_ADVANCED
+#endif
+        ;
+}
+
 static void hx_panel(void)
 {
     static const char *const titles[] = { "GRAPHICS", "CONTROLS", "PLAY TOGETHER", "ABOUT", "ADVANCED" };
@@ -1098,14 +1255,11 @@ static void hx_panel(void)
 #endif
     hx_caps(sc_rect(HX_R - 600, 74, 600, 20), kicker, 9, hx_accent(), THEME_RIGHT, 4,
             THEME_FACE_DISPLAY, 1);
-    if ((g_sc_open == TAB_VIDEO && sc_has_advanced())
-#ifdef LAUNCHER_GAMES
-        || g_sc_open == TAB_ADVANCED
-#endif
-        ) {
+    if (hx_panel_link()) {
         ThemeRect a = sc_advanced_rect();
-        int hot = g_sc_hover == SC_ADVANCED || g_sc_hover == SC_BACK, foc = g_sc_adv_focus;
-        int back = g_sc_open != TAB_VIDEO;
+        int hot = g_sc_hover == SC_ADVANCED || g_sc_hover == SC_BACK || g_sc_hover == SC_HELP;
+        int foc = g_sc_adv_focus;
+        int back = g_sc_open != TAB_VIDEO && g_sc_open != TAB_LINK;
 
         if (foc) {
             double at[2] = { 0, 1 }, al[2] = { 0.66, 0 };
@@ -1116,7 +1270,8 @@ static void hx_panel(void)
         }
         theme_chevron(back ? a.x + 12 : a.x + a.w - 16, a.y + a.h / 2.0, !back, 5, 10,
                       hot || foc ? 0xFFFFFF : hx_accent(), 1.0);
-        hx_caps(sc_rect(back ? a.x + 26 : a.x + 8, a.y, a.w - 34, a.h), back ? "GRAPHICS" : "ADVANCED",
+        hx_caps(sc_rect(back ? a.x + 26 : a.x + 8, a.y, a.w - 34, a.h),
+                back ? "GRAPHICS" : g_sc_open == TAB_LINK ? "SET UP A SERVER" : "ADVANCED",
                 10, hot || foc ? 0xFFFFFF : 0xBFCADC, THEME_LEFT, 3, THEME_FACE_CONDENSED_BOLD, 1);
     }
     sc_rows_in_panel();
@@ -1488,7 +1643,9 @@ static int sc_draw(void)
             sc_setup();
         return 1;
     }
-    if (g_hx_extras)
+    if (g_hx_help)
+        hx_help_draw();
+    else if (g_hx_extras)
         hx_extras_draw();
     else if (g_sc_open >= 0)
         hx_panel();
@@ -1602,18 +1759,23 @@ static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta)
         sc_update_input(accept, cancel);
         return 1;
     }
+    if (g_hx_help) {
+        if (cancel)
+            g_hx_help = 0;
+        else if (accept)
+            hx_help_copy();
+        return 1;
+    }
     if (g_hx_extras)
         return hx_extras_nav(dx, dy, accept, cancel, tabdelta);
     if (g_sc_open >= 0) {
         if (g_capturing)
             return 0;
-        if ((g_sc_open == TAB_VIDEO && sc_has_advanced())
-#ifdef LAUNCHER_GAMES
-            || g_sc_open == TAB_ADVANCED
-#endif
-            ) {
+        if (hx_panel_link()) {
             if (g_sc_adv_focus) {
-                if (accept)
+                if (accept && g_sc_open == TAB_LINK)
+                    g_hx_help = 1;
+                else if (accept)
                     sc_open_advanced(g_sc_open == TAB_VIDEO);
                 else if (cancel)
                     sc_close();
@@ -1675,13 +1837,11 @@ static int sc_hit(int mx, int my)
                 return SC_TILE + i;
         return SC_NONE;
     }
+    if (g_hx_help)
+        return SC_NONE;
     if (g_sc_open >= 0) {
-        if (((g_sc_open == TAB_VIDEO && sc_has_advanced())
-#ifdef LAUNCHER_GAMES
-             || g_sc_open == TAB_ADVANCED
-#endif
-             ) && sc_in(sc_advanced_rect(), mx, my))
-            return g_sc_open == TAB_VIDEO ? SC_ADVANCED : SC_BACK;
+        if (hx_panel_link() && sc_in(sc_advanced_rect(), mx, my))
+            return g_sc_open == TAB_VIDEO ? SC_ADVANCED : g_sc_open == TAB_LINK ? SC_HELP : SC_BACK;
         return SC_NONE;
     }
     if (sc_in(g_hx_switch_rect, mx, my))
@@ -1700,6 +1860,17 @@ static int sc_click(int mx, int my, int dbl)
     if (sc_update_shown()) {
         if (sc_in(sc_play_rect(), mx, my))
             sc_update_input(1, 0);
+        return 1;
+    }
+    if (g_hx_help) {
+        if (h == SC_BACK) g_hx_help = 0;
+        else if (h == SC_OPEN) hx_help_copy();
+        else if (h == SC_FOLDER) hx_help_folder();
+        else if (h == SC_PRICES) lhost_open(HX_FLY_PRICING);
+        return 1;
+    }
+    if (h == SC_HELP) {
+        g_hx_help = 1;
         return 1;
     }
     if (h == SC_BACK) {
@@ -1785,8 +1956,12 @@ static void hx_tick(void)
             b = st.buttons;
             break;
         }
-    if ((b & RECOMP_PAD_Y) && !(last & RECOMP_PAD_Y) && g_hx_extras)
+    if ((b & RECOMP_PAD_Y) && !(last & RECOMP_PAD_Y) && g_hx_help)
+        lhost_open(HX_FLY_PRICING);
+    else if ((b & RECOMP_PAD_Y) && !(last & RECOMP_PAD_Y) && g_hx_extras)
         hx_extras_open_folder();
+    if ((b & RECOMP_PAD_X) && !(last & RECOMP_PAD_X) && g_hx_help)
+        hx_help_folder();
     last = b;
 }
 
@@ -1795,4 +1970,8 @@ static void hx_key(int key)
 {
     if (key == 'O' && g_hx_extras)
         hx_extras_open_folder();
+    if (key == 'F' && g_hx_help)
+        hx_help_folder();
+    if (key == 'P' && g_hx_help)
+        lhost_open(HX_FLY_PRICING);
 }

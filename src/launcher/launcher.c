@@ -181,7 +181,12 @@ static const char *const k_link_modes[] = { "off", "host", "join", NULL };
 
 static int           g_link_mode;
 static char          g_port_text[8];
-static Row           g_link_rows[6];
+static Row           g_link_rows[8];
+/* Directly, or through an online server (online_via, online_server): the
+ * row that chooses, and whether the rows are a server's. */
+static const char *const k_link_via[] = { "direct", "server", NULL };
+static int           g_link_via;
+#define LINK_VIA_SERVER (g_link_via == 1 && g_link_mode != LINK_OFF && g_link_mode != LINK_BY_HAND)
 static int           g_link_count;
 static char          g_lan_addr[64];    /* this PC on its network */
 static NetUpnpResult g_probe;           /* what the router said */
@@ -329,6 +334,11 @@ static void build_rows(void)
 #endif
 }
 
+static const char *link_via_label(int i)
+{
+    return i == 1 ? "Through an online server" : "Directly";
+}
+
 static const char *link_mode_label(int i)
 {
     switch (i) {
@@ -352,6 +362,32 @@ static void build_link_rows(void)
                " your friends join. Join: play in a friend's session.";
     r->kind  = ROW_CHOICE; r->choices = k_link_modes; r->ival = &g_link_mode;
     r++;
+
+    if (g_link_mode != LINK_OFF && g_link_mode != LINK_BY_HAND) {
+        r->label = "Connect";
+        r->help  = "Directly: the host's router lets friends in (UPnP, or a port"
+                   " forwarded by hand). Through an online server: everyone connects"
+                   " to one server, nobody opens a port. Up from the first row: how"
+                   " to set one up.";
+        r->kind  = ROW_CHOICE; r->choices = k_link_via; r->ival = &g_link_via;
+        r++;
+    }
+    if (LINK_VIA_SERVER) {
+        r->label = "Server address";
+        r->help  = "The online server everyone uses, like name.fly.dev, with :port if"
+                   " not 27630. Type it, or " LAUNCHER_PASTE_KEY " to paste.";
+        r->kind  = ROW_TEXT; r->text = g_settings.online_server;
+        r->text_len = sizeof g_settings.online_server; r->empty = "type the server's address";
+        r++;
+        r->label = "Session code";
+        r->help  = "Everyone in the game types the same code: it is how the server puts"
+                   " you together, and keeps others out. At least four characters.";
+        r->kind  = ROW_TEXT; r->text = g_settings.syslink_code;
+        r->text_len = sizeof g_settings.syslink_code; r->empty = "type a code";
+        r++;
+        g_link_count = (int)(r - g_link_rows);
+        return;
+    }
 
     if (LINK_JOINS(g_link_mode)) {
         r->label = "Host's address";
@@ -467,6 +503,8 @@ static void row_value(const Row *r, char *out, size_t n)
     case ROW_CHOICE:
         if (r->ival == &g_link_mode)
             snprintf(out, n, "%s", link_mode_label(*r->ival));
+        else if (r->ival == &g_link_via)
+            snprintf(out, n, "%s", link_via_label(*r->ival));
         else if (r->ival == &g_frame_cap_index)
             snprintf(out, n, "%s", frame_cap_label(*r->ival));
         else
@@ -1281,6 +1319,7 @@ static void settings_load(void)
         snprintf(g_port_text, sizeof g_port_text, "%d", g_settings.coop_port);
     }
 #endif
+    g_link_via = strcasecmp(g_settings.online_via, "server") == 0 ? 1 : 0;
     build_link_rows();
 }
 
@@ -1361,6 +1400,7 @@ static int settings_save(void)
              k_frame_caps[g_frame_cap_index]);
     snprintf(g_settings.post_soften, sizeof g_settings.post_soften, "%s",
              k_soften_values[g_soften_index]);
+    snprintf(g_settings.online_via, sizeof g_settings.online_via, "%s", k_link_via[g_link_via ? 1 : 0]);
     if (LINK_COOP(g_link_mode)) {
         /* Co-op and System Link are not both on: the co-op game is the
          * split screen, on every machine. */
@@ -1761,8 +1801,20 @@ static void link_tab_tick(void)
 
 /* What a host tells its friends: the internet address when the router gave
  * one, else this PC's address on its own network. */
+/* What a player gives their friends: a host's address, or, through an
+ * online server, the server and the session's code (anyone can). */
+static int link_can_share(void)
+{
+    return LINK_VIA_SERVER ? g_settings.online_server[0] != 0 : LINK_HOSTS(g_link_mode);
+}
+
 static void link_share_address(char *out, size_t n)
 {
+    if (LINK_VIA_SERVER) {
+        snprintf(out, n, "Server %s   Session code %s", g_settings.online_server,
+                 g_settings.syslink_code[0] ? g_settings.syslink_code : "(none yet)");
+        return;
+    }
     if (g_settings.syslink_upnp && lhost_read(&g_probe_state) == 2 &&
         g_probe.state == NET_UPNP_FOUND)
         snprintf(out, n, "%s:%d", g_probe.external, link_port());
@@ -2079,7 +2131,7 @@ static ThemeRect g_link_panel;          /* where the addresses are: a click copi
 static int link_box_h(void)
 {
 #ifdef LAUNCHER_SHOWCASE
-    return LINK_HOSTS(g_link_mode) ? 196 : 128;
+    return LINK_HOSTS(g_link_mode) || LINK_VIA_SERVER ? 196 : 128;
 #else
     return 230;
 #endif
@@ -2114,7 +2166,32 @@ static void draw_link(void)
     line.x = p.x + 16; line.w = p.w - 32;
 #endif
 
-    if (LINK_HOSTS(g_link_mode)) {
+    if (LINK_VIA_SERVER) {
+        int code_ok = strlen(g_settings.syslink_code) >= 4;
+
+        LINK_HEADING(line, "THROUGH AN ONLINE SERVER");
+        line.y += 30;
+        snprintf(text, sizeof text, "Server         %s", g_settings.online_server[0]
+                 ? g_settings.online_server : "not set: type its address above");
+        theme_text(line, text, LINK_PT, 400, g_settings.online_server[0] ? THEME_TEXT : THEME_TEXT_DIM,
+                   THEME_LEFT);
+        line.y += 26;
+        snprintf(text, sizeof text, "Session code   %s", code_ok ? g_settings.syslink_code
+                 : "at least four characters, the same for everyone");
+        theme_text(line, text, LINK_PT, 400, code_ok ? THEME_TEXT : THEME_TEXT_DIM, THEME_LEFT);
+        line.y += 30;
+        line.h = 70;
+        snprintf(text, sizeof text,
+                 "%s  Give your friends both; nobody opens a port. %s"
+                 " No server yet? Press up from the first row: one on Fly.io takes"
+                 " a few minutes to set up.",
+                 lhost_ticks() < g_copied_until ? "Copied."
+                 : LAUNCHER_COPY_KEY " or a click here copies them.",
+                 LINK_COOP(g_link_mode)
+                 ? "The host starts their game first; you are controller 2 in their game."
+                 : "Then host or join a game in the game's own System Link menu.");
+        theme_text_wrapped(line, text, 11, THEME_TEXT_DIM);
+    } else if (LINK_HOSTS(g_link_mode)) {
         int asked = g_settings.syslink_upnp;
 
         LINK_HEADING(line, "TELL YOUR FRIENDS");
@@ -3215,7 +3292,7 @@ void launcher_char(unsigned ch)
     if (g_tab == TAB_LINK && g_sel < g_link_count && !g_capturing) {
         Row *row = &g_link_rows[g_sel];
 
-        if (ch == 3 && LINK_HOSTS(g_link_mode)) {
+        if (ch == 3 && link_can_share()) {
             char share[96];
 
             link_share_address(share, sizeof share);
@@ -3304,7 +3381,7 @@ void launcher_click(int mx, int my)
         row_move(&rows[i], dir ? dir : 1);
         if (g_tab == TAB_LINK)
             link_rows_changed();
-    } else if (g_tab == TAB_LINK && LINK_HOSTS(g_link_mode) &&
+    } else if (g_tab == TAB_LINK && link_can_share() &&
                mx >= g_link_panel.x && mx < g_link_panel.x + g_link_panel.w &&
                my >= g_link_panel.y && my < g_link_panel.y + g_link_panel.h) {
         char share[96];

@@ -45,6 +45,17 @@
  *   BYE      leaving
  * Loss costs nothing but a resend: every INPUT carries everything not yet
  * acknowledged, and a joiner asks again for any chunk that has not come.
+ *
+ * Through an online server (online_server = name[:port], RECOMP_ONLINE_SERVER;
+ * recompose's tools/online_server): neither side opens a port. Both send to
+ * the server, which pairs a host and a joiner by their session code
+ * (syslink_code, RECOMP_LOCKSTEP_CODE) and passes these same messages
+ * between them. Each registers first and every two seconds after -- which
+ * keeps its router's way back open -- and answers the number the server
+ * sends it, so a registration in someone else's name does not count:
+ *   'X' 'R' 1 REGISTER  role (1 host, 2 join), nonce (8), code length, code
+ *   'X' 'R' 1 CHALLENGE nonce (8)     'X' 'R' 1 OK role, the other's there
+ *   'X' 'R' 1 ERROR     why, as text: a joiner leaves with it
  */
 #ifdef _WIN32
 #include <winsock2.h>
@@ -89,6 +100,8 @@ extern unsigned char xbox_HDKey[16];
 
 #define LS_VERSION      4u      /* 4: a pad carries the mouse's look */
 #define DEFAULT_PORT    27620
+#define SERVER_PORT     27630         /* tools/online_server's */
+#define REGISTER_EVERY  2000u         /* ms between registrations with the server */
 #define DEFAULT_DELAY   4u
 #define RING            512u          /* frames of input kept per player */
 #define MAX_SEND        32u           /* frames of input in one message */
@@ -100,6 +113,7 @@ extern unsigned char xbox_HDKey[16];
 
 enum { T_HELLO = 1, T_WELCOME, T_REFUSE, T_INPUT, T_BYE, T_SAVEREQ, T_SAVE,
        T_PING, T_PONG };
+enum { RELAY_REGISTER = 1, RELAY_CHALLENGE, RELAY_OK, RELAY_ERROR };
 
 typedef struct Checkpoint { uint32_t tick; uint64_t hash; } Checkpoint;
 
@@ -108,6 +122,13 @@ static struct {
     ls_socket sock;
     struct sockaddr_in peer;
     int have_peer;
+    /* Through an online server: where it is, the session code, the number it
+     * last sent this copy, whether it has said yes. */
+    int relay, relay_ok;
+    struct sockaddr_in relay_addr;
+    char code[64], server[256];
+    uint8_t relay_nonce[8];
+    uint64_t relay_last;
     unsigned local_port, remote_port;
     uint32_t delay;
     int64_t epoch;
@@ -901,6 +922,65 @@ static void on_savereq_locked(const uint8_t *b, int n, const struct sockaddr_in 
 
 /* ── the receive thread ───────────────────────────────────────────── */
 
+/* Under the lock: register with the online server (the header's REGISTER). */
+static void relay_register_locked(void)
+{
+    uint8_t r[4 + 1 + 8 + 1 + 63];
+    size_t cl = strlen(g.code);
+
+    if (cl > 63)
+        cl = 63;
+    r[0] = 'X'; r[1] = 'R'; r[2] = 1; r[3] = RELAY_REGISTER;
+    r[4] = g.host ? 1 : 2;
+    memcpy(r + 5, g.relay_nonce, 8);
+    r[13] = (uint8_t)cl;
+    memcpy(r + 14, g.code, cl);
+    send_sock(&g.relay_addr, r, 14 + (int)cl);
+    g.relay_last = now_ms();
+}
+
+/* Under the lock: what the online server says. */
+static void relay_receive_locked(const uint8_t *b, int n)
+{
+    if (n < 4 || b[2] != 1)
+        return;
+    if (b[3] == RELAY_CHALLENGE && n >= 12) {
+        memcpy(g.relay_nonce, b + 4, 8);
+        relay_register_locked();
+    } else if (b[3] == RELAY_OK && n >= 6) {
+        if (!g.relay_ok) {
+            g.relay_ok = 1;
+            say("the online server has this copy in the session%s",
+                b[5] ? ", with the other player" : "");
+            if (g.host)
+                status("online co-op: waiting for player 2 to join through the online server");
+        }
+    } else if (b[3] == RELAY_ERROR) {
+        char why[160];
+
+        snprintf(why, sizeof why, "%.*s", n - 4 < 150 ? n - 4 : 150, (const char *)b + 4);
+        g.relay_ok = 0;
+        if (!g.host && strncmp(why, "no host", 7) == 0) {
+            /* Not yet: the host may start after this copy. It keeps asking,
+             * every two seconds, for the five minutes a joiner waits. */
+            static int told;
+            if (!told) {
+                told = 1;
+                say("the online server: %s; waiting for the host", why);
+                status("online co-op: waiting for the host to start, through the online server");
+            }
+        } else if (!g.host) {
+            snprintf(g.refused, sizeof g.refused, "the online server: %s", why);
+            SetEvent(g.arrived);
+        } else {
+            char st[200];
+            snprintf(st, sizeof st, "online co-op: the online server says %s", why);
+            say("the online server: %s", why);
+            status(st);
+        }
+    }
+}
+
 #ifdef _WIN32
 static DWORD WINAPI receive_thread(LPVOID arg)
 #else
@@ -927,7 +1007,13 @@ static void *receive_thread(void *arg)
             socklen_t fl = sizeof from;
             int n = (int)recvfrom(g.sock, (char *)b, (int)sizeof b, 0,
                                   (struct sockaddr *)&from, &fl);
-            if (n >= 5 && b[0] == 'X' && b[1] == 'L' && b[2] == 'S') {
+            if (g.relay && n >= 4 && b[0] == 'X' && b[1] == 'R' &&
+                from.sin_addr.s_addr == g.relay_addr.sin_addr.s_addr &&
+                from.sin_port == g.relay_addr.sin_port) {
+                lock();
+                relay_receive_locked(b, n);
+                unlock();
+            } else if (n >= 5 && b[0] == 'X' && b[1] == 'L' && b[2] == 'S') {
                 int type = b[4];
                 int from_peer = g.have_peer && from.sin_addr.s_addr == g.peer.sin_addr.s_addr &&
                                 from.sin_port == g.peer.sin_port;
@@ -1014,6 +1100,12 @@ static void *receive_thread(void *arg)
             send_input_locked();
             unlock();
         }
+        /* Through an online server: register again every two seconds. */
+        if (g.relay && now_ms() - g.relay_last >= REGISTER_EVERY) {
+            lock();
+            relay_register_locked();
+            unlock();
+        }
     }
 #ifdef _WIN32
     return 0;
@@ -1083,13 +1175,20 @@ static void join(const char *peer, int port)
         }
         unlock();
         if (now_ms() - start > 300000) {
-            snprintf(why, sizeof why, "no answer from %s in 5 minutes: is it hosting, and is "
-                     "its UDP port %d open?", peer, port);
+            if (g.relay)
+                snprintf(why, sizeof why, "no answer through the online server %s in 5 minutes: "
+                         "is the host's copy started, with the same session code?", peer);
+            else
+                snprintf(why, sizeof why, "no answer from %s in 5 minutes: is it hosting, and is "
+                         "its UDP port %d open?", peer, port);
             leave_now(3, why);
         }
     }
     if (g.refused[0]) {
-        snprintf(why, sizeof why, "the host refused: %s", g.refused);
+        if (strncmp(g.refused, "the online server", 17) == 0)
+            snprintf(why, sizeof why, "%s", g.refused);
+        else
+            snprintf(why, sizeof why, "the host refused: %s", g.refused);
         leave_now(3, why);
     }
     if (settings_differ(why + 200, 200)) {
@@ -1188,6 +1287,10 @@ int lsnet_init(int64_t *epoch)
     const char *peer_link = recomp_config_lookup("RECOMP_SYSLINK_HOST", "syslink_host");
     const char *ports = recomp_config_lookup("RECOMP_LOCKSTEP_PORT", "coop_port");
     const char *delay = recomp_config_lookup("RECOMP_LOCKSTEP_DELAY", "coop_delay");
+    /* Through an online server, with the session code (the launcher's one code). */
+    const char *server = recomp_config_lookup("RECOMP_ONLINE_SERVER", "online_server");
+    const char *via = recomp_config_lookup("RECOMP_ONLINE_VIA", "online_via");
+    const char *code = recomp_config_lookup("RECOMP_LOCKSTEP_CODE", "syslink_code");
     int port = ports && *ports ? atoi(ports) : DEFAULT_PORT;
     struct sockaddr_in bind_addr;
 
@@ -1242,16 +1345,40 @@ int lsnet_init(int64_t *epoch)
         WSAIoctl(g.sock, SIO_UDP_CONNRESET, &report, sizeof report, NULL, 0, &got, NULL, NULL);
     }
 #endif
+    if (via && strcmp(via, "direct") == 0 && !getenv("RECOMP_ONLINE_SERVER"))
+        server = NULL;                       /* an address kept, but not chosen */
+    if (server && *server) {
+        if (!code || strlen(code) < 4) {
+            say("online co-op through a server needs a session code of at least four "
+                "characters (syslink_code)");
+            status("online co-op: no session code (four or more characters) for the online"
+                   " server; playing alone");
+            ls_close(g.sock);
+            return 0;
+        }
+        if (!resolve(server, SERVER_PORT, &g.relay_addr)) {
+            say("the online server \"%s\" is not an address", server);
+            status("online co-op: the online server's address was not found; playing alone");
+            ls_close(g.sock);
+            return 0;
+        }
+        g.relay = 1;
+        snprintf(g.code, sizeof g.code, "%s", code);
+        snprintf(g.server, sizeof g.server, "%s", server);
+    }
     memset(&bind_addr, 0, sizeof bind_addr);
     bind_addr.sin_family = AF_INET;
     bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    bind_addr.sin_port = htons((unsigned short)(g.host ? port : 0));
+    bind_addr.sin_port = htons((unsigned short)(g.host && !g.relay ? port : 0));
     if (bind(g.sock, (struct sockaddr *)&bind_addr, sizeof bind_addr) != 0) {
         say("cannot receive on UDP port %d (another copy hosting?)", port);
         ls_close(g.sock);
         return 0;
     }
-    if (!g.host) {
+    if (!g.host && g.relay) {
+        g.peer = g.relay_addr;               /* the host is reached through the server */
+        g.have_peer = 1;
+    } else if (!g.host) {
         if (!peer || !*peer || !resolve(peer, port, &g.peer)) {
             say("RECOMP_LOCKSTEP_PEER \"%s\" is not an address", peer ? peer : "");
             ls_close(g.sock);
@@ -1271,6 +1398,17 @@ int lsnet_init(int64_t *epoch)
     }
 #endif
     g.on = 1;
+    if (g.relay) {
+        lock();
+        relay_register_locked();
+        unlock();
+    }
+    if (g.host && g.relay) {
+        say("hosting through the online server %s as controller 1; input delay %u frames; "
+            "build %s; settings %s", g.server, g.delay, g.build, g.settings);
+        status("online co-op: reaching the online server");
+        return 1;
+    }
     if (g.host) {
         say("hosting on UDP port %d as controller 1; input delay %u frames; build %s; "
             "settings %s", port, g.delay, g.build, g.settings);
@@ -1286,7 +1424,7 @@ int lsnet_init(int64_t *epoch)
         }
         return 1;
     }
-    join(peer, port);
+    join(g.relay ? g.server : peer, port);
     *epoch = g.epoch;
     {
         char st[128];

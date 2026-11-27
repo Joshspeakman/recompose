@@ -38,6 +38,12 @@
  *     syslink_port = 27610                           [RECOMP_SYSLINK_PORT]
  *     syslink_code = <anything>                      [RECOMP_SYSLINK_CODE]
  *     syslink_upnp = 1                               [RECOMP_SYSLINK_UPNP]
+ *     online_server = name[:port]                    [RECOMP_ONLINE_SERVER]
+ *
+ * With online_server set, host and join both join it: the server (recompose's
+ * tools/online_server) is the switch, and nobody's router needs a port
+ * opened. The game itself decides who hosts the match; the join code
+ * (syslink_code, at least four characters) is the session.
  *
  * host and join speak a small format of their own, not xemu's, because a
  * switch has to know who is in: four bytes ('X' 'L', version, type) ahead
@@ -171,6 +177,7 @@ struct XboxNetLink {
 
 static XboxNetLink *s_link;     /* the one xbox_NetUdpStart opens */
 static XboxNat     *s_nat;      /* or, for syslink = nat, the router */
+static int          s_through_server;   /* joined an online server (online_server) */
 
 static void lock(XboxNetLink *l)
 {
@@ -1000,6 +1007,22 @@ int xbox_NetUdpStart(const uint8_t own_mac[6])
     default:
         break;
     }
+    /* Through an online server: it is the switch, and every copy joins it.
+     * online_via = direct (the settings file's default) leaves an address
+     * that is typed in alone. */
+    {
+        const char *server = recomp_config_lookup("RECOMP_ONLINE_SERVER", "online_server");
+        const char *via = recomp_config_lookup("RECOMP_ONLINE_VIA", "online_via");
+
+        if (via && strcmp(via, "direct") == 0 && !getenv("RECOMP_ONLINE_SERVER"))
+            server = NULL;
+        if (server && *server && (cfg.mode == XBOX_NET_HOST || cfg.mode == XBOX_NET_JOIN)) {
+            cfg.mode = XBOX_NET_JOIN;
+            snprintf(cfg.remote, sizeof cfg.remote, "%s", server);
+            cfg.port = XBOX_NET_SERVER_PORT;
+            s_through_server = 1;
+        }
+    }
 
     s_link = xbox_net_link_open(&cfg, own_mac);
     if (!s_link)
@@ -1026,9 +1049,13 @@ int xbox_NetUdpStart(const uint8_t own_mac[6])
         break;
     }
     case XBOX_NET_JOIN:
-        fprintf(stderr, "[NET] joining the System Link session at %s%s",
-                addr_text(&s_link->remote, who, sizeof who),
-                cfg.code[0] ? " with a join code" : "");
+        if (s_through_server)
+            fprintf(stderr, "[NET] System Link through the online server at %s, session "
+                            "named by the join code", addr_text(&s_link->remote, who, sizeof who));
+        else
+            fprintf(stderr, "[NET] joining the System Link session at %s%s",
+                    addr_text(&s_link->remote, who, sizeof who),
+                    cfg.code[0] ? " with a join code" : "");
         break;
     default:
         break;

@@ -1,0 +1,25 @@
+# The online server on Fly.io. deploy.ps1 and deploy.sh write fly.toml from this, with the
+# app's name and region in place of __APP__ and __REGION__.
+#   - one machine, always running: the sessions live in its memory, and Fly's UDP routing
+#     is for one machine an app (two in one app have stopped receiving after 5 minutes);
+#   - UDP needs a dedicated IPv4 address (flyctl ips allocate-v4), and the same port
+#     outside and inside.
+app = "__APP__"
+primary_region = "__REGION__"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[[services]]
+  internal_port = 27630
+  protocol = "udp"
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 27630
