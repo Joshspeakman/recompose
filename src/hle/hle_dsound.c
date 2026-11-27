@@ -71,6 +71,7 @@ enum {
     SET_FORMAT     = 0x0Cu,   /* tag | channels << 16 | bits << 24 */
     SET_RATE       = 0x10u,
     SET_ALIGN      = 0x14u,
+    SET_PITCH      = 0x18u,   /* the voice's pitch, 1/4096 octave from 48 kHz */
     SET_VOLUME     = 0x1Cu,   /* hundredths of a dB, headroom applied */
     /* The buffer settings as DSOUND 5344 and earlier lay them out; later
      * builds put them 4 bytes on (buf_shift below). */
@@ -1179,6 +1180,49 @@ static void ds_count_report(uint32_t caller)
     fflush(stderr);
 }
 
+/* RECOMP_DSOUND_PITCH_AUDIT=1: at every Play, the rate the voice's settings
+ * say -- the pitch the XDK keeps there, however the title set it, including
+ * through calls not replaced here (CDirectSoundVoice_SetPitch) -- against
+ * the rate the host plays the buffer at. A difference is a pitch change that
+ * is not heard. A buffer whose rate a replaced call set (SetFrequency,
+ * SetPitch: asked_rate) is left out: those replacements do not run the
+ * XDK's body, so its settings still hold the rate before them. The first few
+ * Plays print the raw values too. */
+static void pitch_audit(uint32_t iface, const Buffer *b)
+{
+    static int on = -1, said, mismatches;
+    static unsigned long plays;
+    int32_t pitch;
+    double want;
+    uint32_t got;
+
+    if (on < 0)
+        on = xbox_EnvSwitch("RECOMP_DSOUND_PITCH_AUDIT", 0);
+    if (!on || !b)
+        return;
+    plays++;
+    if (b->asked_rate)
+        return;                          /* set through a replaced call: heard */
+    pitch = (int32_t)setting(iface, SET_PITCH);
+    want = 48000.0 * pow(2.0, (double)pitch / 4096.0);
+    got = b->output_model.sample_rate ? b->output_model.sample_rate : b->model.sample_rate;
+    if (said < 12) {
+        said++;
+        fprintf(stderr, "[DSOUND] pitch audit: buffer %08X format %08X rate %u pitch %d -> %.0f Hz; "
+                "plays at %u Hz\n", iface, setting(iface, SET_FORMAT), setting(iface, SET_RATE),
+                pitch, want, got);
+    }
+    if (got && (want > got * 1.01 || want < got * 0.99)) {
+        mismatches++;
+        if (mismatches <= 40)
+            fprintf(stderr, "[DSOUND] pitch audit: MISMATCH buffer %08X format %08X rate %u: the XDK's pitch %d is %.0f Hz, played at %u Hz (%u plays so far)\n", iface,
+                    setting(iface, SET_FORMAT), setting(iface, SET_RATE), pitch, want, got,
+                    (unsigned)plays);
+    }
+    if ((plays % 500u) == 0u)
+        fprintf(stderr, "[DSOUND] pitch audit: %lu plays, %d mismatches\n", plays, mismatches);
+}
+
 HLE_EXPORT(IDirectSoundBuffer_Play)
 {
     g_ds_calls[DS_CALL_BUF_PLAY]++;
@@ -1251,6 +1295,7 @@ HLE_EXPORT(IDirectSoundBuffer_Play)
     }
     pump(b, now);
     recomp_dsound_buffer_cursor(&b->model, now);
+    pitch_audit(iface, b);
     continuing = b->model.playing && b->output_model.playing &&
                  !(flags & RECOMP_DSOUND_PLAY_FROMSTART);
     if (!continuing)
