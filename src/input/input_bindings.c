@@ -46,18 +46,30 @@
 #define MAX_SOURCES 8
 #define PORTS XBOX_MAX_CONTROLLERS
 
-/* XInput's own left-stick default. A stick is bound as two halves, so the
- * deadzone is applied per half rather than radially: a title that wants a
- * circular one applies its own on top, as it did on the console. */
-#define DEADZONE_DEFAULT 7849
+/* No dead zone of its own for a pad's sticks: the console gave a title the
+ * controller's values as they were, and every title applies its own dead
+ * zone to them (Future Perfect a quarter of the stick). xemu does the same.
+ * This used to be XInput's PC figure, 7849, applied per half and the rest
+ * stretched back to the full range in 256 steps: stacked on the title's own,
+ * a stick did nothing until 43% of the way out in Future Perfect (25% on the
+ * console) and half way out turned at a third of the console's speed. A
+ * bindings file can still ask for one ("deadzone"); 7849, the old default
+ * every file was written with, reads as none. */
+#define DEADZONE_DEFAULT 0
+#define DEADZONE_OLD_DEFAULT 7849
+/* What every source reads as: 0..MAG_MAX, the stick's own range, so a pad's
+ * stick reaches the title with all of its precision. */
+#define MAG_MAX 32767
 
 /* ---- the controls a title can read ------------------------------------- */
 
 enum { K_DIGITAL, K_ANALOG, K_AXIS };
 
-/* XINPUT_GAMEPAD_TRIGGER_THRESHOLD: the value XInput documents as the point
- * a trigger counts as pressed. */
-#define TRIGGER_THRESHOLD 30
+/* Below this a pad's trigger reads as not pulled: only a worn trigger's
+ * rest, a few units. The console gave a title its triggers as they were,
+ * and xemu does; this used to be XInput's PC figure, 30 of 255, so the
+ * first eighth of a trigger's pull did nothing. */
+#define TRIGGER_THRESHOLD 4
 enum { AXIS_LX, AXIS_LY, AXIS_RX, AXIS_RY };
 
 static const struct {
@@ -106,8 +118,10 @@ static const struct { const char *control, *pad, *key; } DEFAULTS[] = {
     { "b",            "pad:b",          "key:X"      },
     { "x",            "pad:x",          "key:A"      },
     { "y",            "pad:y",          "key:S"      },
-    { "black",        "pad:lshoulder",  "key:W"      },
-    { "white",        "pad:rshoulder",  "key:Q"      },
+    /* White on the left shoulder and Black on the right, as Microsoft's own
+     * backward compatibility and xemu put them. */
+    { "black",        "pad:rshoulder",  "key:W"      },
+    { "white",        "pad:lshoulder",  "key:Q"      },
     { "ltrigger",     "pad:lt",         "key:E"      },
     { "rtrigger",     "pad:rt",         "key:R"      },
     { "start",        "pad:start",      "key:RETURN" },
@@ -538,6 +552,8 @@ static const char *parse_controller(const char *p, int index, int *bad)
             set_device(&tmp, value);
         } else if (strcmp(key, "deadzone") == 0) {
             tmp.deadzone = (int)strtol(p, NULL, 10);
+            if (tmp.deadzone == DEADZONE_OLD_DEFAULT)
+                tmp.deadzone = DEADZONE_DEFAULT;     /* the old default, not a choice */
             p = jskip(p);
         } else if (strcmp(key, "bindings") == 0) {
             p = parse_bindings(p, &tmp, bad);
@@ -1295,7 +1311,7 @@ static int axis_value(const RecompPadState *g, int axis)
     }
 }
 
-/* Every source reads as a 0..255 magnitude, whatever it is: that is what
+/* Every source reads as a 0..MAG_MAX magnitude, whatever it is: that is what
  * makes a trigger bindable to a key and a button bindable to a stick. */
 static int wheel_magnitude(int d);
 
@@ -1304,15 +1320,15 @@ static int source_magnitude(const Source *s, KeyCache *kc,
 {
     switch (s->kind) {
     case SRC_KEY:
-        return key_down(kc, s->arg) ? 255 : 0;
+        return key_down(kc, s->arg) ? MAG_MAX : 0;
     case SRC_MOUSE:
         if (s->arg >= RECOMP_MOUSE_BUTTONS)
-            return wheel_magnitude(s->arg - RECOMP_MOUSE_BUTTONS);
-        return (g_mouse_held & (1L << s->arg)) ? 255 : 0;
+            return wheel_magnitude(s->arg - RECOMP_MOUSE_BUTTONS) ? MAG_MAX : 0;
+        return (g_mouse_held & (1L << s->arg)) ? MAG_MAX : 0;
     case SRC_PAD_BUTTON:
         if (!have_pad)
             return 0;
-        return (pad->buttons & PAD_BITS[s->arg]) ? 255 : 0;
+        return (pad->buttons & PAD_BITS[s->arg]) ? MAG_MAX : 0;
     case SRC_PAD_TRIGGER: {
         /* A resting trigger can read a few units above zero, and a title
          * that treats any non-zero analog button as pressed would fire
@@ -1322,7 +1338,7 @@ static int source_magnitude(const Source *s, KeyCache *kc,
         if (!have_pad)
             return 0;
         t = s->arg ? pad->right_trigger : pad->left_trigger;
-        return t < TRIGGER_THRESHOLD ? 0 : t;
+        return t < TRIGGER_THRESHOLD ? 0 : (t * MAG_MAX + 127) / 255;
     }
     case SRC_PAD_AXIS: {
         int v, span;
@@ -1331,12 +1347,14 @@ static int source_magnitude(const Source *s, KeyCache *kc,
         v = axis_value(pad, s->arg) * s->sign;
         if (v <= deadzone)
             return 0;
-        if (v > 32767)
-            v = 32767;
-        span = 32767 - deadzone;
+        if (v > MAG_MAX)
+            v = MAG_MAX;
+        if (deadzone <= 0)
+            return v;                    /* the stick as it is, as on the console */
+        span = MAG_MAX - deadzone;
         if (span <= 0)
-            return 255;
-        return (v - deadzone) * 255 / span;
+            return MAG_MAX;
+        return (int)((long)(v - deadzone) * MAG_MAX / span);
     }
     default:
         return 0;
@@ -1547,13 +1565,15 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
         say_first_press(port, CONTROLS[i].name);
         switch (CONTROLS[i].kind) {
         case K_DIGITAL:
-            if (mag >= 64)
+            if (mag >= MAG_MAX / 4)        /* a quarter of the way, as at 64 of 255 */
                 out->wButtons |= CONTROLS[i].arg;
             break;
-        case K_ANALOG:
-            if (mag > out->bAnalogButtons[CONTROLS[i].arg])
-                out->bAnalogButtons[CONTROLS[i].arg] = (BYTE)mag;
+        case K_ANALOG: {
+            int a = (mag * 255 + MAG_MAX / 2) / MAG_MAX;   /* 0..255 again, rounded */
+            if (a > out->bAnalogButtons[CONTROLS[i].arg])
+                out->bAnalogButtons[CONTROLS[i].arg] = (BYTE)a;
             break;
+        }
         default:
             axis[CONTROLS[i].arg] += CONTROLS[i].sign * mag;
             break;
@@ -1561,9 +1581,9 @@ int recomp_bindings_sample(unsigned port, XBOX_GAMEPAD *out)
     }
     for (i = 0; i < 4; i++) {
         long v;
-        if (axis[i] > 255)  axis[i] = 255;
-        if (axis[i] < -255) axis[i] = -255;
-        v = (long)axis[i] * 32767 / 255;
+        if (axis[i] > MAG_MAX)  axis[i] = MAG_MAX;
+        if (axis[i] < -MAG_MAX) axis[i] = -MAG_MAX;
+        v = (long)axis[i];
         switch (i) {
         case AXIS_LX: out->sThumbLX = (SHORT)v; break;
         case AXIS_LY: out->sThumbLY = (SHORT)v; break;

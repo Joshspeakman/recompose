@@ -54,8 +54,8 @@ static const struct { const char *pad, *key; } k_defaults[BIND_CONTROLS] = {
     { "pad:b",          "key:X"      },   /* b */
     { "pad:x",          "key:A"      },   /* x */
     { "pad:y",          "key:S"      },   /* y */
-    { "pad:lshoulder",  "key:W"      },   /* black */
-    { "pad:rshoulder",  "key:Q"      },   /* white */
+    { "pad:rshoulder",  "key:W"      },   /* black: the right shoulder, as xemu */
+    { "pad:lshoulder",  "key:Q"      },   /* white: the left */
     { "pad:start",      "key:RETURN" },   /* start */
     { "pad:back",       "key:BACK"   },   /* back */
     { "pad:lt",         "key:E"      },   /* ltrigger */
@@ -84,7 +84,7 @@ void bind_defaults(BindConfig *c)
     for (p = 0; p < BIND_PORTS; p++) {
         c->port[p].device   = BIND_DEV_PAD;
         c->port[p].pad      = p;
-        c->port[p].deadzone = 7849;          /* XInput's own left-stick value */
+        c->port[p].deadzone = 0;             /* none: the title applies its own (input_bindings.c) */
         for (i = 0; i < BIND_CONTROLS; i++) {
             snprintf(c->port[p].pad_src[i], BIND_SOURCE_LEN, "%s", k_defaults[i].pad);
             /* The keyboard column is port 1 only, as in the runtime: the
@@ -355,6 +355,8 @@ static const char *parse_controller(const char *p, BindConfig *c, int index)
             set_device(&tmp, value);
         } else if (strcmp(key, "deadzone") == 0) {
             tmp.deadzone = (int)strtol(p, NULL, 10);
+            if (tmp.deadzone == 7849)
+                tmp.deadzone = 0;                    /* the old default, not a choice */
             p = jskip(p);
         } else if (strcmp(key, "bindings") == 0) {
             p = parse_bindings_obj(p, &tmp);

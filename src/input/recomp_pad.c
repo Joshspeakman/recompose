@@ -259,6 +259,56 @@ const char *recomp_pad_api_name(void)
     return recomp_pad_api() == RECOMP_PAD_API_XINPUT ? "XInput" : "SDL3";
 }
 
+/* RECOMP_PAD_FAKE=<from ms>-<to ms>:<lx>,<ly>,<rx>,<ry>[,<lt>,<rt>[,<buttons>]];...
+ * (a test): pad 1 held at those values -- the sticks as signed 16-bit, up
+ * positive as the game reads them, the triggers 0..255, the buttons as
+ * RecompPadState's bits -- between those times after the first read, up to
+ * eight windows; outside them it is a pad at rest. What a controller's
+ * stick does to the game can then be measured without a hand on one, and
+ * what reaches the game read back from a lockstep recording. */
+static int fake_read(int slot, RecompPadState *out)
+{
+    static int ready, windows;
+    static unsigned long long from[8], to[8], start;
+    static int v[8][7];
+    unsigned long long now;
+    int w;
+
+    if (!ready) {
+        const char *e = getenv("RECOMP_PAD_FAKE");
+
+        ready = 1;
+        while (e && *e && windows < 8) {
+            int *x = v[windows];
+            int n = sscanf(e, "%llu-%llu:%d,%d,%d,%d,%d,%d,%d", &from[windows], &to[windows],
+                           &x[0], &x[1], &x[2], &x[3], &x[4], &x[5], &x[6]);
+            if (n < 6)
+                break;
+            if (n < 8) x[4] = x[5] = 0;
+            if (n < 9) x[6] = 0;
+            fprintf(stderr, "[PAD] RECOMP_PAD_FAKE: %llu-%llu ms sticks %d,%d %d,%d triggers %d,%d buttons %04X\n",
+                    from[windows], to[windows], x[0], x[1], x[2], x[3], x[4], x[5], x[6]);
+            windows++;
+            e = strchr(e, ';');
+            if (e)
+                e++;
+        }
+        start = SDL_GetTicks();
+    }
+    if (!windows || slot != 0)
+        return 0;
+    now = SDL_GetTicks() - start;
+    memset(out, 0, sizeof *out);
+    for (w = 0; w < windows; w++)
+        if (now >= from[w] && now < to[w]) {
+            out->lx = (int16_t)v[w][0]; out->ly = (int16_t)v[w][1];
+            out->rx = (int16_t)v[w][2]; out->ry = (int16_t)v[w][3];
+            out->left_trigger = (uint8_t)v[w][4]; out->right_trigger = (uint8_t)v[w][5];
+            out->buttons = (uint16_t)v[w][6];
+        }
+    return 1;
+}
+
 int recomp_pad_read(int slot, RecompPadState *out)
 {
     if (!out)
@@ -266,6 +316,8 @@ int recomp_pad_read(int slot, RecompPadState *out)
     memset(out, 0, sizeof *out);
     if (slot < 0 || slot >= RECOMP_PAD_SLOTS)
         return 0;
+    if (fake_read(slot, out))
+        return 1;
 #if defined(_WIN32)
     if (recomp_pad_api() == RECOMP_PAD_API_XINPUT)
         return xinput_read(slot, out);
