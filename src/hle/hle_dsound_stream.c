@@ -893,6 +893,7 @@ HLE_ORIGINAL(DirectSoundCreateStream);
 HLE_ORIGINAL(CDirectSound_CreateSoundStream);
 HLE_ORIGINAL(CDirectSoundStream_SetVolume);
 HLE_ORIGINAL(CDirectSoundStream_Release);
+HLE_ORIGINAL(CDirectSoundStream_SetFormat);
 
 /* Set by the inner CDirectSound_CreateSoundStream, so the outer
  * DirectSoundCreateStream around it does not record the same creation a
@@ -1246,6 +1247,77 @@ HLE_EXPORT(CDirectSoundStream_Release)
         }
         unlock();
     }
+}
+
+/* HRESULT CDirectSoundStream::SetFormat(this, LPCWAVEFORMATEX pwfx): the stream
+ * takes another format, from its next packet on. Future Perfect makes its
+ * streams in one format (44,100 Hz ADPCM) and gives each the format of what it
+ * is about to play -- its dialogue is 22,042 Hz -- with this call, which
+ * TimeSplitters 2's XDK does not have. Without it the stream kept the format
+ * it was made in: every line of dialogue played at twice its rate, an octave
+ * high (a voice measured at 345 Hz, 172 at its own rate), and the packets
+ * completed twice as fast. The title's own body runs, so its voice and what
+ * GetInfo answers change as the XDK changes them; the stream here takes the
+ * new format, and its host voice starts again in it, from the clock's
+ * position, as after a flush. */
+HLE_EXPORT(CDirectSoundStream_SetFormat)
+{
+    static int said;
+    uint32_t object = HLE_ARG(0), wfx = HLE_ARG(1);
+    uint64_t now = now_ms();
+    Stream *s;
+
+    stream_trace("SetFormat", object, wfx, 0u);
+    lock();
+    s = find_by_object(object);
+    if (s && wfx && guest_readable(wfx, 16u)) {
+        uint32_t tag = HLE_MEM32(wfx) & 0xFFFFu, channels = HLE_MEM32(wfx) >> 16;
+        uint32_t rate = HLE_MEM32(wfx + 4u), align = HLE_MEM32(wfx + 12u) & 0xFFFFu;
+        uint32_t bits = HLE_MEM32(wfx + 12u) >> 16;
+
+        if (tag != s->tag || channels != s->channels || rate != s->rate ||
+            align != s->align || bits != s->bits) {
+            if (said < 8 || stream_log()) {
+                said++;
+                fprintf(stderr, "[DSOUND] stream %08X: SetFormat tag %04X %u ch %u Hz %u bit "
+                        "align %u (was %04X %u ch %u Hz)%s\n", s->iface, tag, channels,
+                        rate, bits, align, s->tag, s->channels, s->rate,
+                        s->count ? " with packets still queued" : "");
+                fflush(stderr);
+            }
+            /* The clock where it is now, counted in the old format; from
+             * here on, in the new one. */
+            s->consumed_base = consumed(s, now);
+            if (s->resumed_ms)
+                s->resumed_ms = now;
+            s->tag      = tag;
+            s->channels = channels;
+            s->rate     = rate;
+            s->align    = align;
+            s->bits     = bits;
+            s->output = s->channels >= 1u && s->channels <= 2u &&
+                        s->rate >= 1000u && s->rate <= 200000u &&
+                        ((s->tag == TAG_PCM && (s->bits == 8u || s->bits == 16u)) ||
+                         (s->tag == TAG_ADPCM && s->bits == 4u));
+            s->last_event = "format";
+            /* The host voice starts again from what is being heard now: what it
+             * had queued past that, in the old rate, is sent again in the new.
+             * Future Perfect changes only the rate (its music between tracks,
+             * sometimes with the next track's packets already queued, as the
+             * XDK's SetFormat allows), so the packets' positions, counted in
+             * decoded bytes, stay where they were. */
+            s->sent = s->consumed_base;
+            reset_voice(s);
+            s->play_origin = s->sent;
+            s->play_anchored = 0;
+        }
+    }
+    unlock();
+    if (hle_original_CDirectSoundStream_SetFormat) {
+        HLE_CALL_ORIGINAL(CDirectSoundStream_SetFormat);
+        return;
+    }
+    HLE_RETURN(DS_OK);
 }
 
 /* HRESULT CDirectSoundStream::SetVolume(this, LONG lVolume), hundredths of a
