@@ -254,21 +254,50 @@ static void px_rect(ThemeRect r, int *x0, int *y0, int *x1, int *y1)
 #define RGB_G(v) (int)(((v) >> 8) & 0xFF)
 #define RGB_B(v) (int)((v) & 0xFF)
 
+/* A run of n pixels washed toward rgb by a/256, two channels at a time: the
+ * red and blue in one word's lanes, the green in another, each lane wide
+ * enough for a byte times 256. A wash over the whole window is a few
+ * milliseconds this way, where blend()'s doubles were most of a frame. */
+static void span_wash(uint32_t *d, int n, uint32_t rgb, int a)
+{
+    const uint32_t crb = (rgb & 0xFF00FFu) * (uint32_t)a, cg = (rgb & 0x00FF00u) * (uint32_t)a;
+    const uint32_t k = 256u - (uint32_t)a;
+    int i;
+
+    if (a <= 0)
+        return;
+    if (a >= 256) {
+        for (i = 0; i < n; i++)
+            d[i] = rgb & 0xFFFFFFu;
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        uint32_t v = d[i];
+
+        d[i] = (((crb + (v & 0xFF00FFu) * k) >> 8) & 0xFF00FFu) |
+               (((cg + (v & 0x00FF00u) * k) >> 8) & 0x00FF00u);
+    }
+}
+
+static int alpha256(double a)
+{
+    return a <= 0 ? 0 : a >= 1 ? 256 : (int)(a * 256.0 + 0.5);
+}
+
 void theme_fill(ThemeRect r, uint32_t rgb, double alpha)
 {
-    int x0, y0, x1, y1, x, y;
+    int x0, y0, x1, y1, y, a = alpha256(alpha);
 
-    if (!theme_px || alpha <= 0)
+    if (!theme_px || a <= 0)
         return;
     px_rect(r, &x0, &y0, &x1, &y1);
-    for (y = y0; y < y1; y++)
-        for (x = x0; x < x1; x++)
-            blend(x, y, RGB_R(rgb), RGB_G(rgb), RGB_B(rgb), alpha);
+    for (y = y0; y < y1 && x1 > x0; y++)
+        span_wash(&theme_px[(size_t)y * theme_w + x0], x1 - x0, rgb, a);
 }
 
 void theme_vgrad(ThemeRect r, int n, const double *at, const uint32_t *rgb, const double *alpha)
 {
-    int x0, y0, x1, y1, x, y, k;
+    int x0, y0, x1, y1, y, k;
 
     if (!theme_px || n < 1)
         return;
@@ -289,10 +318,10 @@ void theme_vgrad(ThemeRect r, int n, const double *at, const uint32_t *rgb, cons
             cb = (int)(RGB_B(rgb[k]) + (RGB_B(rgb[k + 1]) - RGB_B(rgb[k])) * u);
             a = alpha[k] + (alpha[k + 1] - alpha[k]) * u;
         }
-        if (a <= 0)
+        if (a <= 0 || x1 <= x0)
             continue;
-        for (x = x0; x < x1; x++)
-            blend(x, y, cr, cg, cb, a);
+        span_wash(&theme_px[(size_t)y * theme_w + x0], x1 - x0,
+                  ((uint32_t)cr << 16) | ((uint32_t)cg << 8) | (uint32_t)cb, alpha256(a));
     }
 }
 
@@ -930,5 +959,205 @@ void theme_arrows(ThemeRect r, int can_left, int can_right, double lit)
             if (can_right)
                 blend(right - i, cy + j, (((THEME_ACCENT_RGB) >> 16) & 0xFF), (((THEME_ACCENT_RGB) >> 8) & 0xFF), ((THEME_ACCENT_RGB) & 0xFF), a);
         }
+    }
+}
+
+/* ----------------------------------------------------- the hero layout's */
+
+void theme_hgrad(ThemeRect r, int n, const double *at, const uint32_t *rgb, const double *alpha)
+{
+    int x0, y0, x1, y1, x, y, k;
+    uint32_t *col;
+    int *ca;
+
+    if (!theme_px || n < 1)
+        return;
+    px_rect(r, &x0, &y0, &x1, &y1);
+    if (x1 <= x0 || y1 <= y0)
+        return;
+    col = malloc((size_t)(x1 - x0) * sizeof *col);
+    ca = malloc((size_t)(x1 - x0) * sizeof *ca);
+    if (!col || !ca) {
+        free(col);
+        free(ca);
+        return;
+    }
+    /* Each column's colour and alpha, once; then every row is the same run. */
+    for (x = x0; x < x1; x++) {
+        double t = r.w > 0 ? ((x + 0.5) / theme_scale - r.x) / r.w : 0, u, a;
+        int cr, cg, cb;
+
+        for (k = 0; k + 1 < n && t > at[k + 1]; k++)
+            ;
+        if (k + 1 >= n || t <= at[0]) {
+            k = t <= at[0] ? 0 : n - 1;
+            cr = RGB_R(rgb[k]); cg = RGB_G(rgb[k]); cb = RGB_B(rgb[k]); a = alpha[k];
+        } else {
+            u = (t - at[k]) / (at[k + 1] - at[k] > 1e-9 ? at[k + 1] - at[k] : 1e-9);
+            cr = (int)(RGB_R(rgb[k]) + (RGB_R(rgb[k + 1]) - RGB_R(rgb[k])) * u);
+            cg = (int)(RGB_G(rgb[k]) + (RGB_G(rgb[k + 1]) - RGB_G(rgb[k])) * u);
+            cb = (int)(RGB_B(rgb[k]) + (RGB_B(rgb[k + 1]) - RGB_B(rgb[k])) * u);
+            a = alpha[k] + (alpha[k + 1] - alpha[k]) * u;
+        }
+        col[x - x0] = ((uint32_t)cr << 16) | ((uint32_t)cg << 8) | (uint32_t)cb;
+        ca[x - x0] = alpha256(a);
+    }
+    for (y = y0; y < y1; y++) {
+        uint32_t *d = &theme_px[(size_t)y * theme_w];
+
+        for (x = x0; x < x1; x++)
+            span_wash(&d[x], 1, col[x - x0], ca[x - x0]);
+    }
+    free(col);
+    free(ca);
+}
+
+/* A picture over the whole window: scaled once into a slot (box filtered,
+ * as theme_cover's), then each frame a window of it is taken at a fraction
+ * of a pixel's offset -- a drift is a translation, so the four weights of
+ * the bilinear sample are the same for every pixel, in sixteenths of a
+ * pixel each way, and a frame costs a few milliseconds. */
+#define HERO_SLOTS 8
+typedef struct {
+    const uint32_t *src;
+    int sw, sh, tw, th;
+    double zoom;
+    uint32_t *px;
+    int pw, ph;
+    uint64_t used;
+} Hero;
+static Hero g_hero[HERO_SLOTS];
+static uint64_t g_hero_clock;
+
+static Hero *hero_ready(int slot, const uint32_t *argb, int w, int h, double zoom)
+{
+    Hero *k;
+    double sc;
+    int pw, ph;
+
+    if (slot < 0 || slot >= HERO_SLOTS || !argb || w <= 0 || h <= 0 || !theme_px)
+        return NULL;
+    k = &g_hero[slot];
+    if (zoom < 1)
+        zoom = 1;
+    if (k->px && k->src == argb && k->sw == w && k->sh == h && k->tw == theme_w &&
+        k->th == theme_h && k->zoom == zoom) {
+        k->used = ++g_hero_clock;
+        return k;
+    }
+    sc = ((double)theme_w / w > (double)theme_h / h ? (double)theme_w / w : (double)theme_h / h) * zoom;
+    pw = (int)ceil(w * sc);
+    ph = (int)ceil(h * sc);
+    if (pw < theme_w + 1) pw = theme_w + 1;     /* a pixel to spare for the sample's right tap */
+    if (ph < theme_h + 1) ph = theme_h + 1;
+    free(k->px);
+    memset(k, 0, sizeof *k);
+    k->px = scale_box(argb, w, h, 0, 0, w, h, pw, ph);
+    if (!k->px)
+        return NULL;
+    k->src = argb; k->sw = w; k->sh = h; k->tw = theme_w; k->th = theme_h; k->zoom = zoom;
+    k->pw = pw; k->ph = ph;
+    k->used = ++g_hero_clock;
+    return k;
+}
+
+int theme_hero_prepare(int slot, const uint32_t *argb, int w, int h, double zoom)
+{
+    return hero_ready(slot, argb, w, h, zoom) != NULL;
+}
+
+void theme_hero(int slot, const uint32_t *argb, int w, int h, double zoom, double fx, double fy,
+                double dx, double dy, double alpha)
+{
+    Hero *k = hero_ready(slot, argb, w, h, zoom);
+    double ox, oy, sx, sy;
+    int ix, iy, wx, wy, w00, w10, w01, w11, a = alpha256(alpha), x, y;
+
+    if (!k || a <= 0)
+        return;
+    sx = k->pw - 1 - theme_w;                    /* what is spare each way */
+    sy = k->ph - 1 - theme_h;
+    if (sx < 0) sx = 0;
+    if (sy < 0) sy = 0;
+    ox = sx * (fx < 0 ? 0 : fx > 1 ? 1 : fx) + dx * theme_scale;
+    oy = sy * (fy < 0 ? 0 : fy > 1 ? 1 : fy) + dy * theme_scale;
+    if (ox < 0) ox = 0;
+    if (oy < 0) oy = 0;
+    if (ox > sx) ox = sx;
+    if (oy > sy) oy = sy;
+    ix = (int)ox;
+    iy = (int)oy;
+    wx = (int)((ox - ix) * 16.0 + 0.5);
+    wy = (int)((oy - iy) * 16.0 + 0.5);
+    if (wx > 15) wx = 15;
+    if (wy > 15) wy = 15;
+    w00 = (16 - wx) * (16 - wy); w10 = wx * (16 - wy); w01 = (16 - wx) * wy; w11 = wx * wy;
+    for (y = 0; y < theme_h; y++) {
+        const uint32_t *s0 = &k->px[(size_t)(iy + y) * k->pw + ix];
+        const uint32_t *s1 = s0 + k->pw;
+        uint32_t *d = &theme_px[(size_t)y * theme_w];
+
+        for (x = 0; x < theme_w; x++) {
+            uint32_t p00 = s0[x], p10 = s0[x + 1], p01 = s1[x], p11 = s1[x + 1];
+            uint32_t rb = (((p00 & 0xFF00FFu) * w00 + (p10 & 0xFF00FFu) * w10 +
+                            (p01 & 0xFF00FFu) * w01 + (p11 & 0xFF00FFu) * w11) >> 8) & 0xFF00FFu;
+            uint32_t g = (((p00 & 0x00FF00u) * w00 + (p10 & 0x00FF00u) * w10 +
+                           (p01 & 0x00FF00u) * w01 + (p11 & 0x00FF00u) * w11) >> 8) & 0x00FF00u;
+
+            if (a >= 256)
+                d[x] = rb | g;
+            else
+                span_wash(&d[x], 1, rb | g, a);
+        }
+    }
+}
+
+void theme_hero_forget(void)
+{
+    int i;
+
+    for (i = 0; i < HERO_SLOTS; i++) {
+        free(g_hero[i].px);
+        memset(&g_hero[i], 0, sizeof g_hero[i]);
+    }
+}
+
+int theme_thumb_make(ThemeThumb *t, const uint32_t *argb, int w, int h, int uw, int uh,
+                     double fx, double fy)
+{
+    const double s = theme_scale;
+    int pw = (int)ceil(uw * s), ph = (int)ceil(uh * s);
+    double sc, cw, ch;
+
+    if (!t)
+        return 0;
+    t->px = NULL;
+    t->pw = t->ph = 0;
+    if (!argb || w <= 0 || h <= 0 || pw <= 0 || ph <= 0)
+        return 0;
+    sc = (double)pw / w > (double)ph / h ? (double)pw / w : (double)ph / h;
+    cw = pw / sc;
+    ch = ph / sc;
+    t->px = scale_box(argb, w, h, (w - cw) * fx, (h - ch) * fy, (w - cw) * fx + cw,
+                      (h - ch) * fy + ch, pw, ph);
+    if (!t->px)
+        return 0;
+    t->pw = pw;
+    t->ph = ph;
+    return 1;
+}
+
+void theme_thumb_draw(const ThemeThumb *t, double x, double y, double alpha)
+{
+    if (t && t->px && theme_px)
+        draw_kept(t->px, t->pw, t->ph, (int)floor(x * theme_scale), (int)floor(y * theme_scale), alpha);
+}
+
+void theme_thumb_free(ThemeThumb *t)
+{
+    if (t) {
+        free(t->px);
+        t->px = NULL;
+        t->pw = t->ph = 0;
     }
 }

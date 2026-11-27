@@ -26,7 +26,7 @@
 # title's CMakeLists need not ask which host it is on.
 
 function(recomp_add_launcher TARGET GAME_EXE)
-    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP;SHOWCASE" "DEFAULTS;BRAND;ICON;THEME;LOGO;GAMES" "" ${ARGN})
+    cmake_parse_arguments(_launcher "NO_WIDESCREEN;COOP;SHOWCASE;HERO" "DEFAULTS;BRAND;ICON;THEME;LOGO;GAMES" "" ${ARGN})
     set(_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
 
     if(WIN32)
@@ -38,6 +38,7 @@ function(recomp_add_launcher TARGET GAME_EXE)
             ${_dir}/launcher_bindings.c
             ${_dir}/launcher_art.c
             ${_dir}/launcher_image.c
+            ${_dir}/launcher_extras.c
         )
         if(COMMAND xboxrecomp_icon_rc)
             # ICON <file.ico>: the title's own; else XBOXRECOMP_TITLE_ICON, else
@@ -58,6 +59,7 @@ function(recomp_add_launcher TARGET GAME_EXE)
             ${_dir}/launcher_bindings.c
             ${_dir}/launcher_art.c
             ${_dir}/launcher_image.c
+            ${_dir}/launcher_extras.c
         )
         # Objective-C, compiled by the C compiler (clang on any Mac) so a
         # title need not enable another language for one small file.
@@ -79,6 +81,7 @@ function(recomp_add_launcher TARGET GAME_EXE)
             ${_dir}/launcher_bindings.c
             ${_dir}/launcher_art.c
             ${_dir}/launcher_image.c
+            ${_dir}/launcher_extras.c
         )
         target_link_libraries(${TARGET} PRIVATE Freetype::Freetype Fontconfig::Fontconfig m)
     else()
@@ -158,8 +161,15 @@ function(recomp_add_launcher TARGET GAME_EXE)
     endif()
     # SHOWCASE: the other native ports' launch window (launcher_showcase.inc):
     # the game's art and logo, renderer cards, tiles that open the settings.
-    if(_launcher_SHOWCASE)
+    if(_launcher_SHOWCASE OR _launcher_HERO)
         target_compile_definitions(${TARGET} PRIVATE LAUNCHER_SHOWCASE=1)
+    endif()
+    # HERO: the showcase's settings and screens in another layout
+    # (launcher_hero.inc): the picked game's own front end across the whole
+    # window, going from picture to picture, its menu at the right, and
+    # Extras (manuals, videos, pictures and links the player adds).
+    if(_launcher_HERO)
+        target_compile_definitions(${TARGET} PRIVATE LAUNCHER_HERO=1)
     endif()
     # BRAND <name>: what the window is called -- the project's name rather
     # than the toolkit's. Without it, "Recompose - <the game's name>".

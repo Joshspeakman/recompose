@@ -110,7 +110,8 @@ void theme_text(ThemeRect r, const char *text, int size, int weight,
 void theme_text_ex(ThemeRect r, const char *text, int size, int weight, COLORREF colour,
                    ThemeAlign align, int tracking, int face, int shadow)
 {
-    static const char *const faces[] = { "Segoe UI", "Bahnschrift", "Bahnschrift" };
+    static const char *const faces[] = { "Segoe UI", "Bahnschrift", "Bahnschrift",
+                                         "Bahnschrift SemiBold Condensed", "Bahnschrift Condensed" };
     WCHAR wide[512];
     HFONT font, old;
     TEXTMETRICW tm;
@@ -119,13 +120,14 @@ void theme_text_ex(ThemeRect r, const char *text, int size, int weight, COLORREF
 
     if (!g_dc || !text)
         return;
-    if (face < 0 || face > 2)
+    if (face < 0 || face > 4)
         face = 0;
     len = MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, 510);
     if (len <= 1)
         return;
     len--;                                         /* without the terminator */
-    font = CreateFontA(-MulDiv(size, 96, 72), 0, 0, 0, face == 2 ? 700 : weight, FALSE, FALSE,
+    font = CreateFontA(-MulDiv(size, 96, 72), 0, 0, 0,
+                       face == 2 || face == 4 ? 700 : face == 3 ? 400 : weight, FALSE, FALSE,
                        FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
                        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, faces[face]);
     if (!font)
@@ -157,6 +159,38 @@ void theme_text_ex(ThemeRect r, const char *text, int size, int weight, COLORREF
     SetTextCharacterExtra(g_dc, 0);
     SelectObject(g_dc, old);
     DeleteObject(font);
+}
+
+int theme_text_width(const char *text, int size, int weight, int tracking, int face)
+{
+    static const char *const faces[] = { "Segoe UI", "Bahnschrift", "Bahnschrift",
+                                         "Bahnschrift SemiBold Condensed", "Bahnschrift Condensed" };
+    WCHAR wide[512];
+    HFONT font, old;
+    SIZE sz;
+    int len;
+
+    if (!g_dc || !text)
+        return 0;
+    if (face < 0 || face > 4)
+        face = 0;
+    len = MultiByteToWideChar(CP_UTF8, 0, text, -1, wide, 510);
+    if (len <= 1)
+        return 0;
+    len--;
+    font = CreateFontA(-MulDiv(size, 96, 72), 0, 0, 0,
+                       face == 2 || face == 4 ? 700 : face == 3 ? 400 : weight, FALSE, FALSE,
+                       FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, faces[face]);
+    if (!font)
+        return 0;
+    old = (HFONT)SelectObject(g_dc, font);
+    SetTextCharacterExtra(g_dc, tracking);
+    GetTextExtentPoint32W(g_dc, wide, len, &sz);
+    SetTextCharacterExtra(g_dc, 0);
+    SelectObject(g_dc, old);
+    DeleteObject(font);
+    return sz.cx - tracking;
 }
 
 void theme_text_wrapped(ThemeRect r, const char *text, int size, COLORREF colour)

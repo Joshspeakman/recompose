@@ -64,6 +64,18 @@ int lhost_open_folder(const char *path)
     return SDL_OpenURL(url);
 }
 
+int lhost_open(const char *path_or_url)
+{
+    char url[2100];
+
+    if (!path_or_url || !path_or_url[0])
+        return 0;
+    if (strstr(path_or_url, "://"))
+        return SDL_OpenURL(path_or_url);
+    snprintf(url, sizeof url, "file://%s", path_or_url);
+    return SDL_OpenURL(url);
+}
+
 uint64_t lhost_ticks(void)
 {
     return SDL_GetTicks();

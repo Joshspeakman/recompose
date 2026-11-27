@@ -90,6 +90,10 @@ static int g_content_bottom = LAUNCHER_WINDOW_H - 96;
 #ifdef LAUNCHER_SHOWCASE
 static int sc_nav(int dx, int dy, int accept, int cancel, int tabdelta);   /* launcher_showcase.inc */
 #endif
+#ifdef LAUNCHER_HERO
+static void hx_tick(void);                /* launcher_hero.inc */
+static void hx_key(int key);
+#endif
 #ifdef LAUNCHER_GAMES
 static void game_pick(int i);             /* below: everything becomes that game's */
 #endif
@@ -2833,7 +2837,9 @@ static void draw_tab_body(void)
     (void)r;
 }
 
-#ifdef LAUNCHER_SHOWCASE
+#if defined(LAUNCHER_HERO)
+#include "launcher_hero.inc"
+#elif defined(LAUNCHER_SHOWCASE)
 #include "launcher_showcase.inc"
 #endif
 
@@ -3178,7 +3184,11 @@ void launcher_key(int key, int shift)
     case LKEY_RETURN: nav(0, 0, 1, 0, 0); break;
     case LKEY_ESCAPE: nav(0, 0, 0, 1, 0); break;
     case LKEY_TAB:    nav(0, 0, 0, 0, shift ? -1 : 1); break;
-    default: break;
+    default:
+#ifdef LAUNCHER_HERO
+        hx_key(key);
+#endif
+        break;
     }
 }
 
@@ -3357,6 +3367,9 @@ void launcher_tick(void)
         release_tick();
     upd_tick();
     g_pad_seen = pad_poll(&dx, &dy, &a, &b, &t);
+#ifdef LAUNCHER_HERO
+    hx_tick();
+#endif
     if (g_capturing)
         capture_tick();             /* the press is the answer, not a move */
     else if (g_pad_seen && (dx || dy || a || b || t))

@@ -183,8 +183,34 @@ void theme_picture_glow(ThemeRect r, const uint32_t *argb, int w, int h, ThemeAl
                         uint32_t rgb, double alpha, int blur, int slot);
 /* Text in one of three faces, with letter spacing (window units) and a dark
  * shadow under it. */
-enum { THEME_FACE_BODY, THEME_FACE_DISPLAY, THEME_FACE_HEAVY };
+/* CONDENSED and CONDENSED_BOLD: the display face's narrow cuts (the hero
+ * layout's menu); a host with one face draws them in it. */
+enum { THEME_FACE_BODY, THEME_FACE_DISPLAY, THEME_FACE_HEAVY, THEME_FACE_CONDENSED,
+       THEME_FACE_CONDENSED_BOLD };
 void theme_text_ex(ThemeRect r, const char *text, int size, int weight, COLORREF colour,
                    ThemeAlign align, int tracking, int face, int shadow);
+/* How wide theme_text_ex draws `text` (window units): a row of words laid
+ * out one after another. A host that cannot measure says about how wide. */
+int  theme_text_width(const char *text, int size, int weight, int tracking, int face);
+
+/* ---- the hero layout's pieces (recomp_add_launcher HERO) ---- */
+/* A horizontal gradient through n stops, `at` from 0 (left) to 1 (right). */
+void theme_hgrad(ThemeRect r, int n, const double *at, const uint32_t *rgb, const double *alpha);
+/* A picture over the whole window, cropped to the window's shape and `zoom`
+ * (1 or more) times as large, the crop at (fx, fy) in 0..1 of what is spare,
+ * moved (dx, dy) window units further (a drift), at `alpha`. The scaled copy
+ * is kept in `slot` (0..7), so moving it costs a sample per pixel and no
+ * rescale; theme_hero_prepare scales it ahead of its turn. */
+void theme_hero(int slot, const uint32_t *argb, int w, int h, double zoom, double fx, double fy,
+                double dx, double dy, double alpha);
+int  theme_hero_prepare(int slot, const uint32_t *argb, int w, int h, double zoom);
+void theme_hero_forget(void);
+/* A picture scaled once to fill uw by uh window units (cropped at fx, fy),
+ * kept by the caller: a list's thumbnails, more than the eight slots. */
+typedef struct ThemeThumb { uint32_t *px; int pw, ph; } ThemeThumb;
+int  theme_thumb_make(ThemeThumb *t, const uint32_t *argb, int w, int h, int uw, int uh,
+                      double fx, double fy);
+void theme_thumb_draw(const ThemeThumb *t, double x, double y, double alpha);
+void theme_thumb_free(ThemeThumb *t);
 
 #endif /* XBOXRECOMP_LAUNCHER_THEME_H */

@@ -29,6 +29,16 @@ int lhost_open_folder(const char *path)
     return path && (INT_PTR)ShellExecuteA(NULL, "open", path, NULL, NULL, SW_SHOWNORMAL) > 32;
 }
 
+int lhost_open(const char *path_or_url)
+{
+    WCHAR wide[2048];
+
+    if (!path_or_url || !path_or_url[0] ||
+        !MultiByteToWideChar(CP_UTF8, 0, path_or_url, -1, wide, (int)(sizeof wide / sizeof wide[0])))
+        return 0;
+    return (INT_PTR)ShellExecuteW(NULL, L"open", wide, NULL, NULL, SW_SHOWNORMAL) > 32;
+}
+
 uint64_t lhost_ticks(void)
 {
     return GetTickCount64();

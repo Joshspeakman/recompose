@@ -266,3 +266,17 @@ void theme_text_ex(ThemeRect r, const char *text, int size, int weight, COLORREF
     }
     theme_text(r, text, size, weight, colour, align);
 }
+
+/* About how wide: this host's one face, at about six tenths of the size a
+ * letter, with the spacing asked for. */
+int theme_text_width(const char *text, int size, int weight, int tracking, int face)
+{
+    int n = 0;
+
+    (void)weight;
+    (void)face;
+    for (; text && *text; text++)
+        if (((unsigned char)*text & 0xC0) != 0x80)
+            n++;
+    return n ? (int)(n * size * 96.0 / 72.0 * 0.6 + (n - 1) * tracking) : 0;
+}

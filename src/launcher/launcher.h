@@ -15,7 +15,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#ifdef LAUNCHER_SHOWCASE
+#ifdef LAUNCHER_HERO
+/* The hero layout (recomp_add_launcher HERO): the picked game's own front
+ * end across the whole window, its menu at the right under its logo. */
+#define LAUNCHER_WINDOW_W 1280
+#define LAUNCHER_WINDOW_H 720
+#elif defined(LAUNCHER_SHOWCASE)
 /* The showcase (recomp_add_launcher SHOWCASE): the other native ports' launch
  * window, the game's art across the top, and its settings in panels. */
 #define LAUNCHER_WINDOW_W 960
@@ -73,6 +78,9 @@ void launcher_dropped(const char *path);
 uint64_t lhost_ticks(void);             /* milliseconds, from anywhere */
 /* Show a folder in the system's file browser (the saves). 1 if it opened. */
 int lhost_open_folder(const char *path);
+/* Open a file with the program the system has for it, or an address
+ * (anything with "://" in it) in the browser: the Extras. 1 if it opened. */
+int lhost_open(const char *path_or_url);
 int      lhost_key_held(int key);       /* down right now */
 /* The clipboard's text, its first line or all of it, into `out`. 0 when
  * there is none. */

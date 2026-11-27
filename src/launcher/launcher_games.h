@@ -22,6 +22,16 @@
 
 #define LAUNCHER_GAMES_MAX 4
 
+/* A picture the hero layout shows the game with, from its art folder: how
+ * much larger than the window it is drawn (1 fills it), where its crop sits
+ * (0..1 of what is spare each way), and how far it drifts while it is up
+ * (window units, over its turn). The layout goes from one to the next. */
+typedef struct LauncherHero {
+    const char *art;
+    double      zoom, fx, fy;
+    double      drift_x, drift_y;
+} LauncherHero;
+
 typedef struct LauncherGame {
     const char *key;            /* a short word, remembered as the game last picked */
     uint32_t    title_id;       /* its id: its art folder, before its image is read */
@@ -44,6 +54,12 @@ typedef struct LauncherGame {
     int         widescreen;
     const char *const *bindings;   /* its recomp_title_bindings[] */
     const char *const *settings;   /* its recomp_title_settings[] */
+    /* The hero layout (LAUNCHER_HERO): its pictures, ending with a NULL art
+     * (NULL: its backdrop alone); its colour there (the kickers, the focused
+     * row's edge) and the wash behind the focused row, 0xRRGGBB. */
+    const LauncherHero *heroes;
+    uint32_t    accent;
+    uint32_t    accent_wash;
 } LauncherGame;
 
 extern const LauncherGame launcher_games[];
