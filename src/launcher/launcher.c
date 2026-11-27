@@ -3046,6 +3046,16 @@ static int games_first(void)
 /* Everything the launcher shows becomes game i's: what it is, its settings,
  * its controls, its updater. The game being left keeps what was changed
  * for it, saved first, as Play would. */
+/* The window's icon: the one the game's install keeps beside its program
+ * (<program>.ico), so the taskbar shows the game picked. */
+static void game_window_icon(int i)
+{
+    char path[LAUNCHER_PATH + 64];
+
+    snprintf(path, sizeof path, "%s/%s.ico", g_game_home[i], launcher_games[i].exe);
+    lhost_window_icon(path);
+}
+
 static void game_pick(int i)
 {
     char path[700];
@@ -3078,6 +3088,7 @@ static void game_pick(int i)
     }
 #endif
     g_game_ready = 1;
+    game_window_icon(i);
     if (games_memory_path(path, sizeof path) && (f = fopen(path, "wb")) != NULL) {
         fprintf(f, "%s\n", launcher_games[i].key);
         fclose(f);
@@ -3120,6 +3131,7 @@ void launcher_init(void)
     build_rows();
 #ifdef LAUNCHER_GAMES
     g_game_ready = !g_release;
+    game_window_icon(g_game);
 #endif
     /* RECOMP_LAUNCHER_TAB=<0..3>: open on that tab (video, input, System
      * Link, about), so a screenshot (RECOMP_LAUNCHER_SHOT) can show it. */

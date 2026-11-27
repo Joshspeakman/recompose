@@ -81,6 +81,10 @@ int lhost_open_folder(const char *path);
 /* Open a file with the program the system has for it, or an address
  * (anything with "://" in it) in the browser: the Extras. 1 if it opened. */
 int lhost_open(const char *path_or_url);
+/* The window's icon (and its taskbar button's) from an .ico file, now or
+ * when the window opens; a file that is not there leaves the program's own.
+ * Hosts without per-window icons ignore it. */
+void lhost_window_icon(const char *ico_path);
 int      lhost_key_held(int key);       /* down right now */
 /* The clipboard's text, its first line or all of it, into `out`. 0 when
  * there is none. */

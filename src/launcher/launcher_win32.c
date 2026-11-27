@@ -29,6 +29,40 @@ int lhost_open_folder(const char *path)
     return path && (INT_PTR)ShellExecuteA(NULL, "open", path, NULL, NULL, SW_SHOWNORMAL) > 32;
 }
 
+/* The picked game's icon (lhost_window_icon): kept until the window is
+ * there, and put on it when it is, or at once. */
+static char  g_icon_path[1024];
+static HICON g_icon_big, g_icon_small;
+
+static void window_icon_apply(void)
+{
+    HICON big, small;
+
+    if (!g_hwnd || !g_icon_path[0])
+        return;
+    big = (HICON)LoadImageA(NULL, g_icon_path, IMAGE_ICON, GetSystemMetrics(SM_CXICON),
+                            GetSystemMetrics(SM_CYICON), LR_LOADFROMFILE);
+    small = (HICON)LoadImageA(NULL, g_icon_path, IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                              GetSystemMetrics(SM_CYSMICON), LR_LOADFROMFILE);
+    if (!big || !small) {                  /* not there: the program's own stays */
+        if (big) DestroyIcon(big);
+        if (small) DestroyIcon(small);
+        return;
+    }
+    SendMessageA(g_hwnd, WM_SETICON, ICON_BIG, (LPARAM)big);
+    SendMessageA(g_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)small);
+    if (g_icon_big) DestroyIcon(g_icon_big);
+    if (g_icon_small) DestroyIcon(g_icon_small);
+    g_icon_big = big;
+    g_icon_small = small;
+}
+
+void lhost_window_icon(const char *ico_path)
+{
+    snprintf(g_icon_path, sizeof g_icon_path, "%s", ico_path ? ico_path : "");
+    window_icon_apply();
+}
+
 int lhost_open(const char *path_or_url)
 {
     WCHAR wide[2048];
@@ -582,6 +616,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     if (!theme_begin(LAUNCHER_WINDOW_W, LAUNCHER_WINDOW_H))
         return 1;
 
+    window_icon_apply();                    /* the picked game's, if it has one */
     ShowWindow(g_hwnd, show);
     SetTimer(g_hwnd, 1, 16, NULL);          /* the pad, and the glow */
     /* Files dragged onto the window, and the first argument: what Windows

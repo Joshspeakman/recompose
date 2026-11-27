@@ -786,6 +786,32 @@ static DWORD WINAPI shadow_window_thread(LPVOID param)
         }
     }
 
+    /* The icon an install keeps beside the program, <program>.ico (Timeslip's
+     * tools\install_windows.ps1 makes it from the game's key art), on the
+     * window, its taskbar button and Alt+Tab; without one, the class's own
+     * icon above stays. */
+    if (req->hwnd) {
+        char ico[1024];
+        size_t n;
+
+        if (host_exe_path(ico, sizeof ico - 8)) {
+            HICON big, small;
+
+            n = strlen(ico);
+            if (n > 4 && _stricmp(ico + n - 4, ".exe") == 0)
+                ico[n - 4] = '\0';
+            strcat(ico, ".ico");
+            big = (HICON)LoadImageA(NULL, ico, IMAGE_ICON, GetSystemMetrics(SM_CXICON),
+                                    GetSystemMetrics(SM_CYICON), LR_LOADFROMFILE);
+            small = (HICON)LoadImageA(NULL, ico, IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                                      GetSystemMetrics(SM_CYSMICON), LR_LOADFROMFILE);
+            if (big)
+                SendMessageA(req->hwnd, WM_SETICON, ICON_BIG, (LPARAM)big);
+            if (small)
+                SendMessageA(req->hwnd, WM_SETICON, ICON_SMALL, (LPARAM)small);
+        }
+    }
+
     /* Say what is being played, not what is playing it. The name is the
      * title's own, out of its XBE certificate, and it is set through the
      * wide call because a certificate may hold one that no ANSI code page

@@ -64,6 +64,11 @@ int lhost_open_folder(const char *path)
     return SDL_OpenURL(url);
 }
 
+void lhost_window_icon(const char *ico_path)
+{
+    (void)ico_path;                         /* the window keeps the program's icon */
+}
+
 int lhost_open(const char *path_or_url)
 {
     char url[2100];
