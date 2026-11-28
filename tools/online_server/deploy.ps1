@@ -61,6 +61,15 @@ if (-not $Region) {
 $Region = $Region.ToLower().Trim()
 if ($Region -notmatch '^[a-z]{3}$') { Write-Host "A region is a three-letter code from the list."; exit 1 }
 
+# The app's dedicated IPv4 address, or "". The JSON is joined first: Windows PowerShell parses
+# a list of lines one line at a time, and hands a parsed array on as one object.
+function Get-V4([string]$app) {
+    $json = (& $fly ips list -a $app --json 2>$null) -join "`n"
+    try { $list = $json | ConvertFrom-Json } catch { return "" }
+    foreach ($ip in $list) { foreach ($one in @($ip)) { if ("$($one.Type)" -eq "v4") { return "$($one.Address)" } } }
+    return ""
+}
+
 # The app: made, or already this account's.
 & $fly status -a $Name *> $null
 if ($LASTEXITCODE -ne 0) {
@@ -77,12 +86,7 @@ Copy-Item (Join-Path $PSScriptRoot "server.py"), (Join-Path $PSScriptRoot "Docke
     Set-Content -Encoding ascii (Join-Path $work "fly.toml")
 
 # A dedicated IPv4 address, once: UDP does not reach an app on the shared one.
-$have = $false
-try {
-    $ips = & $fly ips list -a $Name --json | ConvertFrom-Json
-    foreach ($ip in @($ips)) { if ("$($ip.Type)" -eq "v4") { $have = $true } }
-} catch { }
-if (-not $have) {
+if (-not (Get-V4 $Name)) {
     Write-Host "Giving it a dedicated IPv4 address (UDP needs one)..."
     & $fly ips allocate-v4 -a $Name --yes
     if ($LASTEXITCODE -ne 0) { Write-Host "Fly did not give it an address. Dedicated IPv4 addresses need the Pay As You Go plan: on fly.io, Dashboard, Billing, switch to it, then run this again."; exit 1 }
@@ -93,12 +97,7 @@ Set-Location $work
 & $fly deploy -a $Name -c fly.toml --ha=false --remote-only
 if ($LASTEXITCODE -ne 0) { Write-Host "The deploy did not finish; the messages above say why."; exit 1 }
 
-$v4 = ""
-try {
-    foreach ($ip in @(& $fly ips list -a $Name --json | ConvertFrom-Json)) {
-        if ("$($ip.Type)" -eq "v4") { $v4 = "$($ip.Address)" }
-    }
-} catch { }
+$v4 = Get-V4 $Name
 Write-Host ""
 Write-Host "The online server is running."
 Write-Host "In the launcher: Play Together > Connect: Through an online server"
