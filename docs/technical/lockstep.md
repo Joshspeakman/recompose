@@ -67,6 +67,24 @@ with the tools below.
 
 ## Finding a difference
 
+### Joining
+
+A joiner's HELLO carries the build and a number of the copy's own; the host
+answers with its settings. Where the joiner's differ and a player chooses
+them (`widescreen`, `fov`, `crosshair`, `mouse_look`, `coop_view`,
+`ts2_menus`), the joiner takes the host's for the session: they go into its
+environment, which every settings lookup reads first, before the game reads
+any of them, and the two a title asks for early (field of view, crosshair)
+are read again (`hle_session_settings_reread`, from the titles' main.c). The
+log says which it took. What a player cannot choose (`disk_key`) must already
+match. A joiner that leaves after the host let it in, before its first frame
+(it could not take the settings, or write the saves), says BYE with why, and
+the host waits for another. Through an online server the host hears every
+joiner from the server's address, so it tells copies apart by their number:
+another copy is refused while the one it took is in, or once the game has
+begun (a game cannot take a player in midway); before that, a joiner gone
+quiet for 5 s is let go and the new one taken.
+
 A **trace** (`RECOMP_LOCKSTEP_TRACE=<file>`) holds each frame's controllers
 (18 bytes a pad, 22 when it carries the mouse's look)
 and a hash of the named state per 4 KB page. A **replay**

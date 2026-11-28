@@ -28,11 +28,23 @@
  * <title id>) and plays from that as its E: (recomp_lockstep_hdd_dir). The
  * joiner's own saves are not touched, and what its game saves during the
  * session stays in the session folder. Settings that change the game itself
- * (widescreen widens the title's own camera) must match too: the host sends
- * its own, and a joiner whose differ is refused and told which.
+ * (widescreen widens the title's own camera) must be the same on both: the
+ * host sends its own, and the joiner takes the host's for the session where
+ * a player chooses them (widescreen, field of view, crosshair, mouse look,
+ * the co-op view, TimeSplitters 2's menus; adopt_host_settings) and says so,
+ * its settings file untouched. What a player cannot choose (the console's
+ * disk key) still refuses, and says which.
+ *
+ * Each copy is one player for one game: a joiner's HELLO carries a number of
+ * its own, so a host -- which through an online server hears every joiner
+ * from the server's address -- can tell a new copy from the one it took. A
+ * joiner that leaves before the game begins (refused, or its saves failed)
+ * says BYE with why, and the host waits for another; once the game has
+ * begun, a new copy is refused, since a game cannot take a player in midway.
  *
  * Each message is UDP, 'X' 'L' 'S' version type, then:
- *   HELLO    joiner -> host: the build, so two different builds never play
+ *   HELLO    joiner -> host: the build, so two different builds never play,
+ *            and the copy's own number (8 bytes)
  *   WELCOME  host -> joiner: the session's epoch (its clock), the delay, the
  *            joiner's controller, the settings, and the saves' size and hash
  *   REFUSE   host -> joiner: why not (a different build, a full session)
@@ -98,7 +110,7 @@ int xbox_path_hdd_dir_utf8(char *out, size_t n);
 int xbox_path_save_dir_utf8(char *out, size_t n);
 extern unsigned char xbox_HDKey[16];
 
-#define LS_VERSION      4u      /* 4: a pad carries the mouse's look */
+#define LS_VERSION      5u      /* 4: a pad carries the mouse's look; 5: HELLO the copy's number */
 #define DEFAULT_PORT    27620
 #define SERVER_PORT     27630         /* tools/online_server's */
 #define REGISTER_EVERY  2000u         /* ms between registrations with the server */
@@ -143,6 +155,8 @@ static struct {
     uint64_t last_heard_ms;
     int gone;                         /* the other player left or went silent */
     int welcomed;
+    uint64_t instance;                /* this copy's number, in its HELLO (joiner) */
+    uint64_t peer_instance;           /* host: the joiner it took */
     /* The input delay is agreed before either game takes a frame: a joiner
      * measures the round trip once it is in and every INPUT it sends carries
      * the delay that covers it; the host's first frame waits for that. A
@@ -849,6 +863,7 @@ static void on_hello_locked(const uint8_t *b, int n, const struct sockaddr_in *f
 {
     char build[65];
     uint8_t w[29 + SETTINGS_LEN];
+    uint64_t inst;
 
     if (n < 5 + 64)
         return;
@@ -866,13 +881,26 @@ static void on_hello_locked(const uint8_t *b, int n, const struct sockaddr_in *f
         say("refused a player with a different build (%s)", build);
         return;
     }
-    if (g.have_peer && !g.gone &&
-        (from->sin_addr.s_addr != g.peer.sin_addr.s_addr || from->sin_port != g.peer.sin_port)) {
-        uint8_t f[5 + 64];
-        header(f, T_REFUSE);
-        snprintf((char *)f + 5, 64, "the session already has two players");
-        send_to(from, f, 5 + 64);
-        return;
+    inst = n >= 5 + 64 + 8 ? get64(b + 5 + 64) : 0;
+    if (g.have_peer && inst != g.peer_instance) {
+        /* Another copy. Before the joiner it took has sent a frame, that one
+         * may have left without a word (quit, or lost): quiet for 5 s, it is
+         * let go and this one taken. Once the game has begun, never. */
+        int begun = g.remote_upto > 0;
+
+        if (!begun && (g.gone || now_ms() - g.last_heard_ms > 5000)) {
+            say("player 2 left before the game began; taking a new copy");
+            g.have_peer = 0;
+            g.gone = 0;
+        } else {
+            uint8_t f[5 + 96];
+            header(f, T_REFUSE);
+            snprintf((char *)f + 5, 96, "%s", begun
+                     ? "its game has already begun; join when the host starts a new one"
+                     : "the session already has two players");
+            send_to(from, f, 5 + 96);
+            return;
+        }
     }
     if (!g.have_peer) {
         char a[64], st[128];
@@ -883,6 +911,7 @@ static void on_hello_locked(const uint8_t *b, int n, const struct sockaddr_in *f
     }
     g.peer = *from;
     g.have_peer = 1;
+    g.peer_instance = inst;
     g.last_heard_ms = now_ms();
     header(w, T_WELCOME);
     put64(w + 5, (uint64_t)g.epoch);
@@ -1081,9 +1110,22 @@ static void *receive_thread(void *arg)
                     on_input_locked(b, n);
                     SetEvent(g.arrived);
                 } else if (type == T_BYE && from_peer) {
-                    if (!g.gone) {
+                    char why[128];
+
+                    snprintf(why, sizeof why, "%.*s", n > 5 ? (n - 5 < 127 ? n - 5 : 127) : 0,
+                             (const char *)b + 5);
+                    if (g.host && g.have_peer && g.remote_upto == 0) {
+                        /* Not yet a game: the joiner went before its first
+                         * frame (refused itself, its saves failed). Wait
+                         * for another. */
+                        g.have_peer = 0;
+                        g.gone = 0;
+                        say("player 2 left before the game began%s%s; waiting for another",
+                            why[0] ? ": " : "", why);
+                        status("online co-op: waiting for player 2 to join");
+                    } else if (!g.gone) {
                         g.gone = 1;
-                        say("the other player left the session");
+                        say("the other player left the session%s%s", why[0] ? ": " : "", why);
                         status("online co-op: the other player left");
                     }
                     SetEvent(g.arrived);
@@ -1148,7 +1190,92 @@ static void leave_now(int code, const char *why)
 {
     fprintf(stderr, "[LOCKSTEP-NET] %s\n", why);
     fflush(stderr);
+    /* The host has counted this copy in (and an online server holds its
+     * place): tell both it is going, and why. */
+    if (g.on && !g.host && g.have_peer && g.welcomed) {
+        uint8_t b[5 + 120];
+        int len = (int)strlen(why) < 119 ? (int)strlen(why) : 119;
+
+        header(b, T_BYE);
+        memcpy(b + 5, why, (size_t)len);
+        lock();
+        send_raw(b, 5 + len);
+        send_raw(b, 5 + len);
+        unlock();
+    }
     _Exit(code);
+}
+
+/* The process's environment, which every settings lookup reads before the
+ * settings file (recomp_config.c). */
+static void set_env(const char *name, const char *value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+/* A joiner whose settings differ from the host's takes the host's, for the
+ * session only (the environment, not the settings file), where a player
+ * chooses them; everything that reads them does so after this, or reads
+ * again (the titles' main.c: hle_session_settings_reread). 1 if what is
+ * left differs. */
+static int adopt_host_settings(char *why, size_t n)
+{
+    static const struct { const char *name, *env; } k_adopt[] = {
+        { "widescreen", "RECOMP_WIDESCREEN" }, { "fov", "RECOMP_FOV" },
+        { "crosshair", "RECOMP_CROSSHAIR" }, { "mouse_look", "RECOMP_MOUSE_LOOK" },
+        { "coop_view", "RECOMP_COOP_VIEW" }, { "ts2_menus", "RECOMP_TS2_MENUS" },
+    };
+    char took[200] = "";
+    const char *p = g.host_settings;
+    size_t i;
+
+    /* What a player cannot choose has to be the same already. */
+    while (p && *p) {
+        size_t nl = strcspn(p, "="), ml = 0, tl = 0;
+        const char *mine = setting_in(g.settings, p, nl, &ml);
+        const char *theirs = setting_in(g.host_settings, p, nl, &tl);
+        int adoptable = 0;
+
+        for (i = 0; i < sizeof k_adopt / sizeof k_adopt[0]; i++)
+            if (strlen(k_adopt[i].name) == nl && strncmp(p, k_adopt[i].name, nl) == 0)
+                adoptable = 1;
+        if (!adoptable && (!mine || ml != tl || strncmp(mine, theirs, ml) != 0)) {
+            snprintf(why, n, "%.*s is %.*s here but %.*s on the host", (int)nl, p,
+                     mine ? (int)ml : 7, mine ? mine : "not set", (int)tl, theirs);
+            return 1;
+        }
+        p = strchr(p, ';');
+        if (p)
+            p++;
+    }
+    for (i = 0; i < sizeof k_adopt / sizeof k_adopt[0]; i++) {
+        size_t nl = strlen(k_adopt[i].name), ml = 0, tl = 0;
+        const char *mine = setting_in(g.settings, k_adopt[i].name, nl, &ml);
+        const char *theirs = setting_in(g.host_settings, k_adopt[i].name, nl, &tl);
+        char v[64];
+
+        if (!theirs || (mine && ml == tl && strncmp(mine, theirs, tl) == 0))
+            continue;
+        snprintf(v, sizeof v, "%.*s", (int)tl, theirs);
+        set_env(k_adopt[i].env, v);
+        snprintf(took + strlen(took), sizeof took - strlen(took), "%s%s %s (here %.*s)",
+                 took[0] ? ", " : "", k_adopt[i].name, v, mine ? (int)ml : 7,
+                 mine ? mine : "not set");
+    }
+    if (took[0]) {
+        char st[160];
+
+        say("taking the host's settings for this session: %s", took);
+        snprintf(st, sizeof st, "online co-op: playing with the host's settings (%s)", took);
+        status(st);
+    }
+    /* The host's, then, in what this copy reports from here on. */
+    snprintf(g.settings, sizeof g.settings, "%s", g.host_settings);
+    return 0;
 }
 
 /* The joiner, before its game starts: the host's answer, then its saves. */
@@ -1160,11 +1287,12 @@ static void join(const char *peer, int port)
     say("joining %s; build %s", peer, g.build);
     for (;;) {
         if (now_ms() - last >= 250) {
-            uint8_t h[5 + 64];
+            uint8_t h[5 + 64 + 8];
             last = now_ms();
             header(h, T_HELLO);
             memset(h + 5, 0, 64);
             memcpy(h + 5, g.build, strlen(g.build) < 64 ? strlen(g.build) : 64);
+            put64(h + 5 + 64, g.instance);
             send_raw(h, sizeof h);
         }
         WaitForSingleObject(g.arrived, 50);
@@ -1191,7 +1319,7 @@ static void join(const char *peer, int port)
             snprintf(why, sizeof why, "the host refused: %s", g.refused);
         leave_now(3, why);
     }
-    if (settings_differ(why + 200, 200)) {
+    if (settings_differ(why + 200, 200) && adopt_host_settings(why + 200, 200)) {
         snprintf(why, 200, "cannot join: ");
         memmove(why + strlen(why), why + 200, strlen(why + 200) + 1);
         leave_now(3, why);
@@ -1321,6 +1449,21 @@ int lsnet_init(int64_t *epoch)
     g.epoch = *epoch;
     if (!g.build[0])
         snprintf(g.build, sizeof g.build, "unnamed build");
+    {
+        /* A number of this copy's own: the clock, the process, an address
+         * of the stack, mixed. Not secret; only different. */
+        uint64_t seed[3];
+        int here;
+
+        seed[0] = now_ms();
+#ifdef _WIN32
+        seed[1] = (uint64_t)GetCurrentProcessId();
+#else
+        seed[1] = (uint64_t)getpid();
+#endif
+        seed[2] = (uint64_t)(uintptr_t)&here;
+        g.instance = fnv64((const uint8_t *)seed, sizeof seed) | 1u;
+    }
 
     /* What changes the game itself, the toolkit's part: the widescreen
      * camera, and the console's disk key, which signs and checks saves (by

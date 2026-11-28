@@ -11,7 +11,10 @@ same session code in the launcher (Play Together > Connect: Through an online se
 
 The session code names the session and keeps strangers out of it: at least four
 characters, the same for everyone in the game. The server holds no accounts and keeps
-nothing on disk; a session ends when its players leave or go quiet for 30 seconds.
+nothing on disk; a session ends when its players leave or go quiet for 30 seconds. A
+co-op place is free again at once when its copy says BYE or the host refuses it, and
+after 5 seconds without a word (a copy registers again every 2 seconds), so a player
+who quits, is refused or crashes can try again straight away.
 
 ## On Fly.io
 

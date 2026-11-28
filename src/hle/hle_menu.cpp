@@ -731,9 +731,19 @@ extern "C" void hle_set_fov(int degrees)
     g_fov.store(degrees <= 0 ? 0 : degrees);
 }
 
+namespace { std::atomic<int> g_crosshair{-1}; }
+
+/* The field of view and the crosshair, read again on their next use: a
+ * co-op joiner that took the host's settings (recomp_lockstep_net.c,
+ * adopt_host_settings) after the title had asked for them. */
+extern "C" void hle_session_settings_reread(void)
+{
+    g_fov.store(-1);
+    g_crosshair.store(-1);
+}
+
 /* The crosshair setting (recomp_config.h crosshair): read once, then the
  * menu's. A title that has an aiming crosshair asks each frame. */
-namespace { std::atomic<int> g_crosshair{-1}; }
 
 extern "C" int hle_crosshair_always(void)
 {

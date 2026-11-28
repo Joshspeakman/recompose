@@ -24,6 +24,9 @@ void hle_set_fps_overlay(int on);
 void hle_fov_title_default(int degrees);
 int  hle_fov_title_has(void);
 int  hle_fov(void);
+/* The field of view and crosshair read again on their next use: after a
+ * co-op joiner took the host's (titles call it once the session is in). */
+void hle_session_settings_reread(void);
 void hle_set_fov(int degrees);
 
 /* The frame cap (F10): "adaptive", "60", "30" or "off". */

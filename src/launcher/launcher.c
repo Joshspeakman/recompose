@@ -2188,7 +2188,9 @@ static void draw_link(void)
                  " one on Fly.io.",
                  lhost_ticks() < g_copied_until ? "Copied."
                  : LAUNCHER_COPY_KEY " or a click here copies them.",
-                 LINK_COOP(g_link_mode)
+                 g_link_mode == LINK_COOP_HOST
+                 ? "Start your game first: you are controller 1, your friend controller 2."
+                 : g_link_mode == LINK_COOP_JOIN
                  ? "The host starts their game first; you are controller 2 in their game."
                  : "Then host or join a game in the game's own System Link menu.");
         theme_text_wrapped(line, text, 11, THEME_TEXT_DIM);

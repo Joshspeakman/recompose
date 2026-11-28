@@ -54,6 +54,9 @@ SILENT_S = 30.0                     # no word for this long: gone
 MAX_SESSIONS = 512
 MAX_ENDPOINTS = 2048
 MIN_CODE = 4
+REPLACE_S = 5                       # a place quiet this long goes to whoever registers for it:
+                                    # a live copy is heard at least every 2 s (it registers again)
+LS_REFUSE, LS_BYE = 3, 5            # co-op's own messages ('X' 'L' 'S' version type) the server notes
 
 
 def log(msg):
@@ -228,7 +231,7 @@ class Server:
             pair = self.pairs[code] = {'host': None, 'join': None}
         if pair[key] is not None and pair[key] != addr:
             seen = self.pair_of.get(pair[key], (None, None, 0))[2]
-            if now - seen < SILENT_S:
+            if now - seen < REPLACE_S:
                 self.r_send(addr, R_ERROR, b'a host is already waiting with that session code'
                             if role == ROLE_HOST else b'the session already has two players')
                 return
@@ -243,12 +246,26 @@ class Server:
         mine = self.pair_of.get(addr)
         if not mine:
             return
-        code, key, _ = mine
-        self.pair_of[addr] = (code, key, now)
+        code, key, seen = mine
+        if now - seen < SILENT_S:
+            self.pair_of[addr] = (code, key, now)
         pair = self.pairs.get(code)
         to = pair and pair['join' if key == 'host' else 'host']
         if to:
             self.send(b, to)
+        # A copy saying BYE is going; a joiner the host refused is going: their place is
+        # free at once, for whoever registers next. The registration stays until the next
+        # housekeeping (within a second), so the BYE a copy sends twice still reaches the
+        # other side.
+        if len(b) >= 5 and b[4] == LS_BYE:
+            self.pair_stale(addr)
+        elif len(b) >= 5 and b[4] == LS_REFUSE and key == 'host' and to:
+            self.pair_stale(to)
+
+    def pair_stale(self, addr):
+        mine = self.pair_of.get(addr)
+        if mine:
+            self.pair_of[addr] = (mine[0], mine[1], time.monotonic() - SILENT_S - 1.0)
 
     def pair_leave(self, addr):
         mine = self.pair_of.pop(addr, None)
