@@ -21,6 +21,13 @@
  * every machine, so each side runs that far ahead before it has to hear from
  * the other.
  *
+ * The two machines are kept level (lsnet_frame; RECOMP_LOCKSTEP_BALANCE=0
+ * turns it off): left alone, the one whose frames run ahead waits on the
+ * other's controller at every frame and stalls on any late packet, while the
+ * other has all the spare delay. The one with clearly less slack holds back
+ * a frame until the two have about the same. RECOMP_LOCKSTEP_STATS=1 logs
+ * every 600 frames how each side waited, its missed frames and its slack.
+ *
  * Both machines start the game from the host's saves. Before its game
  * starts the host takes this title's folders from its hard disk (E:\UDATA\
  * <title id> and E:\TDATA\<title id>); a joiner receives them before its own
@@ -90,6 +97,7 @@ typedef SOCKET ls_socket;
 #include <unistd.h>
 #include <dirent.h>
 #include <pthread.h>
+#include <time.h>
 typedef int ls_socket;
 #define LS_BAD_SOCKET (-1)
 #define ls_close close
@@ -164,6 +172,17 @@ static struct {
     int started;                      /* the delay is agreed */
     int delay_fixed;                  /* the host's settings named one */
     uint32_t rtt_ms;
+    /* Keeping the two machines level (lsnet_frame, RECOMP_LOCKSTEP_BALANCE):
+     * each one's lead -- how far ahead of its frame the other's controller
+     * was when the frame began -- averaged, this machine's from its own
+     * frames and the other's from what its INPUTs say. */
+    int balance;
+    double lead_self, lead_other;
+    uint32_t lead_self_n, lead_other_n;
+    uint32_t hold_cooldown, holds;
+    uint32_t hold_every;              /* frames between holds: 120, doubled while they do nothing */
+    double hold_lead;                 /* lead_self before the last hold; 1e9: none to judge */
+    uint64_t frame_us;                /* when the last frame began */
     char refused[160];
     /* the host's saves: its snapshot (host) or what has arrived (joiner) */
     uint8_t *saves;
@@ -755,6 +774,106 @@ static int settings_differ(char *why, size_t n)
     return 1;
 }
 
+/* ── how the session runs (RECOMP_LOCKSTEP_STATS=1) ──────────────── */
+
+/* For tuning the delay and finding stalls, nothing changes but the log:
+ * every 600 frames, how many frames waited for the other player's
+ * controller and for how long (p50, p95, max), how far ahead of the frame
+ * the other player's controller was when the frame began (the lead; under
+ * 0 the frame waited), and, on the joiner, the round trip during play (a
+ * PING every 2 s, which the host answers as at the join). */
+#define STATS_SPAN 600u
+static struct {
+    int on;
+    uint32_t frames, waited, first_tick;
+    uint32_t wait_us[STATS_SPAN];
+    int32_t lead_min, lead_max;
+    int64_t lead_sum;
+    uint32_t rtt_min, rtt_max, rtt_n;
+    uint64_t rtt_sum, last_ping;
+    uint32_t long_waits, long_frames, holds_before;
+    uint64_t last_frame_us;
+} st;
+
+static uint64_t now_us(void)
+{
+#ifdef _WIN32
+    static LARGE_INTEGER f;
+    LARGE_INTEGER c;
+    if (!f.QuadPart)
+        QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (uint64_t)(c.QuadPart / f.QuadPart) * 1000000u +
+           (uint64_t)(c.QuadPart % f.QuadPart) * 1000000u / (uint64_t)f.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+#endif
+}
+
+static int cmp_u32(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void stats_frame_locked(uint32_t tick, int32_t lead, uint64_t waited_us)
+{
+    if (!st.on)
+        return;
+    if (!st.frames) {
+        st.first_tick = tick;
+        st.lead_min = st.lead_max = lead;
+    }
+    st.frames++;
+    st.lead_sum += lead;
+    if (lead < st.lead_min) st.lead_min = lead;
+    if (lead > st.lead_max) st.lead_max = lead;
+    if (waited_us)
+        st.wait_us[st.waited++ % STATS_SPAN] = (uint32_t)(waited_us > 0xFFFFFFFFu ? 0xFFFFFFFFu : waited_us);
+    /* A wait past 8 ms most likely cost a vblank; frames more than 25 ms
+     * apart missed one, whatever held them (a wait, a hold, the game). */
+    if (waited_us >= 8000u)
+        st.long_waits++;
+    {
+        uint64_t now = now_us();
+        if (st.last_frame_us && now - st.last_frame_us > 25000u)
+            st.long_frames++;
+        st.last_frame_us = now;
+    }
+    if (st.frames >= STATS_SPAN) {
+        uint32_t n = st.waited < STATS_SPAN ? st.waited : STATS_SPAN;
+        double p50 = 0, p95 = 0, mx = 0;
+        char rtt[96] = "";
+
+        if (n) {
+            qsort(st.wait_us, n, sizeof st.wait_us[0], cmp_u32);
+            p50 = st.wait_us[n / 2] / 1000.0;
+            p95 = st.wait_us[(n * 95) / 100 < n ? (n * 95) / 100 : n - 1] / 1000.0;
+            mx = st.wait_us[n - 1] / 1000.0;
+        }
+        if (st.rtt_n)
+            snprintf(rtt, sizeof rtt, "; round trip %u/%llu/%u ms (min/avg/max of %u)", st.rtt_min,
+                     (unsigned long long)(st.rtt_sum / st.rtt_n), st.rtt_max, st.rtt_n);
+        fprintf(stderr, "[LOCKSTEP-NET] stats ticks %u-%u: %u of %u frames waited, "
+                        "%.1f/%.1f/%.1f ms (p50/p95/max), %u over 8 ms; %u frames over 25 ms apart; "
+                        "lead %d/%.1f/%d frames (min/avg/max), the other's %.1f; %u held back; "
+                        "delay %u%s\n",
+                st.first_tick, tick, st.waited, st.frames, p50, p95, mx, st.long_waits,
+                st.long_frames, st.lead_min, (double)st.lead_sum / st.frames, st.lead_max,
+                g.lead_other, g.holds - st.holds_before, g.delay, rtt);
+        fflush(stderr);
+        st.long_waits = st.long_frames = 0;
+        st.holds_before = g.holds;
+        st.frames = st.waited = 0;
+        st.lead_sum = 0;
+        st.rtt_n = 0;
+        st.rtt_sum = 0;
+        st.rtt_min = st.rtt_max = 0;
+    }
+}
+
 /* ── input ────────────────────────────────────────────────────────── */
 
 /* What the other side has not acknowledged, up to MAX_SEND frames, with our
@@ -847,6 +966,14 @@ static void on_input_locked(const uint8_t *b, int n)
         return;
     if (ack > g.remote_acked && ack <= g.local_upto)
         g.remote_acked = ack;
+    /* The sender's lead when it sent this: what it had of ours (ack) against
+     * its frame (its newest input, first + count - 1, lands DELAY frames
+     * after the frame it was taken in). */
+    if (count && g.started && first + count - 1 > 2u * g.delay) {
+        int32_t their_tick = (int32_t)(first + count - 1 - g.delay);
+        double l = (double)(int32_t)(ack - (uint32_t)their_tick);
+        g.lead_other = g.lead_other_n++ ? g.lead_other + (l - g.lead_other) / 32.0 : l;
+    }
     for (i = 0; i < count; i++) {
         uint32_t t = first + i;
         if (t == g.remote_upto + 1) {
@@ -1101,9 +1228,18 @@ static void *receive_thread(void *arg)
                     header(pong, T_PONG);
                     send_to(&from, pong, 13);
                 } else if (!g.host && type == T_PONG && n >= 13) {
-                    uint32_t rtt = (uint32_t)(now_ms() - get64(b + 5));
+                    /* Timed in microseconds (the host sends the 8 bytes back
+                     * as they came): the millisecond tick is 15.6 ms coarse on
+                     * Windows, enough to put the delay a frame out. */
+                    uint32_t rtt = (uint32_t)((now_us() - get64(b + 5) + 500u) / 1000u);
                     if (!g.rtt_ms || rtt < g.rtt_ms)
                         g.rtt_ms = rtt ? rtt : 1;   /* the best: the path, not a hiccup */
+                    if (st.on && g.started) {
+                        if (!st.rtt_n || rtt < st.rtt_min) st.rtt_min = rtt;
+                        if (rtt > st.rtt_max) st.rtt_max = rtt;
+                        st.rtt_sum += rtt;
+                        st.rtt_n++;
+                    }
                     SetEvent(g.arrived);
                 } else if (type == T_INPUT && from_peer) {
                     g.last_heard_ms = now_ms();
@@ -1384,7 +1520,7 @@ static void join(const char *peer, int port)
         for (i = 0; i < 10; i++) {
             uint8_t ping[13];
             header(ping, T_PING);
-            put64(ping + 5, now_ms());
+            put64(ping + 5, now_us());
             send_raw(ping, 13);
             WaitForSingleObject(g.arrived, 30);
         }
@@ -1449,6 +1585,8 @@ int lsnet_init(int64_t *epoch)
     g.epoch = *epoch;
     if (!g.build[0])
         snprintf(g.build, sizeof g.build, "unnamed build");
+    st.on = recomp_config_bool("RECOMP_LOCKSTEP_STATS", "lockstep_stats", 0);
+    g.balance = recomp_config_bool("RECOMP_LOCKSTEP_BALANCE", "lockstep_balance", 1);
     {
         /* A number of this copy's own: the clock, the process, an address
          * of the stack, mixed. Not secret; only different. */
@@ -1613,7 +1751,8 @@ void lsnet_frame(uint32_t tick, const RecompLockstepPad *local_now, int have_che
                  uint64_t hash, RecompLockstepPad *pads_out)
 {
     uint32_t want, t;
-    uint64_t wait_start = 0, last_said = 0;
+    uint64_t wait_start = 0, last_said = 0, wait_t0 = 0;
+    int32_t lead;
 
     lock();
     /* The host's first frame waits for the session's start (the joiner's
@@ -1649,6 +1788,72 @@ void lsnet_frame(uint32_t tick, const RecompLockstepPad *local_now, int have_che
     if (g.remote_upto < g.delay)
         g.remote_upto = g.delay;      /* their first DELAY frames are neutral too */
     send_input_locked();
+    lead = (int32_t)(g.remote_upto - tick);
+    if (st.on && !g.host && g.started && now_ms() - st.last_ping >= 2000) {
+        uint8_t ping[13];
+        st.last_ping = now_ms();
+        header(ping, T_PING);
+        put64(ping + 5, now_us());
+        send_raw(ping, 13);
+    }
+    /* Keep the two machines level. The one that runs ahead (its frames start
+     * earlier than the other's) reaches each frame just as the other's
+     * controller for it arrives, and waits on that every frame: any late
+     * packet stalls it, while the other machine has the whole spare delay to
+     * itself (docs/technical/lockstep.md has the measurements). The machine
+     * whose lead is two frames or more below the other's holds back one
+     * frame -- one missed vblank, as a stall costs -- so each ends up with
+     * about the same slack; two seconds apart, as both averages settle again.
+     * Two, not less: a hold moves a frame of slack from one to the other, so
+     * a gap under two would only change sides, and at 1.25 two copies took
+     * turns holding every few seconds for a whole game. The hold is two
+     * frame periods: the flip gate (adaptive) presents a late frame at once
+     * and the next one still makes its vblank, so a hold of one period is
+     * made up straight away and changes nothing; two lose exactly one frame.
+     * Should holds still not raise the lead by half a frame by the next
+     * chance, the wait between them doubles, up to ten seconds, so a game
+     * that makes up frames some other way pays little for them. A pause of a
+     * fifth of a second or more (a level loading) starts it all afresh: what
+     * was true before it need not be after. */
+    if (g.started && g.have_peer && !g.gone) {
+        uint64_t now = now_us();
+        if (!g.hold_every || (g.frame_us && now - g.frame_us > 200000u)) {
+            g.hold_every = 120;
+            g.hold_lead = 1e9;
+            g.lead_self_n = g.lead_other_n = 0;
+            g.hold_cooldown = 120;
+        }
+        g.frame_us = now;
+        g.lead_self = g.lead_self_n++ ? g.lead_self + ((double)lead - g.lead_self) / 32.0 : (double)lead;
+        if (g.hold_cooldown)
+            g.hold_cooldown--;
+        if (g.balance && !g.hold_cooldown && tick > 4u * g.delay + 120u && g.lead_self_n >= 120 &&
+            g.lead_other_n >= 60 && g.lead_other - g.lead_self >= 2.0 && g.lead_other >= 1.0) {
+            uint64_t t0 = now_us();
+            if (g.hold_lead < 1e8)
+                g.hold_every = g.lead_self - g.hold_lead >= 0.5 ? 120u
+                             : g.hold_every * 2u > 600u ? 600u : g.hold_every * 2u;
+            g.hold_lead = g.lead_self;
+            g.holds++;
+            if (g.holds <= 5 || g.holds % 30 == 0)
+                say("tick %u: holding back one frame to even the slack (lead here %.1f, there %.1f; "
+                    "%u so far, the next in %u frames at the soonest)", tick, g.lead_self,
+                    g.lead_other, g.holds, g.hold_every);
+            unlock();
+            while (now_us() - t0 < 33333u)
+                Sleep(1);
+            lock();
+            g.lead_self += 1.0;
+            g.lead_other -= 1.0;
+            g.hold_cooldown = g.hold_every;
+            lead = (int32_t)(g.remote_upto - tick);
+        } else if (!g.hold_cooldown && g.hold_lead < 1e8 && g.lead_other - g.lead_self < 2.0) {
+            g.hold_every = 120;               /* level now: the next imbalance starts afresh */
+            g.hold_lead = 1e9;
+        }
+    }
+    if (st.on && g.remote_upto < tick && !g.gone)
+        wait_t0 = now_us();
     /* Wait for the other player's controller for this frame. */
     while (g.remote_upto < tick && !g.gone) {
         uint64_t now = now_ms();
@@ -1685,6 +1890,8 @@ void lsnet_frame(uint32_t tick, const RecompLockstepPad *local_now, int have_che
         snprintf(st, sizeof st, "online co-op, player %u, with %s", g.local_port + 1u, a);
         status(st);
     }
+    if (g.have_peer && !g.gone && g.started)
+        stats_frame_locked(tick, lead, wait_t0 ? now_us() - wait_t0 : 0);
     for (t = 0; t < RECOMP_LOCKSTEP_PORTS; t++)
         memset(&pads_out[t], 0, sizeof pads_out[t]);
     pads_out[g.local_port] = g.local[tick % RING];

@@ -120,16 +120,60 @@ built with `recomp_add_launcher(... COOP)`. The host plays controller 1 and
 the joiner controller 2, each with its own machine's controller 1. A
 controller lands some frames after it is read, on every machine: the joiner
 pings the host as it joins and starts the session with the delay that covers
-half the round trip plus two frames (3 on a LAN, 9 at 100 ms each way), and
+half the round trip plus two frames (3 on a LAN, 8 at 100 ms each way), and
 the host's first frame waits for that; `coop_delay` / `RECOMP_LOCKSTEP_DELAY`
 fixes it instead. Every message repeats what the other side has not
-acknowledged, so a lost packet costs a resend.
+acknowledged, so a lost packet costs a resend. The round trip is timed in
+microseconds: Windows' millisecond tick moves in 15.6 ms steps, enough to put
+the delay a frame out.
+
 `RECOMP_LOCKSTEP_SIM_DELAY_MS` and `_LOSS` try a slow, lossy line on one
 machine. The window's title says what the session is doing
 (`recomp_lockstep_set_status_sink`): a game waiting on the network draws
 nothing. A frame starts only when both
 controllers for it are in. The host asks the router for its port (UPnP)
 unless `syslink_upnp = 0`; a joiner needs nothing opened.
+
+**Keeping the two machines level.** Each machine's lead is how far ahead of
+its frame the other's controller was when the frame began. Left alone, the
+machine whose frames run ahead ends up with a lead of about 0: it waits on
+the other's controller at nearly every frame and misses a vblank whenever a
+packet is late, while the other machine has all the spare delay. Each side
+works out the other's lead from the INPUTs it receives (what the sender had
+of ours, against its newest frame less the delay), averages both, and the one
+whose lead is 2 frames or more below the other's holds back one frame (less
+would only move the gap to the other side, and the two would take turns),
+two seconds apart. A hold is two frame periods, since the flip gate presents
+a late frame at once and the next still makes its vblank: one period is made
+up straight away. If a hold does not raise the lead by half a frame, the wait
+before the next doubles, up to ten seconds; a pause of a fifth of a second
+(a level loading) starts afresh. `RECOMP_LOCKSTEP_BALANCE=0` turns it off.
+`RECOMP_LOCKSTEP_STATS=1` logs every 600 frames: frames that waited and for
+how long, waits over 8 ms, frames more than 25 ms apart (a missed vblank),
+both leads, and the holds.
+
+Measured 28 November 2026 on one PC, two copies replaying a co-op recording
+through a local `tools/online_server` with `--sim-delay-ms 40 --sim-loss 2`
+(delay 5), frames more than 25 ms apart. Future Perfect's Story co-op, the
+level from frame 5,400 to 13,800:
+
+| | Before the level | In the level |
+| --- | --- | --- |
+| Not kept level: host | 158 (waited on 3,824 frames) | 95, lead 0.2 |
+| Not kept level: joiner | 74 | 22, lead 3.2 |
+| Kept level: host | 37 (waited on 130) | 0, lead 2.0 |
+| Kept level: joiner | 12 | 1, lead 1.2 |
+
+A second kept-level run was the same but for one stretch of 600 frames in
+which both copies missed about 120 frames together with neither waiting (the
+PC, not the network). TimeSplitters 2's Siberia co-op, in the level (5,400 to
+7,800): not kept level, leads 1.0 (host) and 2.5; kept level, 1.7 and 1.9,
+neither waiting; before the level the host waited on 354 frames, kept level
+on 4. Both games matched their recordings at every frame in every run. With
+the delay at 4 instead of 5 and kept level, Future Perfect's joiner had a
+lead of 0.2 and missed 2 frames in the level: the rule of half the round trip
+plus two frames stays. Between two copies on a LAN (delay 3) it held back 3
+times at the start and missed 1 frame in the level.
 
 Or both through an online server (`tools/online_server`, which runs on Fly.io
 or any machine reachable on UDP 27630): `online_via = server` with
