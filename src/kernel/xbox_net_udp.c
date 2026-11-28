@@ -75,6 +75,7 @@
 #include "xbox_net_nat.h"
 #include "recomp_config.h"
 #include "net_upnp.h"
+#include "xbox_nic.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -143,9 +144,17 @@ struct XboxNetLink {
     uint32_t           rng;
 
     /* Frames for this copy's card, oldest first. */
-    struct { uint32_t len; unsigned long long due; uint8_t data[XBOX_NET_FRAME_MAX]; }
+    struct { uint32_t len; unsigned long long due, ready_us; uint8_t data[XBOX_NET_FRAME_MAX]; }
                        q[QUEUE_LEN];
     unsigned           head, count;
+    unsigned long long last_due;        /* jitter keeps arrival order: none due before the last */
+
+    /* RECOMP_NET_STATS=1: how long a frame waits in the queue, from when it may
+     * be delivered until the card takes it (xbox_nic.c's receive, on the
+     * kernel's timer thread), every STATS_FRAMES frames. */
+    int                stats;
+    unsigned           st_n;
+    unsigned           st_us[600];
     unsigned long      sent, received, dropped;
 
     /* HOST: who is in. */
@@ -195,6 +204,28 @@ static void unlock(XboxNetLink *l)
 #else
     pthread_mutex_unlock(&l->lock);
 #endif
+}
+
+static unsigned long long now_us(void)
+{
+#ifdef _WIN32
+    static LARGE_INTEGER f;
+    LARGE_INTEGER c;
+    if (!f.QuadPart)
+        QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (unsigned long long)(c.QuadPart / f.QuadPart * 1000000ull + c.QuadPart % f.QuadPart * 1000000ull / f.QuadPart);
+#else
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (unsigned long long)t.tv_sec * 1000000u + (unsigned long long)t.tv_nsec / 1000u;
+#endif
+}
+
+static int cmp_unsigned(const void *a, const void *b)
+{
+    unsigned x = *(const unsigned *)a, y = *(const unsigned *)b;
+    return x < y ? -1 : x > y;
 }
 
 static unsigned long long now_ms(void)
@@ -297,11 +328,24 @@ static void deliver(XboxNetLink *l, const uint8_t *frame, int n)
         l->dropped++;
     } else {
         unsigned i = (l->head + l->count) % QUEUE_LEN;
+        unsigned long long now = now_ms(), due = now + (unsigned long long)l->cfg.delay_ms;
+
+        if (l->cfg.jitter_ms > 0)
+            due += next_random(l) % (uint32_t)(l->cfg.jitter_ms + 1);
+        if (due < l->last_due)
+            due = l->last_due;              /* in the order they came */
+        l->last_due = due;
         l->q[i].len = (uint32_t)n;
-        l->q[i].due = now_ms() + (unsigned long long)l->cfg.delay_ms;
+        l->q[i].due = due;
+        l->q[i].ready_us = now_us() + (due - now) * 1000u;
         memcpy(l->q[i].data, frame, (size_t)n);
         l->count++;
         l->received++;
+        if (due <= now) {
+            unlock(l);
+            xbox_NicWake();                 /* to the card now, not at the next tick */
+            return;
+        }
     }
     unlock(l);
 }
@@ -738,6 +782,7 @@ XboxNetLink *xbox_net_link_open(const XboxNetConfig *cfg, const uint8_t own_mac[
     l->cfg = *cfg;
     l->sock = NET_BAD_SOCKET;
     l->rtt_ms = -1;
+    l->stats = recomp_config_bool("RECOMP_NET_STATS", NULL, 0);
     memcpy(l->own_mac, own_mac, 6);
     l->rng = 0x9E3779B9u ^ (uint32_t)now_ms() ^ ((uint32_t)own_mac[5] << 8);
 #ifdef _WIN32
@@ -916,6 +961,20 @@ void xbox_net_link_pop(XboxNetLink *l)
         return;
     lock(l);
     if (l->count) {
+        if (l->stats) {
+            unsigned long long t = now_us(), r = l->q[l->head].ready_us;
+            unsigned n = (unsigned)(sizeof l->st_us / sizeof l->st_us[0]);
+
+            l->st_us[l->st_n++] = t > r ? (unsigned)(t - r) : 0u;
+            if (l->st_n == n) {
+                qsort(l->st_us, n, sizeof l->st_us[0], cmp_unsigned);
+                fprintf(stderr, "[NET] stats: the last %u frames waited for the card %.1f ms (median), "
+                                "%.1f ms (95%%), %.1f ms (longest)\n", n, l->st_us[n / 2] / 1000.0,
+                        l->st_us[n * 95 / 100] / 1000.0, l->st_us[n - 1] / 1000.0);
+                fflush(stderr);
+                l->st_n = 0;
+            }
+        }
         l->head = (l->head + 1) % QUEUE_LEN;
         l->count--;
     }
@@ -985,6 +1044,8 @@ int xbox_NetUdpStart(const uint8_t own_mac[6])
         cfg.delay_ms = strtol(v, NULL, 10);
     if ((v = getenv("RECOMP_SYSLINK_LOSS")) != NULL && *v)
         cfg.loss_pct = atoi(v);
+    if ((v = getenv("RECOMP_SYSLINK_JITTER_MS")) != NULL && *v)
+        cfg.jitter_ms = strtol(v, NULL, 10);
     if ((v = recomp_config_lookup("RECOMP_SYSLINK_CODE", "syslink_code")) != NULL)
         snprintf(cfg.code, sizeof cfg.code, "%s", v);
 
@@ -1076,9 +1137,9 @@ int xbox_NetUdpStart(const uint8_t own_mac[6])
     default:
         break;
     }
-    if (cfg.delay_ms || cfg.loss_pct)
-        fprintf(stderr, " (adding %ld ms and %d%% loss to what arrives)",
-                cfg.delay_ms, cfg.loss_pct);
+    if (cfg.delay_ms || cfg.loss_pct || cfg.jitter_ms)
+        fprintf(stderr, " (adding %ld ms, up to %ld ms more at random, and %d%% loss to what arrives)",
+                cfg.delay_ms, cfg.jitter_ms, cfg.loss_pct);
     fprintf(stderr, "\n");
     fflush(stderr);
     return 1;

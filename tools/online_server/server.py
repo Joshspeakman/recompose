@@ -2,7 +2,7 @@
 a port on their own router. Run on Fly.io (see README.md here), or on any machine friends
 can reach.
 
-    python3 server.py [--port 27630] [--bind 0.0.0.0] [--sim-delay-ms 0] [--sim-loss 0]
+    python3 server.py [--port 27630] [--bind 0.0.0.0] [--sim-delay-ms 0] [--sim-jitter-ms 0] [--sim-loss 0]
 
 It carries both of the runtime's ways to play together, told apart by their first bytes:
 
@@ -68,10 +68,12 @@ def addr_text(a):
 
 
 class Server:
-    def __init__(self, sock, sim_delay_ms=0, sim_loss=0):
+    def __init__(self, sock, sim_delay_ms=0, sim_loss=0, sim_jitter_ms=0):
         self.sock = sock
         self.sim_delay = sim_delay_ms / 1000.0
+        self.sim_jitter = sim_jitter_ms / 1000.0
         self.sim_loss = sim_loss
+        self.last_due = {}                    # addr -> the latest due time: jitter keeps each copy's order
         self.queue = []                       # (due, seq, data, addr): the simulated internet
         self.seq = 0
         # System Link: code -> {addr: {'mac': bytes|None, 'seen': t}}; addr -> code
@@ -89,9 +91,14 @@ class Server:
         self.stats['out'] += 1
         if self.sim_loss and int.from_bytes(os.urandom(2), 'little') % 100 < self.sim_loss:
             return
-        if self.sim_delay:
+        if self.sim_delay or self.sim_jitter:
+            due = time.monotonic() + self.sim_delay
+            if self.sim_jitter:
+                due += self.sim_jitter * int.from_bytes(os.urandom(2), 'little') / 65535.0
+                due = max(due, self.last_due.get(addr, 0.0))   # late, not out of order
+                self.last_due[addr] = due
             self.seq += 1
-            heapq.heappush(self.queue, (time.monotonic() + self.sim_delay, self.seq, data, addr))
+            heapq.heappush(self.queue, (due, self.seq, data, addr))
             return
         try:
             self.sock.sendto(data, addr)
@@ -327,6 +334,8 @@ def main():
                     help='the address to receive on (on Fly.io: fly-global-services)')
     ap.add_argument('--sim-delay-ms', type=int, default=0, help='testing: hold every message back')
     ap.add_argument('--sim-loss', type=int, default=0, help='testing: drop this percentage')
+    ap.add_argument('--sim-jitter-ms', type=int, default=0,
+                    help='testing: hold each message up to this much more, at random, in order')
     ap.add_argument('--report-every', type=int, default=300, help='seconds between traffic reports')
     a = ap.parse_args()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -334,9 +343,10 @@ def main():
         sock.ioctl(socket.SIO_UDP_CONNRESET, False)    # Windows: a closed port is not an error here
     sock.bind((a.bind, a.port))
     log('the online server, on UDP %s:%d%s' % (a.bind, a.port,
-        ' (simulating %d ms and %d%% loss)' % (a.sim_delay_ms, a.sim_loss)
-        if a.sim_delay_ms or a.sim_loss else ''))
-    s = Server(sock, a.sim_delay_ms, a.sim_loss)
+        ' (simulating %d ms, up to %d ms more at random, and %d%% loss)'
+        % (a.sim_delay_ms, a.sim_jitter_ms, a.sim_loss)
+        if a.sim_delay_ms or a.sim_loss or a.sim_jitter_ms else ''))
+    s = Server(sock, a.sim_delay_ms, a.sim_loss, a.sim_jitter_ms)
     s.report_every = max(5, a.report_every)
     last_house = time.monotonic()
     while True:

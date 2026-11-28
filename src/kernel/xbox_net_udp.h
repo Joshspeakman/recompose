@@ -63,6 +63,7 @@ typedef struct XboxNetConfig {
     int   quiet;            /* no log lines */
     long  delay_ms;         /* added to every frame delivered here */
     int   loss_pct;         /* percentage of delivered frames dropped */
+    long  jitter_ms;        /* up to this much more, at random, in arrival order */
 } XboxNetConfig;
 
 typedef struct XboxNetLink XboxNetLink;

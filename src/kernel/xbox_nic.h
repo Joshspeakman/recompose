@@ -35,6 +35,8 @@ int  xbox_NicCardOn(void);
 /* From the kernel's timer thread: received frames into the receive ring,
  * and the summary every five seconds. */
 void xbox_NicTick(void);
+/* A frame for the card has arrived: have the timer thread take it now (kernel_bridge.c). */
+void xbox_NicWake(void);
 
 /* Whether the card's interrupt line is asserted ((IrqStatus & IrqMask) != 0),
  * for the kernel to raise the ISR on bus level 4. */

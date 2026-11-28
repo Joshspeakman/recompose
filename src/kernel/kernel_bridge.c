@@ -3333,6 +3333,19 @@ static void kernel_apu_tick(void)
  * takes received frames on the same tick, just before. */
 #define NIC_VECTOR 4u
 
+/* A frame for the network card arrived (xbox_net_udp.c): the timer thread
+ * gives it to the card and raises its interrupt now, rather than at its next
+ * tick -- up to a vblank later, which System Link otherwise added to every
+ * frame each way. Only the card's part runs early; the vblank keeps its time.
+ * RECOMP_NIC_WAKE=0 leaves frames for the next tick, to compare. */
+static HANDLE g_nic_wake;
+
+void xbox_NicWake(void)
+{
+    if (g_nic_wake)
+        SetEvent(g_nic_wake);
+}
+
 static void kernel_nic_tick(void)
 {
     static unsigned n;
@@ -3663,6 +3676,8 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
          * stepped wait's spin. Nothing on Windows. */
         if (hires && host_thread_realtime(16667, 1000, 3000))
             fprintf(stderr, "  [NV2A] vblank clock thread is real-time\n");
+        if (hires && recomp_config_bool("RECOMP_NIC_WAKE", NULL, 1))
+            g_nic_wake = CreateEventA(NULL, FALSE, FALSE, NULL);
 
         for (;;) {
             long long now;
@@ -3676,7 +3691,32 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
                  * granularity: never sleep longer than that. */
                 if (wait_us > 10000)
                     wait_us = 10000;
-                if (hires) {
+                if (hires && g_nic_wake) {
+                    /* To the deadline, or sooner for the network card: its
+                     * frames and interrupt, the deferred work its interrupt
+                     * queued, then the rest of the wait. */
+                    int64_t until = host_time_ns() + wait_us * 1000;
+                    for (;;) {
+                        int64_t left_us = (until - host_time_ns()) / 1000;
+                        int r;
+                        if (left_us <= 0)
+                            break;
+                        r = host_timer_wait_us_or_event(hires, left_us, g_nic_wake, INFINITE);
+                        if (r == HOST_WAIT_NOT_ARMED) {
+                            Sleep(1);
+                            break;
+                        }
+                        if (r != HOST_WAIT_EVENT)
+                            break;
+                        kernel_nic_tick();
+                        {
+                            int held = xbox_DispatchLockEnterTimed(100);
+                            kernel_drain_dpcs();
+                            if (held)
+                                xbox_DispatchLockLeave();
+                        }
+                    }
+                } else if (hires) {
                     /* A timer that will not arm must not become a spin. */
                     if (host_timer_wait_us(hires, wait_us, INFINITE) == HOST_WAIT_NOT_ARMED)
                         Sleep(1);
