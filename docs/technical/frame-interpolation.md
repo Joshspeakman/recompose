@@ -63,15 +63,31 @@ before each draw, its blended registers are set. Then the F9 overlay, the
 present (`xbox_D3D8InterpPresent`, which does not count a frame), and
 `xbox_D3D8InterpEnd`.
 
-**Matching** frame N's draws to N-1's, in three tiers:
+**Matching** frame N's draws to N-1's, in four tiers, tried in the order 1,
+2, 4, 3:
 
 1. the same bytes, program, shape and target; of several copies of one mesh,
    the one nearest in translation;
 2. the same program, shape, textures and target (a mesh the CPU rewrites);
+4. the same bytes, shape and target, drawn by another program that reads its
+   matrices from the same registers (a mesh the title moved to another
+   program); of several copies, the one nearest in translation;
 3. the same program, stride, primitive type and target (a batch the CPU
    builds, whose count and textures change every frame: particles).
 
 Unmatched draws are drawn as N drew them.
+
+**Matching, tier 4** (28 November 2026, TimeSplitters 2: a corridor that went
+dark and sharp for one in-between frame while walking in and out of
+doorways). TimeSplitters 2 draws each room's pieces with one of two programs
+and moves a room's pieces from one to the other as the player walks between
+rooms. Without tier 4 those pieces had no partner either way: N's were moved
+back with the camera and N-1's were filled in (below), so the in-between
+frame drew the room twice. The level is drawn alpha blended, so the room
+drawn twice was darker and more solid than in either game frame. On a walk
+through Mexican Mission's corridors (16:9, FOV 80, interpolation 3), the
+frame before's pieces drawn again over the same mesh in N went from 311 in
+38 frames to none.
 
 **Blending.** The projection term by term, when both frames have the same kind
 (perspective or not). Each affine matrix is blended by its motion: D = B A^-1,
@@ -145,8 +161,13 @@ looks part of the way back, so:
   view in between.
 
 `RECOMP_INTERP_ACCOUNT=<from>-<to>` prints each frame's primitives by how
-they matched and what was filled in; `RECOMP_INTERP_FILL=0` leaves the
-filling out for comparison.
+they matched and what was filled in, and of what was filled in, how much
+N draws too: unpaired (drawn twice), paired with a second copy N-1 drew at
+the same place, or a copy elsewhere. `RECOMP_INTERP_FILL=0` leaves the
+filling out for comparison, `RECOMP_INTERP_TIER4=0` leaves tier 4 out, and
+`RECOMP_INTERP_DRAWS=<tick>` or `<from>-<to>` lists each draw of those
+frames: how it matched, the affine matrices its program reads, and the first
+one's translation.
 
 **Held frames.** A frame is not interpolated, and the display keeps N-1 until
 N as at 60, when it has no 3D, when less than 60% of its 3D primitives

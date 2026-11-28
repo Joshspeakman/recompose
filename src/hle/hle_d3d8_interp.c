@@ -26,11 +26,18 @@
  * of the registers this blends, as src/hle set them. Releases and program
  * deletes the list may still name wait until the list is done with.
  *
- * Matching (match_frames), frame N's draws to N-1's, in three tiers:
+ * Matching (match_frames), frame N's draws to N-1's, in four tiers, tried
+ * in the order 1, 2, 4, 3:
  *   1. the same bytes, program, shape and target. Of several (the same mesh
  *      drawn twice), the one nearest in translation;
  *   2. the same program, shape, textures and target: a mesh the CPU
  *      rewrites;
+ *   4. the same bytes, shape and target, drawn by another program that reads
+ *      its matrices from the same registers: a mesh the title moved to
+ *      another program. TS2 (28 Nov 2026) draws a room's pieces with one of
+ *      two programs and switches them as the player walks between rooms;
+ *      unpaired, the older copy was filled in (fill_pass) over the newer,
+ *      both alpha blended, and a corridor went dark and sharp for a frame;
  *   3. the same program, stride, primitive type and target: a batch the CPU
  *      builds, whose count and texture change every frame (particles).
  *      Blended draws only: an opaque piece of the level matched this way
@@ -61,8 +68,6 @@
  * title that does not clear the depth buffer each frame is not handled.
  * The deferred-frames mode (RECOMP_HLE_D3D8_DEFER) is not combined with
  * this; interpolation stays off there.
- *
- * Windows only, like the rest of shadow mode.
  */
 #include "platform/xbox_winnt.h"
 #include <math.h>
@@ -369,6 +374,16 @@ static uint64_t key_shape(const HleInterpDrawKey *k)
     return mix(h, (uint64_t)(uintptr_t)k->target);
 }
 
+/* Tier 4: key_same without the program (match_tier also wants the same
+ * registers read). */
+static uint64_t key_mesh(const HleInterpDrawKey *k)
+{
+    uint64_t h = mix(k->content, 0x6A09E667F3BCC909ull);
+    h = mix(h, ((uint64_t)k->stride << 32) | k->prims);
+    h = mix(h, ((uint64_t)k->prim_type << 32) | k->index_format);
+    return mix(h, (uint64_t)(uintptr_t)k->target);
+}
+
 static uint64_t key_batch(const HleInterpDrawKey *k)
 {
     uint64_t h = mix(0x2545F4914F6CDD1Dull, k->vs);
@@ -435,11 +450,17 @@ static void match_tier(InterpList *cur, const InterpList *prev, key_fn key, int 
         if (d->match >= 0 || (tier == 3 && !d->key.blended))
             continue;
         k = key(&d->key);
-        t = tier == 1 ? draw_translation(cur, i, ti) : NULL;
+        t = tier == 1 || tier == 4 ? draw_translation(cur, i, ti) : NULL;
         for (c = head[(int)(k & (uint64_t)(size - 1))]; c >= 0; c = next[c]) {
             double dist;
             if (used[c] || keys[c] != k)
                 continue;
+            if (tier == 4) {
+                const InterpDraw *p = &prev->draws[c];
+                if (p->key.uses_proj != d->key.uses_proj || p->groups != d->groups ||
+                    p->reads_proj != d->reads_proj || p->reads_whole != d->reads_whole)
+                    continue;
+            }
             if (!t) {
                 best = c;
                 break;
@@ -494,6 +515,15 @@ static void match_frames(InterpList *cur, const InterpList *prev)
     memset(used, 0, (size_t)prev->ndraws);
     match_tier(cur, prev, key_same, 1, used, keys, head, next, size);
     match_tier(cur, prev, key_shape, 2, used, keys, head, next, size);
+    {
+        static int tier4 = -1;                   /* RECOMP_INTERP_TIER4=0: off, for comparing */
+        if (tier4 < 0) {
+            const char *v = getenv("RECOMP_INTERP_TIER4");
+            tier4 = !(v && strcmp(v, "0") == 0);
+        }
+        if (tier4)
+            match_tier(cur, prev, key_mesh, 4, used, keys, head, next, size);
+    }
     match_tier(cur, prev, key_batch, 3, used, keys, head, next, size);
 }
 
@@ -769,8 +799,8 @@ static int prepare_frame(void)
                 to = from;
         }
         if (to && recomp_lockstep_tick() >= from && recomp_lockstep_tick() <= to) {
-            double t[4] = {0, 0, 0, 0}, cutp = 0.0, orphan = 0.0, orphan_n = 0.0;
-            int n_unm = 0, n_cut = 0, n_orph = 0;
+            double t[5] = {0, 0, 0, 0, 0}, cutp = 0.0, orphan = 0.0, orphan_n = 0.0;
+            int n_unm = 0, n_cut = 0, n_orph = 0, n_twice = 0, n_same = 0, n_other = 0;
             static uint8_t *partnered;
             static int pcap;
             if (prev->ndraws > pcap) {
@@ -798,15 +828,34 @@ static int prepare_frame(void)
             }
             for (i = 0; partnered && i < prev->ndraws; i++)
                 if (prev->draws[i].key.uses_proj && !partnered[i]) {
+                    int j;
                     orphan += prev->draws[i].key.prims;
                     orphan_n += 1.0;
                     n_orph++;
+                    /* ... whose mesh this frame draws too: unpaired there,
+                     * filled in, it is drawn twice (the dark corridor of
+                     * tier 4); paired, the frame before drew it again, at
+                     * that partner's place or at another. */
+                    for (j = 0; j < cur->ndraws; j++)
+                        if (key_mesh(&cur->draws[j].key) == key_mesh(&prev->draws[i].key)) {
+                            float ta[3], tb[3];
+                            int m = cur->draws[j].match;
+                            if (m < 0)
+                                n_twice++;
+                            else if (draw_translation(prev, i, ta) && draw_translation(prev, m, tb) &&
+                                     fabsf(ta[0] - tb[0]) + fabsf(ta[1] - tb[1]) + fabsf(ta[2] - tb[2]) < 1e-3f)
+                                n_same++;
+                            else
+                                n_other++;
+                            break;
+                        }
                 }
-            fprintf(stderr, "[INTERP-ACCT] tick %u: 3D %d draws %.0f prims; tier1 %.0f tier2 %.0f "
+            fprintf(stderr, "[INTERP-ACCT] tick %u: 3D %d draws %.0f prims; tier1 %.0f tier2 %.0f tier4 %.0f "
                     "tier3 %.0f; unmatched %.0f (%d draws); cut %.0f (%d draws); frame before "
-                    "without a partner %.0f prims (%d draws)\n", recomp_lockstep_tick(),
-                    cur->ndraws, prims3d, t[1], t[2], t[3], t[0], n_unm, cutp, n_cut, orphan,
-                    n_orph);
+                    "without a partner %.0f prims (%d draws; its mesh drawn here unpaired %d, "
+                    "paired and the frame before drew it there twice %d, elsewhere too %d)\n",
+                    recomp_lockstep_tick(), cur->ndraws, prims3d, t[1], t[2], t[4], t[3], t[0], n_unm,
+                    cutp, n_cut, orphan, n_orph, n_twice, n_same, n_other);
         }
     }
     /* The camera's own motion, for the scissors and what is filled in
@@ -889,21 +938,30 @@ static int prepare_frame(void)
             }
         }
     }
-    /* RECOMP_INTERP_DRAWS=<tick>: every draw of that frame, how it matched. */
+    /* RECOMP_INTERP_DRAWS=<tick> or <from>-<to>: every draw of those frames,
+     * how it matched, and its first affine matrix's translation. */
     {
-        static long at = -2;
+        static long at = -2, at_to = -1;
         if (at == -2) {
             const char *v = getenv("RECOMP_INTERP_DRAWS");
             at = v && *v ? atol(v) : -1;
+            at_to = at;
+            if (v && strchr(v, '-'))
+                at_to = atol(strchr(v, '-') + 1);   /* <a>-<b>: every frame between */
         }
-        if (at >= 0 && (long)recomp_lockstep_tick() == at) {
+        if (at >= 0 && (long)recomp_lockstep_tick() >= at && (long)recomp_lockstep_tick() <= at_to) {
+            fprintf(stderr, "[INTERP-DRAW] tick %lu swap %lu: %d draws\n",
+                    (unsigned long)recomp_lockstep_tick(), g_swaps + 1, cur->ndraws);
             for (i = 0; i < cur->ndraws; i++) {
                 const InterpDraw *d = &cur->draws[i];
                 const InterpDraw *pd = d->match >= 0 ? &prev->draws[d->match] : NULL;
+                const float *m = regs_of(cur, i) + (g_proj >= 0 ? 16 : 0);
                 fprintf(stderr, "[INTERP-DRAW] %d: prims %u stride %u vs %lX tex %p blended %d proj %d "
-                        "-> tier %d match %d (prims %u tex %p) cut %d\n", i, d->key.prims, d->key.stride,
+                        "-> tier %d match %d (prims %u tex %p) cut %d groups %X t %.2f %.2f %.2f\n", i,
+                        d->key.prims, d->key.stride,
                         (unsigned long)d->key.vs, d->key.tex[0], d->key.blended, d->key.uses_proj,
-                        d->tier, d->match, pd ? pd->key.prims : 0u, pd ? pd->key.tex[0] : NULL, d->cut);
+                        d->tier, d->match, pd ? pd->key.prims : 0u, pd ? pd->key.tex[0] : NULL, d->cut,
+                        d->groups, g_groups ? m[3] : 0.0f, g_groups ? m[7] : 0.0f, g_groups ? m[11] : 0.0f);
             }
         }
     }
