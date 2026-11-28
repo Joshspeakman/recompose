@@ -7,7 +7,9 @@
 # and a Fly.io account on the Pay As You Go plan (the Free plan has no dedicated IPv4
 # addresses). It signs in if needed (a browser opens), makes the app (or uses it if it is
 # already yours), gives it a dedicated IPv4 address if it has none (UDP needs one; $2 a month
-# at Fly's prices), writes fly.toml from fly.toml.template and deploys one machine.
+# at Fly's prices), and deploys one machine from a folder in $TMPDIR (server.py, the Dockerfile
+# and a fly.toml made from fly.toml.template), so this folder -- inside the app on a Mac -- is
+# never written to.
 # Run again after an update to deploy the new server; nothing is made twice.
 # Remove it with: flyctl apps destroy <name>
 set -e
@@ -64,7 +66,12 @@ if ! "$fly" status -a "$name" >/dev/null 2>&1; then
     fi
 fi
 
-sed -e "s/__APP__/$name/" -e "s/__REGION__/$region/" fly.toml.template > fly.toml
+# What Fly builds from, in a folder of its own: writing into an installed app breaks its signature.
+work="${TMPDIR:-/tmp}"
+work="${work%/}/timeslip-online-server-$name"
+mkdir -p "$work"
+cp server.py Dockerfile "$work/"
+sed -e "s/__APP__/$name/" -e "s/__REGION__/$region/" fly.toml.template > "$work/fly.toml"
 
 # A dedicated IPv4 address, once: UDP does not reach an app on the shared one.
 if ! "$fly" ips list -a "$name" --json 2>/dev/null | grep -Eq '"[Tt]ype": *"v4"'; then
@@ -76,6 +83,7 @@ if ! "$fly" ips list -a "$name" --json 2>/dev/null | grep -Eq '"[Tt]ype": *"v4"'
 fi
 
 echo "Deploying: Fly builds the server and starts one machine (a few minutes the first time)..."
+cd "$work"
 if ! "$fly" deploy -a "$name" -c fly.toml --ha=false --remote-only; then
     echo "The deploy did not finish; the messages above say why."
     exit 1

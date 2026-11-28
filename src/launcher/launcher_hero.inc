@@ -863,7 +863,8 @@ static void hx_home(void)
 #define HX_FLY_INSTALL "powershell -Command \"iwr https://fly.io/install.ps1 -useb | iex\""
 #define HX_FLY_SETUP   "powershell -ExecutionPolicy Bypass -File \"%s\\deploy.ps1\""
 #elif defined(__APPLE__)
-#define HX_FLY_INSTALL "brew install flyctl"
+/* Fly's own installer: Homebrew's flyctl needs Homebrew, which not every Mac has. */
+#define HX_FLY_INSTALL "curl -L https://fly.io/install.sh | sh"
 #define HX_FLY_SETUP   "sh \"%s/deploy.sh\""
 #else
 #define HX_FLY_INSTALL "curl -L https://fly.io/install.sh | sh"

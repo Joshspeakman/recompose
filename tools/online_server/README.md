@@ -30,7 +30,7 @@ The setup below has run against a local copy of the server, not yet against Fly 
    | | |
    | --- | --- |
    | Windows | `powershell -Command "iwr https://fly.io/install.ps1 -useb \| iex"` |
-   | macOS | `brew install flyctl`, or `curl -L https://fly.io/install.sh \| sh` |
+   | macOS | `curl -L https://fly.io/install.sh \| sh`, or `brew install flyctl` |
    | Linux | `curl -L https://fly.io/install.sh \| sh` |
 
 3. In this folder, run the setup:
@@ -42,8 +42,10 @@ The setup below has run against a local copy of the server, not yet against Fly 
 
    It signs in to Fly (a browser opens), asks a name for the server (it becomes
    `name.fly.dev`) and the region nearest the players, makes the app, gives it a
-   dedicated IPv4 address, writes `fly.toml` and deploys. At the end it prints the
-   address to type in the launcher. Run it again after an update; nothing is made twice.
+   dedicated IPv4 address, and deploys from a temporary folder (server.py, the
+   Dockerfile and a `fly.toml` made from the template), so this folder is not written
+   to. At the end it prints the address to type in the launcher. Run it again after
+   an update; nothing is made twice.
 
 4. In the launcher, everyone sets Connect to Through an online server, the Server address
    to `name.fly.dev`, and the same Session code.

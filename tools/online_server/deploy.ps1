@@ -7,7 +7,8 @@ Needs flyctl (powershell -Command "iwr https://fly.io/install.ps1 -useb | iex") 
 Fly.io account on the Pay As You Go plan (the Free plan has no dedicated IPv4 addresses).
 It signs in if needed (a browser opens), makes the app (or uses it if it is already
 yours), gives it a dedicated IPv4 address if it has none (UDP needs one; $2 a month at
-Fly's prices), writes fly.toml from fly.toml.template and deploys one machine.
+Fly's prices), and deploys one machine from a folder in TEMP (server.py, the Dockerfile and a
+fly.toml made from fly.toml.template), so this folder is never written to.
 Run again after an update to deploy the new server; nothing is made twice.
 Remove it with: flyctl apps destroy <name>
 #>
@@ -68,8 +69,12 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { Write-Host "Fly did not make it (is the name taken?)."; exit 1 }
 }
 
+# What Fly builds from, in a folder of its own: an installed copy of this folder is left as it is.
+$work = Join-Path ([IO.Path]::GetTempPath()) "timeslip-online-server-$Name"
+New-Item -ItemType Directory -Force $work | Out-Null
+Copy-Item (Join-Path $PSScriptRoot "server.py"), (Join-Path $PSScriptRoot "Dockerfile") $work -Force
 (Get-Content -Raw (Join-Path $PSScriptRoot "fly.toml.template")).Replace("__APP__", $Name).Replace("__REGION__", $Region) |
-    Set-Content -Encoding ascii (Join-Path $PSScriptRoot "fly.toml")
+    Set-Content -Encoding ascii (Join-Path $work "fly.toml")
 
 # A dedicated IPv4 address, once: UDP does not reach an app on the shared one.
 $have = $false
@@ -84,6 +89,7 @@ if (-not $have) {
 }
 
 Write-Host "Deploying: Fly builds the server and starts one machine (a few minutes the first time)..."
+Set-Location $work
 & $fly deploy -a $Name -c fly.toml --ha=false --remote-only
 if ($LASTEXITCODE -ne 0) { Write-Host "The deploy did not finish; the messages above say why."; exit 1 }
 
